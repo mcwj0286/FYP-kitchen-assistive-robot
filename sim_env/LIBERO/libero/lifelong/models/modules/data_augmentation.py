@@ -20,38 +20,28 @@ class IdentityAug(nn.Module):
 
 class TranslationAug(nn.Module):
     """
-    Utilize the random crop from robomimic.
+    Simple translation augmentation using padding and random cropping
     """
-
-    def __init__(
-        self,
-        input_shape,
-        translation,
-    ):
+    def __init__(self, input_shape, translation):
         super().__init__()
-
-        self.pad_translation = translation // 2
-        pad_output_shape = (
-            input_shape[0],
-            input_shape[1] + translation,
-            input_shape[2] + translation,
-        )
-
-        self.crop_randomizer = CropRandomizer(
-            input_shape=pad_output_shape,
-            crop_height=input_shape[1],
-            crop_width=input_shape[2],
-        )
+        self.translation = translation
+        self.pad = nn.ZeroPad2d(translation // 2)
+        self.input_shape = input_shape
 
     def forward(self, x):
         if self.training:
             batch_size, temporal_len, img_c, img_h, img_w = x.shape
-            x = x.reshape(batch_size, temporal_len * img_c, img_h, img_w)
-            out = F.pad(x, pad=(self.pad_translation,) * 4, mode="replicate")
-            out = self.crop_randomizer.forward_in(out)
-            out = out.reshape(batch_size, temporal_len, img_c, img_h, img_w)
-        else:
-            out = x
+            # Flatten batch and temporal dimensions
+            x = x.reshape(-1, img_c, img_h, img_w)
+            # Pad
+            x = self.pad(x)
+            # Random crop back to original size 
+            h_start = torch.randint(0, self.translation, (1,))
+            w_start = torch.randint(0, self.translation, (1,))
+            x = x[:, :, h_start:h_start+img_h, w_start:w_start+img_w]
+            # Restore batch and temporal dimensions
+            x = x.reshape(batch_size, temporal_len, img_c, img_h, img_w)
+        return x
         return out
 
     def output_shape(self, input_shape):
