@@ -15,9 +15,10 @@ from sentence_transformers import SentenceTransformer
 from libero.libero import benchmark, get_libero_path, set_libero_default_path
 from libero.libero.utils.video_utils import VideoWriter
 from libero.libero.utils.time_utils import Timer
+from sim_env.LIBERO.BAKU.baku.suite.libero import RGBArrayAsObservationWrapper
 import robomimic.utils.obs_utils as ObsUtils
 
-sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 class Config:
     def __init__(self):
         # self.task_embedding_format = "gpt2"
@@ -42,6 +43,8 @@ class Config:
         }
         self.data = type('DataConfig', (), data_config)()
         self.device = 'cuda'
+        self.max_state_dim = 123
+        self.max_episode_len = 600
 
 # Create config instance 
 cfg = Config()
@@ -57,7 +60,7 @@ def load_agent(checkpoint_path, device='cuda'):
             'pixels': (3, 128, 128),
             'pixels_egocentric': (3, 128, 128),
             'proprioceptive': (9,),
-            'features': (51,)
+            'features': (123,)
         },
         'action_shape': (7,),
         'device': device,
@@ -82,7 +85,7 @@ def load_agent(checkpoint_path, device='cuda'):
         'eval_history_len': 5,  # from suite config
         'separate_encoders': False,
         'temporal_agg': True,
-        'max_episode_len': 252,  # from suite.task_make_fn # adjust based on the task
+        'max_episode_len': 600,  # from suite.task_make_fn # adjust based on the task
         'num_queries': 10,
         'use_language': True,
         'prompt': 'text',  # from root config
@@ -136,7 +139,7 @@ def main():
 
     # Get task embeddings
     descriptions = [benchmark_instance.get_task(i).language for i in range(benchmark_instance.get_num_tasks())]
-    task_embs = sentence_encoder.encode(descriptions) # [90,384]
+    # task_embs = sentence_encoder.encode(descriptions) # [90,384]
     task_id = 0  # Specify the task ID for evaluation
     task = benchmark_instance.get_task(task_id)
     
@@ -149,10 +152,11 @@ def main():
     
     # # Configure evaluation parameters
     # env_num = 20
-    max_steps = 252
+    max_steps = 550
     save_videos = True
     video_folder = "evaluation_videos"
-
+    done = False
+    steps = 0
     # Add this before using raw_obs_to_tensor_obs
     # Initialize observation utils with the modality specs from config
     obs_modality_specs = {
@@ -175,47 +179,52 @@ def main():
         env = OffScreenRenderEnv(**env_args)
         env.reset()
         env.seed(0)
-        
-        init_states_path = os.path.join(
-            init_states_default_path, task.problem_folder, task.init_states_file
-        )
-        init_states = torch.load(init_states_path)
-        init_state = init_states[0]  # Take first init state
 
-        done = False
-        steps = 0
-        obs = env.set_init_state(init_state)
-        task_emb = task_embs[task_id]
+        env = RGBArrayAsObservationWrapper(
+                    env,
+                    height=cfg.data.img_h,
+                    width=cfg.data.img_w,
+                    max_episode_len=cfg.max_episode_len,
+                    max_state_dim=cfg.max_state_dim,
+                )
 
+        # task_emb = task_embs[task_id]
+        obs = env.reset()
         # Initialize agent
         agent = load_agent(checkpoint_path, device)
 
+        _norm_stats = {'actions': {'min': 0, 'max': 1}, 'proprioceptive': {'min': 0, 'max': 1}}
         success = False
         # Initial physics stabilization
         for _ in range(5):
-            env.step(np.zeros(7))
-
+            obs,_,_,_ =env.step(np.zeros(7))
+        
         with torch.no_grad():
-            while steps < max_steps and not done:
+            while steps < max_steps:
                 steps += 1
                 
-                # Prepare data and get action with all required arguments
-                task_emb_tensor = torch.from_numpy(task_emb).unsqueeze(0).to(device)
-                data = raw_obs_to_tensor_obs([obs], task_emb_tensor, cfg)
+                # for key, value in obs.items():
+                #     print(f"{key}: {value.shape}")
+                # Convert HWC to CHW format for both pixel observations
+                obs['pixels'] = np.transpose(obs['pixels'], (2, 0, 1))
+                obs['pixels_egocentric'] = np.transpose(obs['pixels_egocentric'], (2, 0, 1))
+                # Get action from agent
                 action = agent.act(
-                    obs=data["obs"],
-                    prompt={"task_emb": task_emb_tensor[0]},
-                    norm_stats=None,  # Set to None if normalization not needed
-                    step=steps,
+                    obs=obs,
+                    prompt={"task_emb": env.task_emb},
+                    norm_stats=_norm_stats,
+                    step=steps, 
                     global_step=steps,
                     eval_mode=True
                 )
-                print(action.shape)
-                # Step environment
-                obs, reward, done, info = env.step(action)
-                video_writer.append_obs(obs, done, camera_name="agentview_image")
+                print(f"step {steps}")
 
+                obs, reward, done, info = env.step(action)
+                video_writer.append_obs(obs, done, camera_name="pixels")
+                
                 success = info.get('success', False)
+                if done:
+                    break
 
         env.close()
 
@@ -223,14 +232,14 @@ def main():
         eval_stats = {
             "success": success,
             "total_steps": steps,
-            "time_taken": t.get_elapsed_time()
+            # "time_taken": t.get_elapsed_time()
         }
         
         save_path = f"eval_stats_task{task_id}.json"
         with open(save_path, 'w') as f:
             json.dump(eval_stats, f)
 
-        print(f"Evaluation completed in {t.get_elapsed_time()} seconds")
+        # print(f"Evaluation completed in {t.get_elapsed_time()} seconds")
         print(f"Success: {success}")
         print(f"Results saved to {save_path}")
 
