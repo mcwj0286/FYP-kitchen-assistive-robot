@@ -123,6 +123,12 @@ def evaluate_episode(env, agent, task_emb, max_steps=252):
     return info[0].get('success', False)
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num_evals', type=int, default=5, help='Number of evaluation runs')
+    
+    args = parser.parse_args()
+
     # Configuration
     root_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/BAKU'
     checkpoint_path = os.path.join(root_dir, 'baku/weights/weights/libero/baku.pt')
@@ -140,7 +146,7 @@ def main():
     # Get task embeddings
     descriptions = [benchmark_instance.get_task(i).language for i in range(benchmark_instance.get_num_tasks())]
     # task_embs = sentence_encoder.encode(descriptions) # [90,384]
-    task_id = 0  # Specify the task ID for evaluation
+    task_id = 1  # Specify the task ID for evaluation
     task = benchmark_instance.get_task(task_id)
     
 
@@ -167,81 +173,103 @@ def main():
     }
     ObsUtils.initialize_obs_utils_with_obs_specs(obs_modality_specs)
     
-    with Timer() as t, VideoWriter(video_folder, save_videos) as video_writer:
-        # Set up environment arguments
-        env_args = {
-            'bddl_file_name': os.path.join(bddl_files_default_path, task.problem_folder, task.bddl_file),
-            'camera_heights': 128,
-            'camera_widths': 128,
-        }
+    successes = []
+    all_eval_stats = []
+    
+    # Get task name for folder organization
+    Benchmark_name = task.problem_folder
+    task_name = descriptions[task_id]
+    base_video_folder = os.path.join(video_folder, Benchmark_name, task_name)
+    os.makedirs(base_video_folder, exist_ok=True)
+    print(f"\nEvaluating Benchmark {Benchmark_name} task : {task_name}")
+    agent = load_agent(checkpoint_path, device)
+    for eval_idx in range(args.num_evals):
+        print(f"\nStarting evaluation {eval_idx + 1}/{args.num_evals}")
+        video_path = base_video_folder
         
-        # Initialize single environment
-        env = OffScreenRenderEnv(**env_args)
-        env.reset()
-        env.seed(0)
+        with Timer() as t, VideoWriter(video_path, True,video_filename = f"attemp_{eval_idx}.mp4") as video_writer:
+            # Set up environment arguments
+            env_args = {
+                'bddl_file_name': os.path.join(bddl_files_default_path, task.problem_folder, task.bddl_file),
+                'camera_heights': 128,
+                'camera_widths': 128,
+            }
+            
+            # Initialize single environment
+            env = OffScreenRenderEnv(**env_args)
+            env.reset()
+            env.seed(eval_idx)  # Different seed for each evaluation
 
-        env = RGBArrayAsObservationWrapper(
-                    env,
-                    height=cfg.data.img_h,
-                    width=cfg.data.img_w,
-                    max_episode_len=cfg.max_episode_len,
-                    max_state_dim=cfg.max_state_dim,
-                )
+            env = RGBArrayAsObservationWrapper(
+                env,
+                height=cfg.data.img_h,
+                width=cfg.data.img_w,
+                max_episode_len=cfg.max_episode_len,
+                max_state_dim=cfg.max_state_dim,
+            )
 
-        # task_emb = task_embs[task_id]
-        obs = env.reset()
-        # Initialize agent
-        agent = load_agent(checkpoint_path, device)
+            obs = env.reset()
+            
+            _norm_stats = {'actions': {'min': 0, 'max': 1}, 'proprioceptive': {'min': 0, 'max': 1}}
+            
+            success = False
+            steps = 0
+            max_steps = 550
+            
+            # Initial physics stabilization
+            for _ in range(5):
+                obs,_,_,_ = env.step(np.zeros(7))
+            
+            with torch.no_grad():
+                while steps < max_steps:
+                    steps += 1
+                    
+                    obs['pixels'] = np.transpose(obs['pixels'], (2, 0, 1))
+                    obs['pixels_egocentric'] = np.transpose(obs['pixels_egocentric'], (2, 0, 1))
+                    
+                    action = agent.act(
+                        obs=obs,
+                        prompt={"task_emb": env.task_emb},
+                        norm_stats=_norm_stats,
+                        step=steps, 
+                        global_step=steps,
+                        eval_mode=True
+                    )
+                    # print(f"Attempt {eval_idx + 1}, step {steps}")
 
-        _norm_stats = {'actions': {'min': 0, 'max': 1}, 'proprioceptive': {'min': 0, 'max': 1}}
-        success = False
-        # Initial physics stabilization
-        for _ in range(5):
-            obs,_,_,_ =env.step(np.zeros(7))
-        
-        with torch.no_grad():
-            while steps < max_steps:
-                steps += 1
+                    obs, reward, done, info = env.step(action)
+                    video_writer.append_obs(obs, done, camera_name="pixels")
+                    
+                    success = info.get('success', False)
+                    if done:
+                        break
+
+            env.close()
+            
+            successes.append(success)
+            eval_stats = {
+                "attempt": eval_idx + 1,
+                "success": success,
+                "total_steps": steps,
                 
-                # for key, value in obs.items():
-                #     print(f"{key}: {value.shape}")
-                # Convert HWC to CHW format for both pixel observations
-                obs['pixels'] = np.transpose(obs['pixels'], (2, 0, 1))
-                obs['pixels_egocentric'] = np.transpose(obs['pixels_egocentric'], (2, 0, 1))
-                # Get action from agent
-                action = agent.act(
-                    obs=obs,
-                    prompt={"task_emb": env.task_emb},
-                    norm_stats=_norm_stats,
-                    step=steps, 
-                    global_step=steps,
-                    eval_mode=True
-                )
-                print(f"step {steps}")
+            }
+            all_eval_stats.append(eval_stats)
 
-                obs, reward, done, info = env.step(action)
-                video_writer.append_obs(obs, done, camera_name="pixels")
-                
-                success = info.get('success', False)
-                if done:
-                    break
+    # Calculate and save overall statistics
+    success_rate = sum(successes) / len(successes)
+    final_stats = {
+        "individual_attempts": all_eval_stats,
+        "overall_success_rate": success_rate,
+        "total_evaluations": args.num_evals
+    }
+    
+    save_path = f"eval_stats_task{task_id}_total{args.num_evals}.json"
+    with open(save_path, 'w') as f:
+        json.dump(final_stats, f, indent=4)
 
-        env.close()
-
-        # Save evaluation stats
-        eval_stats = {
-            "success": success,
-            "total_steps": steps,
-            # "time_taken": t.get_elapsed_time()
-        }
-        
-        save_path = f"eval_stats_task{task_id}.json"
-        with open(save_path, 'w') as f:
-            json.dump(eval_stats, f)
-
-        # print(f"Evaluation completed in {t.get_elapsed_time()} seconds")
-        print(f"Success: {success}")
-        print(f"Results saved to {save_path}")
+    print(f"\nEvaluation completed!")
+    print(f"Overall Success Rate: {success_rate * 100:.2f}%")
+    print(f"Results saved to {save_path}")
 
 if __name__ == '__main__':
     main()
