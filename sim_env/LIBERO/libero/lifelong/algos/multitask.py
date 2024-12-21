@@ -33,7 +33,8 @@ class Multitask(Sequential):
         train_dataloader = DataLoader(
             concat_dataset,
             batch_size=self.cfg.train.batch_size,
-            num_workers=self.cfg.train.num_workers,
+            # num_workers=self.cfg.train.num_workers,
+            num_workers = 0, # set num_workers to 0 to avoid deadlock in DataLoader
             sampler=RandomSampler(concat_dataset),
             persistent_workers=True,
         )
