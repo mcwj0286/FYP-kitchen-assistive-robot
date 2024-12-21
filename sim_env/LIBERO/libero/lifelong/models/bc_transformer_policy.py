@@ -98,10 +98,9 @@ class ExtraModalityTokens(nn.Module):
         ]:
 
             if use_modality:
+                x = obs_dict[modality_name].float()
                 tensor_list.append(
-                    self.extra_encoders[modality_name]["encoder"](
-                        obs_dict[modality_name]
-                    )
+                    self.extra_encoders[modality_name]["encoder"](x)
                 )
 
         x = torch.stack(tensor_list, dim=-2)
@@ -268,9 +267,13 @@ class BCTransformerPolicy(BasePolicy):
         # 3. encode image
         for img_name in self.image_encoders.keys():
             x = data["obs"][img_name]
-            B, T, C, H, W = x.shape
+            # print(f'x.shape{img_name}: {x.shape}')
+            x = x.float() / 255.0
+            B, T, H,W,C= x.shape
+            x = x.reshape(B * T, H, W, C)
+            x = x.permute(0, 3, 1, 2)
             img_encoded = self.image_encoders[img_name]["encoder"](
-                x.reshape(B * T, C, H, W),
+                x,
                 langs=data["task_emb"]
                 .reshape(B, 1, -1)
                 .repeat(1, T, 1)
@@ -290,15 +293,15 @@ class BCTransformerPolicy(BasePolicy):
         self.eval()
         with torch.no_grad():
             data = self.preprocess_input(data, train_mode=False)
-            x = self.spatial_encode(data)
+            x = self.spatial_encode(data)  # (B, T, num_modalities, E)
             self.latent_queue.append(x)
             if len(self.latent_queue) > self.max_seq_len:
                 self.latent_queue.pop(0)
             x = torch.cat(self.latent_queue, dim=1)  # (B, T, H_all)
-            x = self.temporal_encode(x)
+            x = self.temporal_encode(x)  # (B, T, E)
             dist = self.policy_head(x[:, -1])
-        action = dist.sample().detach().cpu()
-        return action.view(action.shape[0], -1).numpy()
+        action = dist.sample().detach().cpu() # (B, ac_dim)
+        return action.view(action.shape[0], -1).numpy() # (B, ac_dim)
 
     def reset(self):
         self.latent_queue = []
