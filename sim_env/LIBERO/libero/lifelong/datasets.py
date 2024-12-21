@@ -6,7 +6,7 @@ import robomimic.utils.obs_utils as ObsUtils
 from PIL import Image
 from robomimic.utils.dataset import SequenceDataset
 from torch.utils.data import Dataset
-
+import torch
 """
     Helper function from Robomimic to read hdf5 demonstrations into sequence dataset
 
@@ -71,9 +71,17 @@ class SequenceVLDataset(Dataset):
 
     def __getitem__(self, idx):
         return_dict = self.sequence_dataset.__getitem__(idx)
+        # Convert image tensors to float and normalize
+        for key in return_dict["obs"]:
+            if key.endswith("_rgb"):  # Handle RGB image data
+                # Convert numpy array to torch tensor, then normalize
+                img = return_dict["obs"][key]
+                img = torch.from_numpy(img).float() / 255.0  # Convert to float tensor and normalize
+                img = img.permute(0, 3, 1, 2)  # Reshape to [B,C,H,W]
+                return_dict["obs"][key] = img
+                
         return_dict["task_emb"] = self.task_emb
         return return_dict
-
 
 class GroupedTaskDataset(Dataset):
     def __init__(self, sequence_datasets, task_embs):

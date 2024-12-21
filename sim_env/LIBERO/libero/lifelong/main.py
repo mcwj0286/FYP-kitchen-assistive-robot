@@ -34,8 +34,9 @@ from libero.lifelong.utils import (
 )
 
 
-@hydra.main(config_path="../configs", config_name="config", version_base=None)
+@hydra.main(config_path="../configs", config_name="config")
 def main(hydra_cfg):
+    
     # preprocessing
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
@@ -127,10 +128,16 @@ def main(hydra_cfg):
     print(" # sequences: " + " ".join(f"({x})" for x in n_sequences))
     print("=======================================================================\n")
 
+    # print(datasets[0].sequence_dataset[0].obs_keys)
+    # for key in ['agentview_rgb', 'eye_in_hand_rgb', 'gripper_states', 'joint_states']:
+    #     if key in datasets[0].sequence_dataset.obs_keys:
+    #         print(f"{key} shape: {datasets[0].sequence_dataset[key].shape}")
+
     # prepare experiment and update the config
     create_experiment_dir(cfg)
     cfg.shape_meta = shape_meta
 
+    cfg.use_wandb = False # comment this line to enable wandb
     if cfg.use_wandb:
         wandb.init(project="libero", config=cfg)
         wandb.run.name = cfg.experiment_name

@@ -36,7 +36,7 @@ class Multitask(Sequential):
             # num_workers=self.cfg.train.num_workers,
             num_workers = 0, # set num_workers to 0 to avoid deadlock in DataLoader
             sampler=RandomSampler(concat_dataset),
-            persistent_workers=True,
+            # persistent_workers=True,
         )
 
         prev_success_rate = -1.0
