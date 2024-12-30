@@ -104,36 +104,44 @@ class Obersvation_trunk(nn.Module):
         pred_action = self._action_head(
             features,
             stddev,
-            **{"cluster_centers": cluster_centers, "action_seq": action},
+            
         )
+        return pred_action
 
-        if action is None:
-            return pred_action
-        else:
-            loss = self._action_head.loss_fn(
-                pred_action,
-                action,
-                reduction="mean",
-                **{"cluster_centers": cluster_centers},
-            )
-            return pred_action, loss[0] if isinstance(loss, tuple) else loss
+
 
 
 class BCBakuPolicy:
-    def __init__(self, repr_dim=256, act_dim=7, hidden_dim=512,
-                 policy_head="deterministic", num_feat_per_step=1,
-                 obs_shape=None, lang_repr_dim=512, language_fusion="concat",
-                 pixel_keys=None, device="cuda",
+    def __init__(self, repr_dim=256, act_dim=7, hidden_dim=256,
+                 policy_head="deterministic", obs_type='pixels',
+                 obs_shape=None, language_dim=768, lang_repr_dim=512, language_fusion="film",
+                 pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
                  history=True, history_len=10, # Added history parameters
-                 temporal_agg=False, # Added temporal aggregation
-                 max_episode_len=100,
+                 temporal_agg=True, # Added temporal aggregation
+                 max_episode_len=200,
                  use_proprio=True):
         
         self.device = device
+        self.language_dim = language_dim
         self.lang_repr_dim = lang_repr_dim
         self.language_fusion = language_fusion
         self.pixel_keys = pixel_keys if pixel_keys else []
         
+        # number of inputs per time step
+        if obs_type == "features":
+            num_feat_per_step = 1
+        elif obs_type == "pixels":
+            num_feat_per_step = len(self.pixel_keys)
+            if use_proprio:
+                num_feat_per_step += 1
+
+
+        # observation params
+        if obs_type == "pixels":
+            if use_proprio:
+                proprio_shape = obs_shape[self.proprio_key]
+            obs_shape = obs_shape[self.pixel_keys[0]]
+
         # observation trunk
         self.obs_trunk = Obersvation_trunk(
             repr_dim=repr_dim,
@@ -155,10 +163,18 @@ class BCBakuPolicy:
                 language_fusion=self.language_fusion,
             ).to(device)
 
-        # initialize the language encoder(projector)
-        self.langague_encoder = MLP(
-            lang_repr_dim, hidden_dim, hidden_dim, 2, 0.1
-        ).to(device)
+        # Replace the direct language projector instantiation with proper language encoder
+        self.language_encoder = {
+            "network": "MLP",
+            "network_kwargs": {
+                "input_size": language_dim,
+                "output_size": lang_repr_dim,
+                "hidden_channels": [lang_repr_dim, lang_repr_dim]
+            }
+        }
+        
+        # Initialize language encoder with proper configuration
+        self.language_projector = MLP(**self.language_encoder["network_kwargs"]).to(device)
 
 
         # projector for proprioceptive features
@@ -194,7 +210,7 @@ class BCBakuPolicy:
             self.proprio_buffer.append(data["proprioceptive"])
 
         # 2. Process language embedding for FiLM
-        lang = self.langague_encoder(data["task_emb"])
+        lang = self.language_projector(data["task_emb"])
         
         # 3. Process vision features with history
         vision_feats = []
@@ -237,7 +253,7 @@ class BCBakuPolicy:
             elif self._policy_head == "vqbet":
                 action = pred_actions["predicted_action"]
             
-            if self.temporal_agg:
+            if self.temporal_agg: # action chunking
                 step = data.get("step", 0)
                 # Store current prediction
                 self.all_time_actions[step, step:step+1] = action
