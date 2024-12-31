@@ -112,21 +112,76 @@ class Obersvation_trunk(nn.Module):
 
 
 class BCBakuPolicy:
-    def __init__(self, repr_dim=256, act_dim=7, hidden_dim=256,
-                 policy_head="deterministic", obs_type='pixels',
-                 obs_shape=None, language_dim=768, lang_repr_dim=512, language_fusion="film",
-                 pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
-                 history=True, history_len=10, # Added history parameters
-                 temporal_agg=True, # Added temporal aggregation
-                 max_episode_len=200,
-                 use_proprio=True):
-        
+    @staticmethod
+    def get_default_config():
+        """Return default configuration for language encoder"""
+        return {
+            "policy": {
+                "language_encoder": {
+                    "network": "MLP",
+                    "network_kwargs": {
+                        "input_size": 768,  # default size, will be updated later
+                        "output_size": 512,
+                        "hidden_channels": [512, 512]
+                    }
+                }
+            }
+        }
+
+    def __init__(self, cfg=None, shape_meta=None):
+        """Initialize BAKU policy with config"""
+        # Extract parameters from config
+        if cfg is None:
+            # Use default parameters if no config provided
+            repr_dim = 256
+            act_dim = 7
+            hidden_dim = 256
+            policy_head = "deterministic"
+            obs_type = "pixels"
+            language_dim = 768
+            lang_repr_dim = 512
+            language_fusion = "film"
+            pixel_keys = ["pixels", "pixels_egocentric"]
+            proprio_key = "proprioceptive"
+            device = "cuda"
+            history = True
+            history_len = 10
+            temporal_agg = True
+            max_episode_len = 200
+            use_proprio = True
+            obs_shape = {
+                'pixels': (3, 128, 128),
+                'pixels_egocentric': (3, 128, 128),
+                'proprioceptive': (9,),
+                'features': (123,)
+            }
+        else:
+            # Extract from config
+            repr_dim = cfg.policy.repr_dim
+            act_dim = shape_meta["ac_dim"]
+            hidden_dim = cfg.policy.hidden_dim
+            policy_head = cfg.policy.policy_head
+            obs_type = cfg.policy.obs_type
+            language_dim = cfg.policy.language_dim
+            lang_repr_dim = cfg.policy.lang_repr_dim
+            language_fusion = cfg.policy.language_fusion
+            pixel_keys = cfg.policy.pixel_keys
+            proprio_key = cfg.policy.proprio_key
+            device = cfg.device
+            history = cfg.policy.history
+            history_len = cfg.policy.history_len
+            temporal_agg = cfg.policy.temporal_agg
+            max_episode_len = cfg.policy.max_episode_len
+            use_proprio = cfg.policy.use_proprio
+            obs_shape = shape_meta["all_shapes"]
+
+        # Store parameters
         self.device = device
         self.language_dim = language_dim
         self.lang_repr_dim = lang_repr_dim
         self.language_fusion = language_fusion
         self.pixel_keys = pixel_keys if pixel_keys else []
-        
+        self.proprio_key = proprio_key
         # number of inputs per time step
         if obs_type == "features":
             num_feat_per_step = 1
@@ -173,7 +228,13 @@ class BCBakuPolicy:
             }
         }
         
-        # Initialize language encoder with proper configuration
+        # Initialize language encoder with proper configuration using the default config
+        default_config = self.get_default_config()
+        self.language_encoder = default_config["policy"]["language_encoder"]
+        
+        # Update the language encoder config with current dimensions
+        self.language_encoder["network_kwargs"]["input_size"] = language_dim
+        self.language_encoder["network_kwargs"]["output_size"] = lang_repr_dim
         self.language_projector = MLP(**self.language_encoder["network_kwargs"]).to(device)
 
 

@@ -33,6 +33,30 @@ def main(hydra_cfg):
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
 
+    # Add BAKU-specific configurations
+    if not hasattr(cfg, 'policy'):
+        cfg.policy = EasyDict()
+        
+    # Set BAKU policy configuration 
+    cfg.policy.update({
+        'policy_type': 'bcbakupolicy',  # Changed to match registered name (lowercase)
+        'obs_type': 'pixels',
+        'encoder_type': 'resnet',
+        'policy_head': 'deterministic',
+        'hidden_dim': 256,
+        'language_fusion': 'film',
+        'use_proprio': True,
+        'temporal_agg': True,
+        'language_encoder': EasyDict({
+            "network": "MLP",
+            "network_kwargs": {
+                "input_size": 768,
+                "output_size": 512,
+                "hidden_channels": [512, 512]
+            }
+        })
+    })
+
     # print configs
     pp = pprint.PrettyPrinter(indent=2)
     pp.pprint(cfg)
