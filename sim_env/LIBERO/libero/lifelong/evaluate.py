@@ -114,10 +114,10 @@ def parse_args():
     return args
 
 
-def main():
+def main(*args, **kwargs):
     args = parse_args()
     # e.g., experiments/LIBERO_SPATIAL/Multitask/BCRNNPolicy_seed100/
-
+    # args.experiment_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-21/19-27-15/experiments'
     experiment_dir = os.path.join(
         args.experiment_dir,
         f"{benchmark_map[args.benchmark]}/"
@@ -144,6 +144,7 @@ def main():
     try:
         if args.algo == "multitask":
             model_path = os.path.join(run_folder, f"multitask_model_ep{args.ep}.pth")
+            # model_path = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-21/19-27-15/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/multitask_model_ep15.pth'
             sd, cfg, previous_mask = torch_load_model(
                 model_path, map_location=args.device_id
             )
@@ -240,10 +241,11 @@ def main():
             "camera_widths": cfg.data.img_w,
         }
 
-        env_num = 20
-        env = SubprocVectorEnv(
-            [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
-        )
+        env_num = 1
+        env = OffScreenRenderEnv(**env_args)
+        # env = SubprocVectorEnv(
+        #     [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
+        # )
         env.reset()
         env.seed(cfg.seed)
         algo.reset()

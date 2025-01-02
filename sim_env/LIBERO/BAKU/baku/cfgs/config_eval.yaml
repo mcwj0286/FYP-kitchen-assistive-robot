@@ -14,7 +14,7 @@ device: cuda
 save_video: true
 save_train_video: false
 use_tb: true
-batch_size: 64
+batch_size: 1
 
 # experiment
 obs_type: "pixels" # pixels, features

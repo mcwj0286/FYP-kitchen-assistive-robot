@@ -250,9 +250,7 @@ class BCTransformerPolicy(BasePolicy):
         x = TensorUtils.join_dimensions(x, 1, 2)  # (B, T*num_modality, E)
         x = self.temporal_transformer(x)
         x = x.reshape(*sh)
-        return x[:, :, 0]  # (B, T, E)
-
-    def spatial_encode(self, data):
+        return x[:, :, 0]  # (B, T, E)hidden_dim
         # 1. encode extra
         extra = self.extra_encoder(data["obs"])  # (B, T, num_extra, E)
 

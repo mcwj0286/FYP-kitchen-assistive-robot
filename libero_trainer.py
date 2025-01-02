@@ -175,6 +175,7 @@ def main(hydra_cfg):
             algo.policy.train()
             training_loss = 0.0
             for data in train_dataloader:
+                print(f"data: {data}")  
                 loss = algo.observe(data)
                 training_loss += loss
             training_loss /= len(train_dataloader)

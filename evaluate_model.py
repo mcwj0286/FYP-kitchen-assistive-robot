@@ -17,7 +17,13 @@ from libero.libero.utils.video_utils import VideoWriter
 from libero.libero.utils.time_utils import Timer
 from sim_env.LIBERO.BAKU.baku.suite.libero import RGBArrayAsObservationWrapper
 import robomimic.utils.obs_utils as ObsUtils
-
+from libero.lifelong.utils import (
+    # control_seed,
+    # safe_device,
+    torch_load_model,
+    # NpEncoder,
+    # compute_flops,
+)
 # sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 class Config:
     def __init__(self):
@@ -128,9 +134,13 @@ def main():
     parser.add_argument('--num_evals', type=int, default=5, help='Number of evaluation runs')
     args = parser.parse_args()
 
+    model='baku'
     # Configuration
-    root_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/BAKU'
-    checkpoint_path = os.path.join(root_dir, 'baku/weights/weights/libero/baku.pt')
+    if model == 'baku':
+        root_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/BAKU'
+        checkpoint_path = os.path.join(root_dir, 'baku/weights/weights/libero/baku.pt')
+    else:
+        checkpoint_path = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-21/19-27-15/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/multitask_model_ep15.pth'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     datasets_default_path = get_libero_path("datasets")
     init_states_default_path = get_libero_path("init_states")
@@ -149,7 +159,11 @@ def main():
     all_tasks_results = {}
     
     # Load agent once outside the task loop
-    agent = load_agent(checkpoint_path, device)
+    if model == 'baku':
+        agent = load_agent(checkpoint_path, device)
+    else:
+        agent = torch_load_model(checkpoint_path, device=device)
+        agent.eval()
     video_folder = 'evaluation_videos'
     # Iterate through all tasks
     num_tasks = benchmark_instance.get_num_tasks()
@@ -216,6 +230,8 @@ def main():
                         obs['pixels'] = np.transpose(obs['pixels'], (2, 0, 1))
                         obs['pixels_egocentric'] = np.transpose(obs['pixels_egocentric'], (2, 0, 1))
                         
+                        for key, value in obs.items():
+                            print(f"{key}: {value.shape}")
                         action = agent.act(
                             obs=obs,
                             prompt={"task_emb": env.task_emb},

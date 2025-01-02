@@ -6,7 +6,7 @@ defaults:
   - override hydra/launcher: submitit_local
 
 # Root Dir
-root_dir: /path/to/repo/BAKU
+root_dir: /home/johnmok/Documents/GitHub/not_used/BAKU
 
 # misc
 seed: 2

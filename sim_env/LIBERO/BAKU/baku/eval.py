@@ -1,3 +1,5 @@
+
+
 #!/usr/bin/env python3
 
 import warnings
@@ -6,6 +8,7 @@ import os
 os.environ["MKL_SERVICE_FORCE_INTEL"] = "1"
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["PYOPENGL_PLATFORM"] = "egl"
 from pathlib import Path
 
 import hydra
@@ -31,8 +34,9 @@ def make_agent(obs_spec, action_spec, cfg):
     obs_shape[cfg.suite.feature_key] = obs_spec[cfg.suite.feature_key].shape
     cfg.agent.obs_shape = obs_shape
     cfg.agent.action_shape = action_spec.shape
+    print(cfg)
+    print(cfg.agent)
     return hydra.utils.instantiate(cfg.agent)
-
 
 class WorkspaceIL:
     def __init__(self, cfg):
@@ -45,11 +49,12 @@ class WorkspaceIL:
 
         # load data
         dataset_iterable = hydra.utils.call(self.cfg.expert_dataset)
+        
         self.expert_replay_loader = make_expert_replay_loader(
             dataset_iterable, self.cfg.batch_size
         )
         self.expert_replay_iter = iter(self.expert_replay_loader)
-
+        print(f"loaded expert replay buffer: {len(self.expert_replay_loader.dataset)}")
         # create logger
         self.logger = Logger(self.work_dir, use_tb=self.cfg.use_tb)
         # create envs
@@ -69,7 +74,7 @@ class WorkspaceIL:
         self.agent = make_agent(
             self.env[0].observation_spec(), self.env[0].action_spec(), cfg
         )
-
+        print(f"created agent: {self.agent}")   
         self.envs_till_idx = len(self.env)
         self.expert_replay_loader.dataset.envs_till_idx = self.envs_till_idx
         self.expert_replay_iter = iter(self.expert_replay_loader)
@@ -124,6 +129,9 @@ class WorkspaceIL:
                         prompt = self.expert_replay_loader.dataset.sample_test(
                             env_idx, step
                         )
+                    # for key, value in time_step.observation.items():
+                    #     print(f"{key}: {value.shape}")  
+                    print(self.expert_replay_loader.dataset.stats)
                     with torch.no_grad(), utils.eval_mode(self.agent):
                         action = self.agent.act(
                             time_step.observation,
@@ -143,6 +151,7 @@ class WorkspaceIL:
 
                 episode += 1
                 success.append(time_step.observation["goal_achieved"])
+                print(f"episode: {episode}, reward: {total_reward}, success: {time_step.observation['goal_achieved']}")
             self.video_recorder.save(f"{self.global_frame}_env{env_idx}.mp4")
             episode_rewards.append(total_reward / episode)
             successes.append(np.mean(success))
@@ -192,7 +201,6 @@ class WorkspaceIL:
 @hydra.main(config_path="cfgs", config_name="config_eval")
 def main(cfg):
     from eval import WorkspaceIL as W
-    print(cfg.bc_weight)
     workspace = W(cfg)
 
     # Load weights

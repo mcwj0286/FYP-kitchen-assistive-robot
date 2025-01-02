@@ -6,7 +6,8 @@ import torch
 from torch import nn
 
 from torchvision import transforms as T
-
+import sys
+sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/BAKU/baku')
 import utils
 from agent.networks.rgb_modules import BaseEncoder, ResnetEncoder
 from agent.networks.policy_head import (
@@ -19,6 +20,7 @@ from agent.networks.policy_head import (
 from agent.networks.gpt import GPT, GPTConfig
 from agent.networks.mlp import MLP
 from agent.networks.kmeans_discretizer import KMeansDiscretizer
+
 
 
 class Actor(nn.Module):

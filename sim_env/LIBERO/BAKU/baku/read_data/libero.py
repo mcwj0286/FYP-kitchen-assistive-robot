@@ -33,63 +33,69 @@ class BCDataset(IterableDataset):
         self.img_size = img_size
         self.intermediate_goal_step = intermediate_goal_step
 
-        # temporal_aggregation
+        # Temporal aggregation
         self._temporal_agg = temporal_agg
         self._num_queries = num_queries
+        self.num_demos_per_task = num_demos_per_task
 
         # Convert task_names, which is a list, to a dictionary
         tasks = {task_name: scene[task_name] for scene in tasks for task_name in scene}
 
         # Get relevant task names
-        task_name = []
+        task_name_list = []
         for scene in scenes:
-            task_name.extend([task_name for task_name in tasks[scene]])
+            task_name_list.extend([t_name for t_name in tasks[scene]])
 
-        # get data paths
-        self._paths = []
-        # for suite in suites:
-        self._paths.extend(list((Path(path) / suite).glob("*")))
+        # Get data paths
+        self._paths = list((Path(path) / suite).glob("*"))
 
-        if task_name is not None:
-            paths = {}
+        # Filter paths based on task names
+        if task_name_list:
+            filtered_paths = {}
             idx2name = {}
             for path in self._paths:
                 task = str(path).split(".")[0].split("/")[-1]
-                if task in task_name:
-                    # get idx of task in task_name
-                    idx = task_name.index(task)
-                    paths[idx] = path
+                if task in task_name_list:
+                    idx = task_name_list.index(task)
+                    filtered_paths[idx] = path
                     idx2name[idx] = task
-            del self._paths
-            self._paths = paths
+            self._paths = filtered_paths
+        else:
+            self._paths = {idx: path for idx, path in enumerate(self._paths)}
 
-        # store actions
+        # Store actions if required
+        self.store_actions = store_actions
         if store_actions:
             self.actions = []
 
-        # read data
+        # Read data to collect metadata
         self._episodes = {}
         self._max_episode_len = 0
         self._max_state_dim = 0
         self._num_samples = 0
         for _path_idx in self._paths:
-            print(f"Loading {str(self._paths[_path_idx])}")
-            # read
+            print(f"Processing {str(self._paths[_path_idx])}")
+            # Read data
             data = pkl.load(open(str(self._paths[_path_idx]), "rb"))
-            observations = (
-                data["observations"] if self._obs_type == "pixels" else data["states"]
-            )
+            observations = data["observations"] if self._obs_type == "pixels" else data["states"]
             actions = data["actions"]
             task_emb = data["task_emb"]
-            # store
+            # Store episode indices and metadata
             self._episodes[_path_idx] = []
+         
             for i in range(min(num_demos_per_task, len(observations))):
-                episode = dict(
-                    observation=observations[i],
-                    action=actions[i],
+                # Get episode length and state dimension
+                obs_i = observations[i]
+                episode_info = dict(
+                    observation=None,  # We no longer store full observations here
+                    action=None,       # We no longer store full actions here
+                    episode_idx=i,
+                    file_path=str(self._paths[_path_idx]),
                     task_emb=task_emb,
                 )
-                self._episodes[_path_idx].append(episode)
+                self._episodes[_path_idx].append(episode_info)
+
+                # Update max_episode_len, max_state_dim, num_samples
                 self._max_episode_len = max(
                     self._max_episode_len,
                     (
@@ -98,7 +104,6 @@ class BCDataset(IterableDataset):
                         else len(observations[i]["pixels"])
                     ),
                 )
-                # if obs_type == 'features':
                 self._max_state_dim = max(
                     self._max_state_dim, data["states"][i].shape[-1]
                 )
@@ -108,10 +113,24 @@ class BCDataset(IterableDataset):
                     else len(observations[i]["pixels"])
                 )
 
-                # store actions
+                # Store actions if required
                 if store_actions:
-                    self.actions.append(actions[i])
+                    # Cannot store actions[i] here without loading data
+                    pass
 
+        # Create a list of environment keys for indexing
+        self._env_keys = list(self._episodes.keys())
+        self.envs_till_idx = len(self._env_keys)
+
+        # Augmentation
+        self.aug = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.ToTensor(),
+            ]
+        )
+
+        # Preprocessing statistics
         self.stats = {
             "actions": {
                 "min": 0,
@@ -133,96 +152,90 @@ class BCDataset(IterableDataset):
             ),
         }
 
-        # augmentation
-        self.aug = transforms.Compose(
-            [
-                transforms.ToPILImage(),
-                transforms.ToTensor(),
-            ]
-        )
-
-        # Samples from envs
-        self.envs_till_idx = len(self._episodes)
-
     def _sample_episode(self, env_idx=None):
-        idx = random.randint(0, self.envs_till_idx - 1) if env_idx is None else env_idx
-        episode = random.choice(self._episodes[idx])
-        return (episode, idx) if env_idx is None else episode
+        if env_idx is None:
+            # Randomly select an environment
+            env_key = random.choice(self._env_keys)
+        else:
+            # Map env_idx to env_key
+            env_key = self._env_keys[env_idx]
+
+        episodes_in_env = self._episodes[env_key]
+        episode_info = random.choice(episodes_in_env)
+        return (episode_info, env_key)
 
     def _sample(self):
-        episodes, env_idx = self._sample_episode()
-        observations = episodes["observation"]
-        actions = episodes["action"]
-        task_emb = episodes["task_emb"]
+        episode_info, env_idx = self._sample_episode()
+        episode_idx = episode_info['episode_idx']
+        file_path = episode_info['file_path']
+        task_emb = episode_info['task_emb']
+
+        # Load data from pkl file
+        data = pkl.load(open(file_path, "rb"))
+        observations = data["observations"] if self._obs_type == "pixels" else data["states"]
+        actions = data["actions"]
+
+        observations = observations[episode_idx]
+        actions = actions[episode_idx]
+
 
         if self._obs_type == "pixels":
             # Sample obs, action
-            sample_idx = np.random.randint(
-                0, len(observations["pixels"]) - self._history_len
-            )
-            sampled_pixel = observations["pixels"][
-                sample_idx : sample_idx + self._history_len
-            ]
-            sampled_pixel_egocentric = observations["pixels_egocentric"][
-                sample_idx : sample_idx + self._history_len
-            ]
+            max_sample_idx = len(observations["pixels"]) - self._history_len
+            if max_sample_idx <= 0:
+                # Skip this episode if too short
+                return self._sample()
+            sample_idx = np.random.randint(0, max_sample_idx)
+            sampled_pixel = observations["pixels"][sample_idx : sample_idx + self._history_len]
+            sampled_pixel_egocentric = observations["pixels_egocentric"][sample_idx : sample_idx + self._history_len]
             sampled_pixel = torch.stack(
                 [self.aug(sampled_pixel[i]) for i in range(len(sampled_pixel))]
             )
             sampled_pixel_egocentric = torch.stack(
-                [
-                    self.aug(sampled_pixel_egocentric[i])
-                    for i in range(len(sampled_pixel_egocentric))
-                ]
+                [self.aug(sampled_pixel_egocentric[i]) for i in range(len(sampled_pixel_egocentric))]
             )
             sampled_proprioceptive_state = np.concatenate(
                 [
-                    observations["joint_states"][
-                        sample_idx : sample_idx + self._history_len
-                    ],
-                    observations["gripper_states"][
-                        sample_idx : sample_idx + self._history_len
-                    ],
+                    observations["joint_states"][sample_idx : sample_idx + self._history_len],
+                    observations["gripper_states"][sample_idx : sample_idx + self._history_len],
                 ],
                 axis=-1,
             )
             if self._temporal_agg:
-                # arrange sampled action to be of shape (history_len, num_queries, action_dim)
-                sampled_action = np.zeros(
-                    (self._history_len, self._num_queries, actions.shape[-1])
-                )
-                num_actions = (
-                    self._history_len + self._num_queries - 1
-                )  # -1 since its num_queries including the last action of the history
-                act = np.zeros((num_actions, actions.shape[-1]))
-                act[
-                    : min(len(actions), sample_idx + num_actions) - sample_idx
-                ] = actions[sample_idx : sample_idx + num_actions]
+                # Arrange sampled action to be of shape (history_len, num_queries, action_dim)
+                num_actions = self._history_len + self._num_queries - 1
+                if sample_idx + num_actions > len(actions):
+                    # Not enough actions, skip and resample
+                    return self._sample()
+                act = actions[sample_idx : sample_idx + num_actions]
                 sampled_action = np.lib.stride_tricks.sliding_window_view(
                     act, (self._num_queries, actions.shape[-1])
                 )
                 sampled_action = sampled_action[:, 0]
             else:
                 sampled_action = actions[sample_idx : sample_idx + self._history_len]
-
-            # prompt
+# Load data
+            # Handle prompts
             if self._prompt == "text":
                 return {
                     "pixels": sampled_pixel,
                     "pixels_egocentric": sampled_pixel_egocentric,
-                    "proprioceptive": self.preprocess["proprioceptive"](
-                        sampled_proprioceptive_state
-                    ),
+                    "proprioceptive": self.preprocess["proprioceptive"](sampled_proprioceptive_state),
                     "actions": self.preprocess["actions"](sampled_action),
                     "task_emb": task_emb,
                 }
             elif self._prompt == "goal":
-                prompt_episode = self._sample_episode(env_idx)
-                prompt_observations = prompt_episode["observation"]
+                # Sample a prompt episode from the same task
+                prompt_episode_info, _ = self._sample_episode(env_idx)
+                prompt_episode_idx = prompt_episode_info['episode_idx']
+                prompt_file_path = prompt_episode_info['file_path']  # Correct file path for prompt episode
+                # Load data
+                data = pkl.load(open(prompt_file_path, "rb"))
+                prompt_observations = data["observations"][prompt_episode_idx]
+                prompt_actions = data["actions"][prompt_episode_idx]
+
                 prompt_pixel = self.aug(prompt_observations["pixels"][-1])[None]
-                prompt_pixel_egocentric = self.aug(
-                    prompt_observations["pixels_egocentric"][-1]
-                )[None]
+                prompt_pixel_egocentric = self.aug(prompt_observations["pixels_egocentric"][-1])[None]
                 prompt_proprioceptive_state = np.concatenate(
                     [
                         prompt_observations["joint_states"][-1:],
@@ -230,36 +243,26 @@ class BCDataset(IterableDataset):
                     ],
                     axis=-1,
                 )
-                prompt_action = prompt_episode["action"][-1:]
+                prompt_action = prompt_actions[-1:]
                 return {
                     "pixels": sampled_pixel,
                     "pixels_egocentric": sampled_pixel_egocentric,
-                    "proprioceptive": self.preprocess["proprioceptive"](
-                        sampled_proprioceptive_state
-                    ),
+                    "proprioceptive": self.preprocess["proprioceptive"](sampled_proprioceptive_state),
                     "actions": self.preprocess["actions"](sampled_action),
                     "prompt_pixels": prompt_pixel,
                     "prompt_pixels_egocentric": prompt_pixel_egocentric,
-                    "prompt_proprioceptive": self.preprocess["proprioceptive"](
-                        prompt_proprioceptive_state
-                    ),
+                    "prompt_proprioceptive": self.preprocess["proprioceptive"](prompt_proprioceptive_state),
                     "prompt_actions": self.preprocess["actions"](prompt_action),
                     "task_emb": task_emb,
                 }
             elif self._prompt == "intermediate_goal":
-                prompt_episode = episodes
-                prompt_observations = prompt_episode["observation"]
-                intermediate_goal_step = (
-                    self.intermediate_goal_step + np.random.randint(-30, 30)
-                )
-                goal_idx = min(
-                    sample_idx + intermediate_goal_step,
-                    len(prompt_observations["pixels"]) - 1,
-                )
+                # Use the same episode
+                prompt_observations = observations
+                prompt_actions = actions
+                intermediate_goal_step = self.intermediate_goal_step + np.random.randint(-30, 30)
+                goal_idx = min(sample_idx + intermediate_goal_step, len(prompt_observations["pixels"]) - 1)
                 prompt_pixel = self.aug(prompt_observations["pixels"][goal_idx])[None]
-                prompt_pixel_egocentric = self.aug(
-                    prompt_observations["pixels_egocentric"][goal_idx]
-                )[None]
+                prompt_pixel_egocentric = self.aug(prompt_observations["pixels_egocentric"][goal_idx])[None]
                 prompt_proprioceptive_state = np.concatenate(
                     [
                         prompt_observations["joint_states"][goal_idx : goal_idx + 1],
@@ -267,37 +270,34 @@ class BCDataset(IterableDataset):
                     ],
                     axis=-1,
                 )
-                prompt_action = prompt_episode["action"][goal_idx : goal_idx + 1]
+                prompt_action = prompt_actions[goal_idx : goal_idx + 1]
                 return {
                     "pixels": sampled_pixel,
                     "pixels_egocentric": sampled_pixel_egocentric,
-                    "proprioceptive": self.preprocess["proprioceptive"](
-                        sampled_proprioceptive_state
-                    ),
+                    "proprioceptive": self.preprocess["proprioceptive"](sampled_proprioceptive_state),
                     "actions": self.preprocess["actions"](sampled_action),
                     "prompt_pixels": prompt_pixel,
                     "prompt_pixels_egocentric": prompt_pixel_egocentric,
-                    "prompt_proprioceptive": self.preprocess["proprioceptive"](
-                        prompt_proprioceptive_state
-                    ),
+                    "prompt_proprioceptive": self.preprocess["proprioceptive"](prompt_proprioceptive_state),
                     "prompt_actions": self.preprocess["actions"](prompt_action),
                     "task_emb": task_emb,
                 }
-
         elif self._obs_type == "features":
             # Sample obs, action
-            sample_idx = np.random.randint(0, len(observations) - self._history_len)
-            sampled_obs = np.array(
-                observations[sample_idx : sample_idx + self._history_len]
-            )
+            max_sample_idx = len(observations) - self._history_len
+            if max_sample_idx <= 0:
+                # Skip this episode if it's too short
+                return self._sample()
+            sample_idx = np.random.randint(0, max_sample_idx)
+            sampled_obs = np.array(observations[sample_idx : sample_idx + self._history_len])
             sampled_action = actions[sample_idx : sample_idx + self._history_len]
-            # pad obs to match self._max_state_dim
+            # Pad obs to match self._max_state_dim
             obs = np.zeros((self._history_len, self._max_state_dim))
             state_dim = sampled_obs.shape[-1]
             obs[:, :state_dim] = sampled_obs
             sampled_obs = obs
 
-            # prompt obs, action
+            # Handle prompts
             if self._prompt == "text":
                 return {
                     "features": sampled_obs,
@@ -305,9 +305,17 @@ class BCDataset(IterableDataset):
                     "task_emb": task_emb,
                 }
             elif self._prompt == "goal":
-                prompt_episode = self._sample_episode(env_idx)
-                prompt_obs = np.array(prompt_episode["observation"][-1:])
-                prompt_action = prompt_episode["action"][-1:]
+                # Sample a prompt episode from the same task
+                prompt_episode_info, _ = self._sample_episode(env_idx)
+                prompt_episode_idx = prompt_episode_info['episode_idx']
+                prompt_file_path = prompt_episode_info['file_path']  # Correct file path for prompt episode
+                # Load data
+                data = pkl.load(open(prompt_file_path, "rb"))  # Use the correct file path
+                prompt_observations = data["observations"][prompt_episode_idx]
+                prompt_actions = data["actions"][prompt_episode_idx]
+
+                prompt_obs = np.array(prompt_observations[-1:])
+                prompt_action = prompt_actions[-1:]
                 return {
                     "features": sampled_obs,
                     "actions": self.preprocess["actions"](sampled_action),
@@ -316,15 +324,11 @@ class BCDataset(IterableDataset):
                     "task_emb": task_emb,
                 }
             elif self._prompt == "intermediate_goal":
-                prompt_episode = self._sample_episode(env_idx)
-                goal_idx = min(
-                    sample_idx + self.intermediate_goal_step,
-                    len(prompt_episode["observation"]) - 1,
-                )
-                prompt_obs = np.array(
-                    prompt_episode["observation"][goal_idx : goal_idx + 1]
-                )
-                prompt_action = prompt_episode["action"][goal_idx : goal_idx + 1]
+                prompt_observations = observations
+                prompt_actions = actions
+                goal_idx = min(sample_idx + self.intermediate_goal_step, len(prompt_observations) - 1)
+                prompt_obs = np.array(prompt_observations[goal_idx : goal_idx + 1])
+                prompt_action = prompt_actions[goal_idx : goal_idx + 1]
                 return {
                     "features": sampled_obs,
                     "actions": self.preprocess["actions"](sampled_action),
@@ -333,16 +337,29 @@ class BCDataset(IterableDataset):
                     "task_emb": task_emb,
                 }
 
+        # Store actions if required
+        if self.store_actions:
+            self.actions.append(actions)
+
     def sample_test(self, env_idx, step=None):
-        episode = self._sample_episode(env_idx)
-        observations = episode["observation"]
-        actions = episode["action"]
-        task_emb = episode["task_emb"]
+        # Map env_idx to env_key
+        if env_idx >= len(self._env_keys):
+            raise ValueError(f"env_idx {env_idx} out of range.")
+        env_key = self._env_keys[env_idx]
+        episode_list = self._episodes[env_key]
+        if not episode_list:
+            raise ValueError(f"No episodes found for env_idx {env_idx}")
+        episode_info = random.choice(episode_list)
+        episode_idx = episode_info['episode_idx']
+        file_path = episode_info['file_path']
+        task_emb = episode_info['task_emb']
+
+        data = pkl.load(open(file_path, "rb"))
+        observations = data["observations"][episode_idx]
+        actions = data["actions"][episode_idx]
 
         if self._obs_type == "pixels":
-            pixels_shape = observations["pixels"].shape
-
-            # observation
+            # Observation
             if self._prompt == None or self._prompt == "text":
                 prompt_pixel = None
                 prompt_pixel_egocentric = None
@@ -362,6 +379,8 @@ class BCDataset(IterableDataset):
                 )
                 prompt_action = None
             elif self._prompt == "intermediate_goal":
+                if step is None:
+                    step = 0
                 goal_idx = min(
                     step + self.intermediate_goal_step, len(observations["pixels"]) - 1
                 )
@@ -398,7 +417,7 @@ class BCDataset(IterableDataset):
             }
 
         elif self._obs_type == "features":
-            # observation
+            # Observation
             if self._prompt == None or self._prompt == "text":
                 prompt_obs, prompt_action = None, None
             elif self._prompt == "goal":

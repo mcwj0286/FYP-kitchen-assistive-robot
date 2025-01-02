@@ -3,10 +3,11 @@
 defaults:
   - _self_
   - data: default
-  - policy: bc_transformer_policy
+  # - policy: bc_transformer_policy
+  - policy: baku
   - train: default
   - eval: default
-  - lifelong: base
+  - lifelong: multitask
   - test: null
 
 seed: 10000

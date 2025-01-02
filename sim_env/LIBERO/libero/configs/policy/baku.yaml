@@ -1,0 +1,17 @@
+_target_: models.bc_baku_policy.BCBakuPolicy
+
+# Model parameters
+repr_dim: 512
+hidden_dim: 256
+policy_head: "deterministic"
+obs_type: "pixels"
+pixel_keys: ["pixels", "pixels_egocentric"]
+proprio_key: "proprioceptive"
+language_dim: 768
+lang_repr_dim: 512
+language_fusion: "film"
+history: true
+history_len: 10
+temporal_agg: true
+max_episode_len: 200
+use_proprio: true
