@@ -9,23 +9,24 @@ import hydra
 import numpy as np
 import yaml
 import torch
+import torch.nn as nn
+from torch.optim import Adam
 from easydict import EasyDict
 from hydra.utils import to_absolute_path
 from omegaconf import OmegaConf
 
 from libero.libero import get_libero_path
 from libero.libero.benchmark import get_benchmark
-from libero.lifelong.algos import get_algo_class
 from libero.lifelong.datasets import SequenceVLDataset, get_dataset
-from libero.lifelong.metric import evaluate_loss, evaluate_success
 from libero.lifelong.utils import (
     control_seed,
     safe_device,
-    torch_load_model,
     create_experiment_dir,
     get_task_embs,
 )
 from torch.utils.data import ConcatDataset, DataLoader, RandomSampler
+from dataset import TransformedDataset
+from models.bc_baku_policy import BCBakuPolicy
 
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
@@ -33,29 +34,24 @@ def main(hydra_cfg):
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
 
-    # Add BAKU-specific configurations
-    if not hasattr(cfg, 'policy'):
-        cfg.policy = EasyDict()
-        
-    # Set BAKU policy configuration 
-    cfg.policy.update({
-        'policy_type': 'bcbakupolicy',  # Changed to match registered name (lowercase)
-        'obs_type': 'pixels',
-        'encoder_type': 'resnet',
-        'policy_head': 'deterministic',
-        'hidden_dim': 256,
-        'language_fusion': 'film',
-        'use_proprio': True,
-        'temporal_agg': True,
-        'language_encoder': EasyDict({
-            "network": "MLP",
-            "network_kwargs": {
-                "input_size": 768,
-                "output_size": 512,
-                "hidden_channels": [512, 512]
-            }
-        })
-    })
+    # BAKU config overrides
+    cfg.device = "cuda"
+    cfg.seed = 2
+    cfg.train.batch_size = 64
+    cfg.train.lr = 1e-4
+    cfg.obs_type = "pixels"
+    cfg.policy_type = "gpt"
+    cfg.policy_head = "deterministic"
+    cfg.use_proprio = True
+    cfg.use_language = True
+    cfg.temporal_agg = True
+    cfg.num_queries = 10
+    cfg.hidden_dim = 256
+    cfg.history = True
+    cfg.history_len = 10
+    cfg.eval_history_len = 10
+    cfg.film = True
+    cfg.train.n_epochs = 100  # Adjust as needed
 
     # print configs
     pp = pprint.PrettyPrinter(indent=2)
@@ -64,16 +60,17 @@ def main(hydra_cfg):
     # control seed
     control_seed(cfg.seed)
 
-    # prepare lifelong learning paths
+    # prepare paths
     cfg.folder = cfg.folder or get_libero_path("datasets")
     cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
     cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
-
+    # you can specify the benchmark name here
+    cfg.benchmark_name = "libero_object" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
     # get benchmark and number of tasks
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     n_manip_tasks = benchmark.n_tasks
 
-    # prepare datasets from the benchmark
+    # prepare datasets
     manip_datasets = []
     descriptions = []
     shape_meta = None
@@ -95,7 +92,6 @@ def main(hydra_cfg):
         task_description = benchmark.get_task(i).language
         descriptions.append(task_description)
         manip_datasets.append(task_i_dataset)
-
     # Get task embeddings
     task_embs = get_task_embs(cfg, descriptions)
     benchmark.set_task_embs(task_embs)
@@ -117,33 +113,9 @@ def main(hydra_cfg):
     print(" # sequences: " + " ".join(f"({x})" for x in n_sequences))
     print("=======================================================================\n")
 
-    # prepare experiment and update config
-    create_experiment_dir(cfg)
-    cfg.shape_meta = shape_meta
-
-    # Initialize result summary
-    result_summary = {
-        "L_conf_mat": np.zeros((n_manip_tasks, n_manip_tasks)),
-        "S_conf_mat": np.zeros((n_manip_tasks, n_manip_tasks)),
-        "L_fwd": np.zeros((n_manip_tasks,)),
-        "S_fwd": np.zeros((n_manip_tasks,)),
-    }
-
-    # define multitask algorithm
-    algo = safe_device(get_algo_class("Multitask")(n_manip_tasks, cfg), cfg.device)
-    
-    # Load pretrained model if specified
-    if cfg.pretrain_model_path:
-        try:
-            algo.policy.load_state_dict(torch_load_model(cfg.pretrain_model_path)[0])
-        except:
-            print(f"[error] cannot load pretrained model from {cfg.pretrain_model_path}")
-            return
-
-    print(f"[info] start multitask learning")
-    
-    # Combine all datasets for multitask training
-    concat_dataset = ConcatDataset(datasets)
+    # print(ConcatDataset(manip_datasets)[0])
+    # Create combined dataset
+    concat_dataset = TransformedDataset(ConcatDataset(datasets))
     
     # Create data loader
     train_dataloader = DataLoader(
@@ -153,149 +125,77 @@ def main(hydra_cfg):
         sampler=RandomSampler(concat_dataset),
     )
 
-    # Training state tracking
-    prev_success_rate = -1.0
-    best_state_dict = algo.policy.state_dict()
-    cumulated_counter = 0.0
-    idx_at_best_succ = 0
-    successes = []
-    losses = []
+    # Initialize model with BAKU config
+    model = BCBakuPolicy(
+        repr_dim=512,
+        act_dim=7,
+        hidden_dim=cfg.hidden_dim,
+        policy_head=cfg.policy_head,
+        obs_type=cfg.obs_type,
+        history=cfg.history,
+        history_len=cfg.history_len,
+        temporal_agg=cfg.temporal_agg,
+        use_proprio=cfg.use_proprio,
+        language_fusion="film" if cfg.film else None,
+        device=cfg.device
+    ).to(cfg.device)
+
+    # Initialize optimizer with BAKU learning rate
+    optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     
-    # Model checkpoint paths
-    model_checkpoint_name = os.path.join(cfg.experiment_dir, f"multitask_model.pth")
-    print(f'experiment_dir: {cfg.experiment_dir}')
-    print("[info] Starting multitask training...")
-    
+    # Loss function
+    criterion = nn.MSELoss()
+
     # Training loop
-    for epoch in range(0, cfg.train.n_epochs + 1):
-        t0 = time.time()
+    print("[info] Starting training...")
+    best_loss = float('inf')
+    
+    for epoch in range(cfg.train.n_epochs):
+        model.train()
+        total_loss = 0.0
         
-        # Training or zero-shot evaluation
-        if epoch > 0 or cfg.pretrain:
-            algo.policy.train()
-            training_loss = 0.0
-            for data in train_dataloader:
-                print(f"data: {data}")  
-                loss = algo.observe(data)
-                training_loss += loss
-            training_loss /= len(train_dataloader)
-        else:
-            training_loss = 0.0
-            for data in train_dataloader:
-                loss = algo.eval_observe(data)
-                training_loss += loss
-            training_loss /= len(train_dataloader)
+        for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
+            # Move data to device
+            for k, v in data.items():
+                if isinstance(v, torch.Tensor):
+                    data[k] = v.to(cfg.device)
+            gt_actions = gt_actions.to(cfg.device)
+            # Print shapes of data and ground truth actions
+            print("Data shapes:")
+            for k, v in data.items():
+                print(f"{k}: {v.shape}")
+            print(f"Ground truth actions shape: {gt_actions.shape}")
+            # Forward pass
+            pred_actions = model.forward(data)
             
-        t1 = time.time()
-        print(f"[info] Epoch: {epoch:3d} | train loss: {training_loss:5.2f} | time: {(t1-t0)/60:4.2f}")
-
-        # Evaluate every epoch
-        t0 = time.time()
-        algo.policy.eval()
+            # Compute loss
+            loss = criterion(pred_actions, gt_actions)
+            
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+            if batch_idx % 10 == 0:
+                print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         
-        # Save checkpoint every 5 epochs
-        if epoch % 5 == 0:
-            model_checkpoint_name_ep = os.path.join(cfg.experiment_dir, f"multitask_model_ep{epoch}.pth")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': algo.policy.state_dict(),
-                'loss': training_loss,
-                'cfg': cfg
-            }, model_checkpoint_name_ep)
+        avg_loss = total_loss / len(train_dataloader)
+        print(f"Epoch {epoch} Average Loss: {avg_loss:.4f}")
         
-        losses.append(training_loss)
-
-        # Evaluate success
-        success_rates = evaluate_success(
-            cfg=cfg,
-            algo=algo,
-            benchmark=benchmark,
-            task_ids=list(range(n_manip_tasks)),
-            result_summary=None
-        )
-        success_rate = np.mean(success_rates)
-        successes.append(success_rate)
-
-        # Save best model if there's improvement
-        if prev_success_rate < success_rate and not cfg.pretrain:
+        # Save best model
+        if avg_loss < best_loss:
+            best_loss = avg_loss
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': algo.policy.state_dict(),
-                'loss': training_loss,
-                'success_rate': success_rate,
-                'cfg': cfg
-            }, model_checkpoint_name)
-            best_checkpoint_name = os.path.join(cfg.experiment_dir, f"multitask_model_best.pth")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': algo.policy.state_dict(),
-                'loss': training_loss,
-                'success_rate': success_rate,
-                'cfg': cfg
-            }, best_checkpoint_name)
-            prev_success_rate = success_rate
-            idx_at_best_succ = len(losses) - 1
-            print(f"[info] New best model saved with success rate: {success_rate:4.2f}")
-
-        t1 = time.time()
-
-        # Update metrics
-        cumulated_counter += 1.0
-        ci = confidence_interval(success_rate, cfg.eval.n_eval)
-        tmp_successes = np.array(successes)
-        tmp_successes[idx_at_best_succ:] = successes[idx_at_best_succ]
-
-        print(
-            f"[info] Epoch: {epoch:3d} | succ: {success_rate:4.2f} ± {ci:4.2f} | "
-            f"best succ: {prev_success_rate:4.2f} | "
-            f"succ. AoC {tmp_successes.sum()/cumulated_counter:4.2f} | "
-            f"time: {(t1-t0)/60:4.2f}",
-            flush=True,
-        )
-
-        # Step learning rate scheduler
-        if algo.scheduler is not None and epoch > 0:
-            algo.scheduler.step()
-
-    # Load best model for final evaluation
-    best_model_state = torch.load(os.path.join(cfg.experiment_dir, "multitask_model_best.pth"))['model_state_dict']
-    algo.policy.load_state_dict(best_model_state)
-
-    # Save training curves
-    auc_checkpoint_name = os.path.join(cfg.experiment_dir, f"multitask_auc.log")
-    torch.save({
-        "success": np.array(successes),
-        "loss": np.array(losses),
-    }, auc_checkpoint_name)
-
-    # Final evaluation
-    if cfg.eval.eval:
-        print("[info] Running final evaluation...")
-        L = evaluate_loss(cfg, algo, benchmark, datasets)
-        S = evaluate_success(
-            cfg=cfg,
-            algo=algo,
-            benchmark=benchmark,
-            task_ids=list(range(n_manip_tasks)),
-            result_summary=result_summary if cfg.eval.save_sim_states else None,
-        )
-
-        result_summary["L_conf_mat"][-1] = L
-        result_summary["S_conf_mat"][-1] = S
-
-        print(("[All task loss ] " + " %4.2f |" * n_manip_tasks) % tuple(L))
-        print(("[All task succ.] " + " %4.2f |" * n_manip_tasks) % tuple(S))
-
-        # Save results
-        torch.save(result_summary, os.path.join(cfg.experiment_dir, f"result.pt"))
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss,
+            }, os.path.join(cfg.experiment_dir, 'best_model.pth'))
+            print(f"Saved new best model with loss: {best_loss:.4f}")
 
     print("[info] Training completed")
-
-def confidence_interval(success_rate, n_eval, z=1.96):
-    """Calculate confidence interval for success rate"""
-    if n_eval == 0:
-        return 0
-    return z * np.sqrt(success_rate * (1 - success_rate) / n_eval)
 
 if __name__ == "__main__":
     if multiprocessing.get_start_method(allow_none=True) != "spawn":

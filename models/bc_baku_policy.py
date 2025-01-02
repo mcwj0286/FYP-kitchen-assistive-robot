@@ -111,22 +111,32 @@ class Obersvation_trunk(nn.Module):
 
 
 
-class BCBakuPolicy:
-    def __init__(self, repr_dim=256, act_dim=7, hidden_dim=256,
+class BCBakuPolicy(nn.Module):
+    def __init__(self, repr_dim=512, act_dim=7, hidden_dim=256,
                  policy_head="deterministic", obs_type='pixels',
-                 obs_shape=None, language_dim=768, lang_repr_dim=512, language_fusion="film",
+                 obs_shape={
+                    'pixels': (3, 128, 128),
+                    'pixels_egocentric': (3, 128, 128),
+                    'proprioceptive': (9,),
+                    # 'features': (123,)
+                }
+                , language_dim=768, lang_repr_dim=512, language_fusion="film",
                  pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
-                 history=True, history_len=10, # Added history parameters
-                 temporal_agg=True, # Added temporal aggregation
+                 history=True, history_len=10,
+                 temporal_agg=True,
                  max_episode_len=200,
                  use_proprio=True):
+        super().__init__()  # Call parent class constructor
         
         self.device = device
         self.language_dim = language_dim
         self.lang_repr_dim = lang_repr_dim
         self.language_fusion = language_fusion
         self.pixel_keys = pixel_keys if pixel_keys else []
-        
+        self.proprio_key = proprio_key
+        self.repr_dim = repr_dim
+        self._policy_head = policy_head
+
         # number of inputs per time step
         if obs_type == "features":
             num_feat_per_step = 1
@@ -134,7 +144,6 @@ class BCBakuPolicy:
             num_feat_per_step = len(self.pixel_keys)
             if use_proprio:
                 num_feat_per_step += 1
-
 
         # observation params
         if obs_type == "pixels":
@@ -150,37 +159,28 @@ class BCBakuPolicy:
             policy_head=policy_head,
             num_feat_per_step=num_feat_per_step,
             device=device,
-        ).to(device)
-        
+        )
 
         # initialize the vision encoder
-        self.vision_encoder = {}
+        self.vision_encoder = nn.ModuleDict()
         for key in self.pixel_keys:
             self.vision_encoder[key] = ResnetEncoder(
                 obs_shape,
                 512,
                 language_dim=self.lang_repr_dim,
                 language_fusion=self.language_fusion,
-            ).to(device)
+            )
 
-        # Replace the direct language projector instantiation with proper language encoder
-        self.language_encoder = {
-            "network": "MLP",
-            "network_kwargs": {
-                "input_size": language_dim,
-                "output_size": lang_repr_dim,
-                "hidden_channels": [lang_repr_dim, lang_repr_dim]
-            }
-        }
-        
         # Initialize language encoder with proper configuration
-        self.language_projector = MLP(**self.language_encoder["network_kwargs"]).to(device)
-
+        self.language_projector = MLP(
+            self.language_dim,
+            hidden_channels=[self.lang_repr_dim, self.lang_repr_dim],
+        )
 
         # projector for proprioceptive features
         self.proprio_projector = MLP(
-                proprio_shape[0], hidden_channels=[self.repr_dim, self.repr_dim]
-            ).to(device)
+            proprio_shape[0], hidden_channels=[self.repr_dim, self.repr_dim]
+        )
         
         self.history = history
         self.history_len = history_len if history else 1
@@ -197,42 +197,37 @@ class BCBakuPolicy:
             
         # For temporal aggregation if enabled
         if self.temporal_agg:
-            self.all_time_actions = torch.zeros(
-                [self.max_episode_len, self.max_episode_len + 1, act_dim]
-            ).to(device)
+            self.register_buffer('all_time_actions', 
+                torch.zeros([self.max_episode_len, self.max_episode_len + 1, act_dim])
+            )
 
     def forward(self, data):
-        """Process observations with history handling"""
-        # 1. Add current observation to history buffers
-        for key in self.pixel_keys:
-            self.observation_buffer[key].append(data[key])
-        if self.use_proprio:
-            self.proprio_buffer.append(data["proprioceptive"])
-
-        # 2. Process language embedding for FiLM
+        """Process observations and predict actions"""
+        # 1. Process language embedding for FiLM
         lang = self.language_projector(data["task_emb"])
         
-        # 3. Process vision features with history
+        # 2. Process vision features
         vision_feats = []
         for key in self.pixel_keys:
-            # Get historical observations
-            pixels = torch.stack(list(self.observation_buffer[key]))
-            pixels = pixels.to(self.device).float() / 255.0
-            
-            # Process through vision encoder
+            pixels = data[key].float() / 255.0  # Normalize pixels
+            B, T, C, H, W = pixels.shape
+            # Reshape to [B*T, C, H, W] for ResNet processing
+            pixels = pixels.view(B * T, C, H, W)
             feat = self.vision_encoder[key](pixels, lang=lang)
+            # Reshape back to [B, T, feat_dim]
+            feat = feat.view(B, T, -1)
             vision_feats.append(feat)
             
-        # 4. Process proprioceptive features if used
+        # 3. Process proprioceptive features if used
         if self.use_proprio:
-            proprio = torch.stack(list(self.proprio_buffer)).to(self.device)
+            proprio = data["proprioceptive"]
             proprio_feat = self.proprio_projector(proprio)
             vision_feats.append(proprio_feat)
             
-        # 5. Combine all features maintaining temporal dimension
+        # 4. Combine all features
         obs = torch.cat(vision_feats, dim=-1)
 
-        # 6. Forward through GPT trunk
+        # 5. Forward through GPT trunk
         pred_actions = self.obs_trunk(
             obs, 
             num_prompt_feats=0,
