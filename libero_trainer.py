@@ -155,34 +155,34 @@ def main(hydra_cfg):
     best_task_success_rates = np.zeros(n_manip_tasks)  # Track best success rate for each task
     
     for epoch in range(cfg.train.n_epochs):
-        # model.train()
-        # total_loss = 0.0
+        model.train()
+        total_loss = 0.0
         
-        # for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
-        #     # Move data to device
-        #     for k, v in data.items():
-        #         if isinstance(v, torch.Tensor):
-        #             data[k] = v.to(cfg.device)
-        #     gt_actions = gt_actions.to(cfg.device)
+        for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
+            # Move data to device
+            for k, v in data.items():
+                if isinstance(v, torch.Tensor):
+                    data[k] = v.to(cfg.device)
+            gt_actions = gt_actions.to(cfg.device)
             
-        #     # Forward pass
-        #     pred_actions = model.forward(data, action=gt_actions)
+            # Forward pass
+            pred_actions = model.forward(data, action=gt_actions)
             
-        #     # Compute loss
-        #     loss = criterion(pred_actions, gt_actions)
+            # Compute loss
+            loss = criterion(pred_actions, gt_actions)
             
-        #     # Backward pass and optimize
-        #     optimizer.zero_grad()
-        #     loss.backward()
-        #     optimizer.step()
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
             
-        #     total_loss += loss.item()
+            total_loss += loss.item()
             
-        #     if batch_idx % 10 == 0:
-        #         print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
+            if batch_idx % 10 == 0:
+                print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         
-        # avg_train_loss = total_loss / len(train_dataloader)
-        # print(f"[info] Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
+        avg_train_loss = total_loss / len(train_dataloader)
+        print(f"[info] Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
         # Validation step every 5 epochs
         if epoch % 5 == 0:
