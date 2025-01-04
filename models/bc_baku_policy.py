@@ -371,7 +371,7 @@ class BCBakuPolicy(nn.Module):
                     # If no valid actions, use the latest prediction
                     action = pred_actions[:, -1]
                 
-                print(f'action: {action.shape}')
+                
                 return action.detach().cpu().numpy()
             
             return pred_actions[:, -1].detach().cpu().numpy()

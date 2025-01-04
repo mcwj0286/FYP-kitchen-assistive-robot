@@ -17,18 +17,12 @@ from omegaconf import OmegaConf
 
 from libero.libero import get_libero_path
 from libero.libero.benchmark import get_benchmark
-from libero.lifelong.datasets import SequenceVLDataset, get_dataset
-from libero.lifelong.utils import (
-    control_seed,
-    safe_device,
-    create_experiment_dir,
-    get_task_embs,
-)
-from torch.utils.data import ConcatDataset, DataLoader, RandomSampler
-from dataset import TransformedDataset
+from torch.utils.data import DataLoader, RandomSampler
+from dataset import LIBERODataset
 from models.bc_baku_policy import BCBakuPolicy
 from utils import evaluate_multitask_training_success
-
+from libero.lifelong.utils import control_seed , get_task_embs
+from libero.lifelong.datasets import get_dataset
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
     # preprocessing
@@ -52,8 +46,9 @@ def main(hydra_cfg):
     cfg.history_len = 10
     cfg.eval_history_len = 10
     cfg.film = True
-    cfg.train.n_epochs = 100  # Adjust as needed
-
+    cfg.train.n_epochs = 50  # Adjust as needed
+    cfg.num_queries = 10
+    cfg.max_episode_len = 500
     # print configs
     pp = pprint.PrettyPrinter(indent=2)
     pp.pprint(cfg)
@@ -65,18 +60,16 @@ def main(hydra_cfg):
     cfg.folder = cfg.folder or get_libero_path("datasets")
     cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
     cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
+    
     # you can specify the benchmark name here
-    cfg.benchmark_name = "libero_object" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
-    # get benchmark and number of tasks
-    benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
-    n_manip_tasks = benchmark.n_tasks
+    cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
 
-    # prepare datasets
     manip_datasets = []
     descriptions = []
     shape_meta = None
-
-    # Load datasets for each task
+    # get benchmark and number of tasks
+    benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
+    n_manip_tasks = benchmark.n_tasks
     for i in range(n_manip_tasks):
         try:
             task_i_dataset, shape_meta = get_dataset(
@@ -92,17 +85,10 @@ def main(hydra_cfg):
 
         task_description = benchmark.get_task(i).language
         descriptions.append(task_description)
-        manip_datasets.append(task_i_dataset)
+        # manip_datasets.append(task_i_dataset)
     # Get task embeddings
     task_embs = get_task_embs(cfg, descriptions)
     benchmark.set_task_embs(task_embs)
-
-    # Create datasets
-    datasets = [
-        SequenceVLDataset(ds, emb) for (ds, emb) in zip(manip_datasets, task_embs)
-    ]
-    n_demos = [data.n_demos for data in datasets]
-    n_sequences = [data.total_num_sequences for data in datasets]
 
     # Print benchmark information
     print("\n=================== Benchmark Information ===================")
@@ -110,19 +96,23 @@ def main(hydra_cfg):
     print(f" # Tasks: {n_manip_tasks}")
     for i in range(n_manip_tasks):
         print(f"    - Task {i+1}: {benchmark.get_task(i).language}")
-    print(" # demonstrations: " + " ".join(f"({x})" for x in n_demos))
-    print(" # sequences: " + " ".join(f"({x})" for x in n_sequences))
     print("=======================================================================\n")
 
-    
-    # Create combined dataset
-    concat_dataset = TransformedDataset(ConcatDataset(datasets))
+    # Create dataset directly using LIBERODataset
+    train_dataset = LIBERODataset(
+        data_path=cfg.folder,
+        benchmark=cfg.benchmark_name,
+        device=cfg.device,
+        load_task_emb=cfg.use_language,
+        num_queries=cfg.num_queries
+    )
+
     # Create data loader
     train_dataloader = DataLoader(
-        concat_dataset,
+        train_dataset,
         batch_size=cfg.train.batch_size,
         num_workers=0,  # Set to 0 to avoid deadlock
-        sampler=RandomSampler(concat_dataset),
+        sampler=RandomSampler(train_dataset),
         pin_memory=True,
     )
 
@@ -138,6 +128,8 @@ def main(hydra_cfg):
         temporal_agg=cfg.temporal_agg,
         use_proprio=cfg.use_proprio,
         language_fusion="film" if cfg.film else None,
+        num_queries=cfg.num_queries,
+        max_episode_len=cfg.max_episode_len,
         device=cfg.device
     ).to(cfg.device)
 
@@ -149,7 +141,6 @@ def main(hydra_cfg):
 
     # Training loop
     print("[info] Starting training...")
-    best_train_loss = float('inf')
     best_val_success = 0.0
     task_ids = list(range(n_manip_tasks))
     best_task_success_rates = np.zeros(n_manip_tasks)  # Track best success rate for each task
@@ -158,15 +149,14 @@ def main(hydra_cfg):
         model.train()
         total_loss = 0.0
         
-        for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
-            # Move data to device
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = v.to(cfg.device)
+        for batch_idx, (obs_dict, gt_actions) in enumerate(train_dataloader):
+            # Move all tensors in obs_dict to GPU
+            for key, value in obs_dict.items():
+                if isinstance(value, torch.Tensor):
+                    obs_dict[key] = value.to(cfg.device)
             gt_actions = gt_actions.to(cfg.device)
-            
             # Forward pass
-            pred_actions = model.forward(data, action=gt_actions)
+            pred_actions = model.forward(obs_dict)
             
             # Compute loss
             loss = criterion(pred_actions, gt_actions)
@@ -214,28 +204,16 @@ def main(hydra_cfg):
                         'task_success_rates': success_rates,
                         'best_task_success_rates': best_task_success_rates,
                         'avg_success': avg_success,
-                        # 'train_loss': avg_train_loss,
                         'improved_tasks': improved_tasks,
                     }, save_path)
                     print(f"[info] Saved model at epoch {epoch} due to improvements in tasks {improved_tasks}")
                     print(f"[info] Task-wise improvements:")
                     for task_idx in improved_tasks:
                         print(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
-        
-        # Save model if we get better training loss
-        # if avg_train_loss < best_train_loss:
-        #     best_train_loss = avg_train_loss
-        #     torch.save({
-        #         'epoch': epoch,
-        #         'model_state_dict': model.state_dict(),
-        #         'optimizer_state_dict': optimizer.state_dict(),
-        #         'train_loss': best_train_loss,
-        #         'task_success_rates': success_rates if epoch % 5 == 0 else None,
-        #         'avg_success': avg_success if epoch % 5 == 0 else None,
-        #     }, os.path.join(cfg.experiment_dir, 'best_model_train.pth'))
-        #     print(f"[info] Saved new best model with training loss: {best_train_loss:.4f}")
 
     print("[info] Training completed")
+    # Clean up dataset
+    train_dataset.close()
 
 if __name__ == "__main__":
     if multiprocessing.get_start_method(allow_none=True) != "spawn":
