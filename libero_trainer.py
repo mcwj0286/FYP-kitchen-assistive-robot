@@ -27,6 +27,7 @@ from libero.lifelong.utils import (
 from torch.utils.data import ConcatDataset, DataLoader, RandomSampler
 from dataset import TransformedDataset
 from models.bc_baku_policy import BCBakuPolicy
+from utils import evaluate_multitask_training_success
 
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
@@ -37,7 +38,7 @@ def main(hydra_cfg):
     # BAKU config overrides
     cfg.device = "cuda"
     cfg.seed = 2
-    cfg.train.batch_size = 64
+    cfg.train.batch_size = 16
     cfg.train.lr = 1e-4
     cfg.obs_type = "pixels"
     cfg.policy_type = "gpt"
@@ -113,16 +114,16 @@ def main(hydra_cfg):
     print(" # sequences: " + " ".join(f"({x})" for x in n_sequences))
     print("=======================================================================\n")
 
-    # print(ConcatDataset(manip_datasets)[0])
+    
     # Create combined dataset
     concat_dataset = TransformedDataset(ConcatDataset(datasets))
-    
     # Create data loader
     train_dataloader = DataLoader(
         concat_dataset,
         batch_size=cfg.train.batch_size,
         num_workers=0,  # Set to 0 to avoid deadlock
         sampler=RandomSampler(concat_dataset),
+        pin_memory=True,
     )
 
     # Initialize model with BAKU config
@@ -148,52 +149,91 @@ def main(hydra_cfg):
 
     # Training loop
     print("[info] Starting training...")
-    best_loss = float('inf')
+    best_train_loss = float('inf')
+    best_val_success = 0.0
+    task_ids = list(range(n_manip_tasks))
+    best_task_success_rates = np.zeros(n_manip_tasks)  # Track best success rate for each task
     
     for epoch in range(cfg.train.n_epochs):
-        model.train()
-        total_loss = 0.0
+        # model.train()
+        # total_loss = 0.0
         
-        for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
-            # Move data to device
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = v.to(cfg.device)
-            gt_actions = gt_actions.to(cfg.device)
-            # Print shapes of data and ground truth actions
-            print("Data shapes:")
-            for k, v in data.items():
-                print(f"{k}: {v.shape}")
-            print(f"Ground truth actions shape: {gt_actions.shape}")
-            # Forward pass
-            pred_actions = model.forward(data)
+        # for batch_idx, (data, gt_actions) in enumerate(train_dataloader):
+        #     # Move data to device
+        #     for k, v in data.items():
+        #         if isinstance(v, torch.Tensor):
+        #             data[k] = v.to(cfg.device)
+        #     gt_actions = gt_actions.to(cfg.device)
             
-            # Compute loss
-            loss = criterion(pred_actions, gt_actions)
+        #     # Forward pass
+        #     pred_actions = model.forward(data, action=gt_actions)
             
-            # Backward pass and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+        #     # Compute loss
+        #     loss = criterion(pred_actions, gt_actions)
             
-            total_loss += loss.item()
+        #     # Backward pass and optimize
+        #     optimizer.zero_grad()
+        #     loss.backward()
+        #     optimizer.step()
             
-            if batch_idx % 10 == 0:
-                print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
+        #     total_loss += loss.item()
+            
+        #     if batch_idx % 10 == 0:
+        #         print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         
-        avg_loss = total_loss / len(train_dataloader)
-        print(f"Epoch {epoch} Average Loss: {avg_loss:.4f}")
+        # avg_train_loss = total_loss / len(train_dataloader)
+        # print(f"[info] Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
-        # Save best model
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_loss,
-            }, os.path.join(cfg.experiment_dir, 'best_model.pth'))
-            print(f"Saved new best model with loss: {best_loss:.4f}")
+        # Validation step every 5 epochs
+        if epoch % 5 == 0:
+            print(f"[info] Running validation at epoch {epoch}...")
+            model.eval()
+            with torch.no_grad():
+                success_rates = evaluate_multitask_training_success(cfg, benchmark, task_ids, model)
+                avg_success = np.mean(success_rates)
+                print(f"[info] Validation Success Rates: {success_rates}")
+                print(f"[info] Average Success Rate: {avg_success:.4f}")
+                
+                # Check for improvements in any task
+                improved = False
+                improved_tasks = []
+                for task_idx, (curr_rate, best_rate) in enumerate(zip(success_rates, best_task_success_rates)):
+                    if curr_rate > best_rate:
+                        improved = True
+                        improved_tasks.append(task_idx)
+                        best_task_success_rates[task_idx] = curr_rate
+                
+                # Save model if there's improvement in any task
+                if improved:
+                    best_val_success = max(best_val_success, avg_success)  # Update best average success
+                    save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'task_success_rates': success_rates,
+                        'best_task_success_rates': best_task_success_rates,
+                        'avg_success': avg_success,
+                        # 'train_loss': avg_train_loss,
+                        'improved_tasks': improved_tasks,
+                    }, save_path)
+                    print(f"[info] Saved model at epoch {epoch} due to improvements in tasks {improved_tasks}")
+                    print(f"[info] Task-wise improvements:")
+                    for task_idx in improved_tasks:
+                        print(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
+        
+        # Save model if we get better training loss
+        # if avg_train_loss < best_train_loss:
+        #     best_train_loss = avg_train_loss
+        #     torch.save({
+        #         'epoch': epoch,
+        #         'model_state_dict': model.state_dict(),
+        #         'optimizer_state_dict': optimizer.state_dict(),
+        #         'train_loss': best_train_loss,
+        #         'task_success_rates': success_rates if epoch % 5 == 0 else None,
+        #         'avg_success': avg_success if epoch % 5 == 0 else None,
+        #     }, os.path.join(cfg.experiment_dir, 'best_model_train.pth'))
+        #     print(f"[info] Saved new best model with training loss: {best_train_loss:.4f}")
 
     print("[info] Training completed")
 

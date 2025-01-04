@@ -1,6 +1,8 @@
 import random
 import re
 import time
+import os
+import gc
 
 import numpy as np
 import torch
@@ -9,7 +11,8 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch import distributions as pyd
 from torch.distributions.utils import _standard_normal
-
+from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv, DummyVectorEnv
+from libero.lifelong.metric import raw_obs_to_tensor_obs
 
 class eval_mode:
     def __init__(self, *models):
@@ -95,6 +98,13 @@ class Timer:
         self._eval_time = 0
         self._eval_flag = False
 
+    def __enter__(self):
+        self._start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
     def reset(self):
         elapsed_time = time.time() - self._last_time
         self._last_time = time.time()
@@ -112,6 +122,9 @@ class Timer:
 
     def total_time(self):
         return time.time() - self._start_time - self._eval_time
+
+    def get_elapsed_time(self):
+        return time.time() - self._start_time
 
 
 class TruncatedNormal(pyd.Normal):
@@ -262,3 +275,174 @@ def batch_norm_to_group_norm(layer):
                 sub_layer = batch_norm_to_group_norm(sub_layer)
                 layer.__setattr__(name=name, value=sub_layer)
     return layer
+
+
+def evaluate_multitask_training_success(cfg,benchmark, task_ids, model):
+    """
+    Evaluate the success rate for all task in task_ids.
+    """
+    
+    successes = []
+    for i in task_ids:
+        task_i = benchmark.get_task(i)
+        task_emb = benchmark.get_task_emb(i)
+        success_rate = evaluate_one_task_success(cfg, model, task_i, task_emb, i)
+        successes.append(success_rate)
+    return np.array(successes)
+
+def evaluate_one_task_success(
+    cfg, model,task, task_emb, task_id, sim_states=None, task_str=""
+):
+    """
+    Evaluate a single task's success rate
+    sim_states: if not None, will keep track of all simulated states during
+                evaluation, mainly for visualization and debugging purpose
+    task_str:   the key to access sim_states dictionary
+    """
+    with Timer() as t:
+
+        env_num = min(cfg.eval.num_procs, cfg.eval.n_eval) if cfg.eval.use_mp else 1
+        eval_loop_num = (cfg.eval.n_eval + env_num - 1) // env_num
+
+        # initiate evaluation envs
+        env_args = {
+            "bddl_file_name": os.path.join(
+                cfg.bddl_folder, task.problem_folder, task.bddl_file
+            ),
+            "camera_heights": cfg.data.img_h,
+            "camera_widths": cfg.data.img_w,
+        }
+
+        env_num = min(cfg.eval.num_procs, cfg.eval.n_eval) if cfg.eval.use_mp else 1
+        eval_loop_num = (cfg.eval.n_eval + env_num - 1) // env_num
+
+        # Try to handle the frame buffer issue
+        env_creation = False
+
+        count = 0
+        while not env_creation and count < 5:
+            try:
+                if env_num == 1:
+                    env = DummyVectorEnv(
+                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
+                    )
+                else:
+                    env = SubprocVectorEnv(
+                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
+                    )
+                env_creation = True
+            except:
+                time.sleep(5)
+                count += 1
+        if count >= 5:
+            raise Exception("Failed to create environment")
+
+        ### Evaluation loop
+        # get fixed init states to control the experiment randomness
+        init_states_path = os.path.join(
+            cfg.init_states_folder, task.problem_folder, task.init_states_file
+        )
+        init_states = torch.load(init_states_path)
+        num_success = 0
+        for i in range(eval_loop_num):
+            env.reset()
+            indices = np.arange(i * env_num, (i + 1) * env_num) % init_states.shape[0]
+            init_states_ = init_states[indices]
+
+            dones = [False] * env_num
+            steps = 0
+            model.reset()
+            obs = env.set_init_state(init_states_)
+
+            # dummy actions [env_num, 7] all zeros for initial physics simulation
+            dummy = np.zeros((env_num, 7))
+            for _ in range(5):
+                obs, _, _, _ = env.step(dummy)
+            # print(f"Obs shape: {obs}")
+            if task_str != "":
+                sim_state = env.get_sim_state()
+                for k in range(env_num):
+                    if i * env_num + k < cfg.eval.n_eval and sim_states is not None:
+                        sim_states[i * env_num + k].append(sim_state[k])
+
+            while steps < cfg.eval.max_steps:
+                steps += 1
+
+                data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
+                actions = model.get_action(data)
+
+                obs, reward, done, info = env.step(actions)
+
+                # record the sim states for replay purpose
+                if task_str != "":
+                    sim_state = env.get_sim_state()
+                    for k in range(env_num):
+                        if i * env_num + k < cfg.eval.n_eval and sim_states is not None:
+                            sim_states[i * env_num + k].append(sim_state[k])
+
+                # check whether succeed
+                for k in range(env_num):
+                    dones[k] = dones[k] or done[k]
+
+                if all(dones):
+                    break
+
+            # a new form of success record
+            for k in range(env_num):
+                if i * env_num + k < cfg.eval.n_eval:
+                    num_success += int(dones[k])
+
+        success_rate = num_success / cfg.eval.n_eval
+        env.close()
+        gc.collect()
+    print(f"[info] evaluate task {task_id} takes {t.get_elapsed_time():.1f} seconds")
+    return success_rate
+
+def raw_obs_to_tensor_obs(obs, task_emb, cfg):
+    """
+    Prepare the tensor observations as input for the algorithm.
+    Convert raw environment observations to tensor format matching the dataset structure.
+    Returns a dictionary with:
+        - pixels: agent view RGB images
+        - pixels_egocentric: eye in hand RGB images
+        - proprioceptive: concatenated gripper and joint states
+        - task_emb: task embedding
+    """
+    env_num = len(obs)
+    device = cfg.device
+
+    # Initialize lists to store batched observations
+    agentview_images = []
+    hand_images = []
+    proprio_states = []
+
+    # Process each environment's observations
+    for k in range(env_num):
+        # Get RGB images
+        agentview_img = torch.from_numpy(obs[k]['agentview_image']).float() / 255.0  # Normalize to [0,1]
+        hand_img = torch.from_numpy(obs[k]['robot0_eye_in_hand_image']).float() / 255.0
+        
+        # Get proprioceptive states (gripper + joint states)
+        gripper_state = torch.from_numpy(obs[k]['robot0_gripper_qpos']).float()
+        joint_state = torch.from_numpy(obs[k]['robot0_joint_pos']).float()
+        proprio = torch.cat([gripper_state, joint_state], dim=-1)
+
+        # Append to lists
+        agentview_images.append(agentview_img)
+        hand_images.append(hand_img)
+        proprio_states.append(proprio)
+
+    # Stack all observations into batches
+    data = {
+        "pixels": torch.stack(agentview_images).to(device),  # [B, H, W, C]
+        "pixels_egocentric": torch.stack(hand_images).to(device),  # [B, H, W, C]
+        "proprioceptive": torch.stack(proprio_states).to(device),  # [B, D]
+        "task_emb": task_emb.repeat(env_num, 1).to(device)  # [B, E]
+    }
+
+    # Permute image dimensions from [B, H, W, C] to [B, C, H, W] for PyTorch
+    data["pixels"] = data["pixels"].permute(0, 3, 1, 2).unsqueeze(1)  # [B, 1, C, H, W]
+    data["pixels_egocentric"] = data["pixels_egocentric"].permute(0, 3, 1, 2).unsqueeze(1)  # [B, 1, C, H, W]
+    data["proprioceptive"] = data["proprioceptive"].unsqueeze(1)  # [B, 1, D]
+
+    return data
