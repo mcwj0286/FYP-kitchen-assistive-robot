@@ -369,7 +369,7 @@ def evaluate_one_task_success(
                 steps += 1
 
                 data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
-                actions = model.get_action(data)
+                actions = model.get_action(data,steps)
 
                 obs, reward, done, info = env.step(actions)
 
