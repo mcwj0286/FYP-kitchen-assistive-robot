@@ -1,22 +1,28 @@
 # Kinova Gen2 Arm Control with PS4 Controller
 
-This project implements a system for controlling a Kinova Gen2 robotic arm using a PS4 controller and recording the movements for training robotic manipulation models.
+This project implements a system for controlling a Kinova Gen2 robotic arm using a PS4 controller and recording the movements and camera images for training robotic manipulation models.
 
 ## System Overview
 
-The system consists of three main components:
+The system consists of four main components:
 1. PS4 Controller Interface
 2. Kinova Arm Control System
-3. Data Recording and Processing Pipeline
+3. Camera Interface
+4. Data Recording and Processing Pipeline
 
 ## Requirements
 
 - Kinova Gen2 Robotic Arm
 - JACO-SDK
 - PS4 Controller
+- USB Camera or RealSense Camera
 - Python 3.x
 - ROS (Robot Operating System)
-- `ds4drv` or `pyPS4Controller` for PS4 controller support
+- Required Python packages:
+  - `pyPS4Controller` for PS4 controller support
+  - `opencv-python` for camera interface
+  - `numpy` for data processing
+
 
 ## Implementation Plan
 
@@ -37,18 +43,28 @@ The system consists of three main components:
   - Gripper control
 - Create safety limits and emergency stop functionality
 
-### 3. Data Recording System
-- Design data structure for movement recording:
+### 3. Camera System
+- Initialize USB/RealSense camera
+- Configure camera parameters:
+  - Resolution: 640x480 (configurable)
+  - Frame rate: 30 FPS
+  - Image format: RGB
+- Implement camera calibration
+- Synchronize image capture with arm movements
+
+### 4. Data Recording System
+- Design data structure for synchronized recording:
   - Joint positions/velocities
   - End-effector pose
   - Controller inputs
+  - Camera images
   - Timestamps
 - Implement recording functionality:
   - Start/stop recording with controller buttons
-  - Save trajectories in structured format (JSON/CSV)
+  - Save trajectories and images in structured format
   - Include metadata for each recording session
 
-### 4. Data Processing Pipeline
+### 5. Data Processing Pipeline
 - Convert raw recordings to training data
 - Implement data preprocessing:
   - Trajectory smoothing
@@ -63,10 +79,9 @@ The system consists of three main components:
 │   ├── controller/      # PS4 controller interface
 │   ├── kinova_control/  # Arm control implementation
 │   ├── data_recorder/   # Recording functionality
-│   └── processing/      # Data processing scripts
-├── config/             # Configuration files
+│   
 ├── data/              # Recorded trajectories
-└── scripts/           # Utility scripts
+└── main.py      # Data Recording System and data processing scripts
 ```
 
 ## Usage
@@ -81,27 +96,76 @@ The system consists of three main components:
    - Press [Button] to start/stop recording
    - Press [Button] for emergency stop
 
-## Data Collection Guidelines
 
-1. Plan movements before recording
-2. Ensure consistent speed and smooth trajectories
-3. Record multiple variations of each movement
-4. Document environmental conditions and task parameters
 
-## Next Steps
 
-1. [ ] Set up development environment
-2. [ ] Implement PS4 controller interface
-3. [ ] Develop Kinova arm control system
-4. [ ] Create data recording pipeline
-5. [ ] Test and validate system
-6. [ ] Collect initial dataset
-7. [ ] Implement data processing pipeline
 
-## Safety Considerations
+---
 
-- Always maintain clear workspace
-- Test emergency stop functionality before operation
-- Monitor arm movements during operation
-- Implement velocity and acceleration limits
-- Ensure proper calibration before use
+
+# Flow
+
+1. **System Setup**
+   - Load the Kinova API library:
+     ```cpp
+     void* commandLayer_handle = dlopen("Kinova.API.USBCommandLayerUbuntu.so", RTLD_NOW|RTLD_GLOBAL);
+     ```
+   - Initialize required API functions (key ones for our use case):
+     - `InitAPI()`: Start communication
+     - `GetDevices()`: Detect connected robots
+     - `SetActiveDevice()`: Select our Jaco arm
+     - `SendBasicTrajectory()`: Send movement commands
+     - `GetAngularCommand()`: Read current joint positions
+
+2. **PS4 Controller Integration**
+   - Initialize PS4 controller using `pyPS4Controller` library
+   - Map controller inputs to robot commands:
+     - Left stick (X,Y): Control joints 1 & 2 (base rotation & shoulder)
+     - Right stick (X,Y): Control joints 3 & 4 (elbow & wrist)
+     - L2/R2 triggers: Control joint 5 (wrist rotation)
+     - L1/R1 buttons: Control joint 6 (end effector rotation)
+     - Face buttons: Control gripper open/close
+     - Options button: Home position
+     - Share button: Emergency stop
+
+3. **Main Control Loop**
+   ```
+   1. Read PS4 controller input
+   2. Convert inputs to robot commands:
+      - For position control:
+        - Create TrajectoryPoint with Type = ANGULAR_POSITION
+        - Map stick values to joint angles
+      - For velocity control:
+        - Create TrajectoryPoint with Type = ANGULAR_VELOCITY
+        - Map stick values to joint velocities
+   3. Send commands to robot:
+      - Use SendBasicTrajectory() every 5ms
+      - Include safety checks for joint limits
+   4. Repeat loop
+   ```
+
+
+5. **Program Structure**
+   ```
+   Initialize API
+   ↓
+   Connect to Robot
+   ↓
+   Initialize PS4 Controller
+   ↓
+   Move to Home Position
+   ↓
+   Enter Control Loop:
+     ├─► Read Controller Input
+     ├─► Process Input
+     ├─► Generate Robot Command
+     ├─► Send Command
+     └─► Collect Data(robot trajectory, camera image)
+   ↓
+   (On Exit) Cleanup:
+     ├─► Move to Safe Position
+     ├─► Close Controller Connection
+     └─► Close API
+   ```
+
+This flow provides real-time control of the Jaco arm using the PS4 controller while maintaining safety and stability. The SDK's low-level functions handle the actual communication with the arm, while our control loop translates controller inputs into appropriate robot commands.
