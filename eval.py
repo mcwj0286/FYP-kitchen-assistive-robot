@@ -165,8 +165,9 @@ def main(hydra_cfg):
         cfg_dict = json.load(f)
         cfg = EasyDict(cfg_dict)
     shape_meta = cfg.shape_meta
-    cfg.eval.num_procs = 1  # Reduce number of processes to avoid GPU memory issues
-    cfg.eval.use_mp = False  # Disable multiprocessing to avoid OpenGL context issues
+    cfg.eval.n_eval= 10
+    cfg.eval.num_procs = 3  # Reduce number of processes to avoid GPU memory issues
+    cfg.eval.use_mp = True  # Disable multiprocessing to avoid OpenGL context issues
     cfg.model_type = args.model_type
     print("\n=================== Evaluation Information ===================")
     print(f"Model type: {args.model_type}")
@@ -179,9 +180,12 @@ def main(hydra_cfg):
     
     # Initialize model
     model = get_model(args.model_type, cfg, shape_meta)
-
+    counter = 0
     # Evaluate each model checkpoint
     for model_file in model_files:
+        if counter < 3:
+            counter += 1
+            continue
         print(f"\nEvaluating model: {model_file}")
         
         # Load model checkpoint using torch_load_model
