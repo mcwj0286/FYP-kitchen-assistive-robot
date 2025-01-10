@@ -111,10 +111,10 @@ class Obersvation_trunk(nn.Module):
             stddev,
             
         )
-        if isinstance(pred_actions, torch.distributions.Distribution):
-                pred_actions = pred_actions.mean
-        elif isinstance(pred_actions, dict) and "predicted_action" in pred_actions:
-                pred_actions = pred_actions["predicted_action"]
+        # if isinstance(pred_actions, torch.distributions.Distribution):
+        #         pred_actions = pred_actions.mean
+        # elif isinstance(pred_actions, dict) and "predicted_action" in pred_actions:
+        #         pred_actions = pred_actions["predicted_action"]
         
         return pred_actions
 
@@ -322,6 +322,7 @@ class BCBakuPolicy(nn.Module):
         with torch.no_grad():
             pred_actions = self.forward(stacked_data) # [2,1,70]
             
+            pred_actions = pred_actions.mean
             # action chunking with batch dimension
             if self.temporal_agg:
                 B = pred_actions.shape[0]  # batch dimension

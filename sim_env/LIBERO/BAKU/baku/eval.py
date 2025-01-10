@@ -36,6 +36,7 @@ def make_agent(obs_spec, action_spec, cfg):
     cfg.agent.action_shape = action_spec.shape
     print(cfg)
     print(cfg.agent)
+    
     return hydra.utils.instantiate(cfg.agent)
 
 class WorkspaceIL:

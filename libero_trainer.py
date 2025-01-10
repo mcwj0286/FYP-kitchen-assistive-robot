@@ -4,6 +4,7 @@ import multiprocessing
 import pprint
 import time
 from pathlib import Path
+import logging
 
 import hydra
 import numpy as np
@@ -23,16 +24,39 @@ from models.bc_baku_policy import BCBakuPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed , get_task_embs
 from libero.lifelong.datasets import get_dataset
+
+#loss function 
+def loss_fn( dist, target, reduction="mean", **kwargs):
+        log_probs = dist.log_prob(target)
+        loss = -log_probs
+
+        if reduction == "mean":
+            loss = loss.mean() * 1.0
+        else:
+            raise NotImplementedError
+
+        return loss
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
     # preprocessing
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
 
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler('libero_trainer.log'),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger(__name__)
+
     # BAKU config overrides
     cfg.device = "cuda"
     cfg.seed = 2
-    cfg.train.batch_size = 16
+    cfg.train.batch_size = 32
     cfg.train.lr = 1e-4
     cfg.obs_type = "pixels"
     cfg.policy_type = "gpt"
@@ -48,9 +72,10 @@ def main(hydra_cfg):
     cfg.film = True
     cfg.train.n_epochs = 50  # Adjust as needed
     cfg.num_queries = 10
-    cfg.max_episode_len = 500
+    cfg.max_episode_len = 650 # has to greater than the max episode length in the evaluation
     # print configs
     pp = pprint.PrettyPrinter(indent=2)
+    cfg.model_type = "baku"
     pp.pprint(cfg)
 
     # control seed
@@ -137,7 +162,7 @@ def main(hydra_cfg):
     optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     
     # Loss function
-    criterion = nn.MSELoss()
+    criterion = loss_fn
 
     # Training loop
     print("[info] Starting training...")
@@ -168,21 +193,21 @@ def main(hydra_cfg):
             
             total_loss += loss.item()
             
-            if batch_idx % 10 == 0:
-                print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
+            # if batch_idx % 10 == 0:
+            #     print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         
         avg_train_loss = total_loss / len(train_dataloader)
-        print(f"[info] Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
+        logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
-        # Validation step every 5 epochs
-        if epoch % 5 == 0:
-            print(f"[info] Running validation at epoch {epoch}...")
+        # Validation step every 5 epochs, but skip epoch 0
+        if epoch > 0 and epoch % 5 == 0:
+            logger.info(f"Running validation at epoch {epoch}...")
             model.eval()
             with torch.no_grad():
                 success_rates = evaluate_multitask_training_success(cfg, benchmark, task_ids, model)
                 avg_success = np.mean(success_rates)
-                print(f"[info] Validation Success Rates: {success_rates}")
-                print(f"[info] Average Success Rate: {avg_success:.4f}")
+                logger.info(f"Validation Success Rates: {success_rates}")
+                logger.info(f"Average Success Rate: {avg_success:.4f}")
                 
                 # Check for improvements in any task
                 improved = False
@@ -206,12 +231,12 @@ def main(hydra_cfg):
                         'avg_success': avg_success,
                         'improved_tasks': improved_tasks,
                     }, save_path)
-                    print(f"[info] Saved model at epoch {epoch} due to improvements in tasks {improved_tasks}")
-                    print(f"[info] Task-wise improvements:")
+                    logger.info(f"Saved model at epoch {epoch} due to improvements in tasks {improved_tasks}")
+                    logger.info("Task-wise improvements:")
                     for task_idx in improved_tasks:
-                        print(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
+                        logger.info(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
 
-    print("[info] Training completed")
+    logger.info("Training completed")
     # Clean up dataset
     train_dataset.close()
 
