@@ -277,7 +277,7 @@ def batch_norm_to_group_norm(layer):
     return layer
 
 
-def evaluate_multitask_training_success(cfg,benchmark, task_ids, model):
+def evaluate_multitask_training_success(cfg,benchmark, task_ids, model ):
     """
     Evaluate the success rate for all task in task_ids.
     """
@@ -369,7 +369,10 @@ def evaluate_one_task_success(
                 steps += 1
 
                 data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
-                actions = model.get_action(data,steps)
+                if cfg.model_type == "transformer":
+                    actions = model.get_action(data)
+                else:
+                    actions = model.get_action(data,steps)
 
                 obs, reward, done, info = env.step(actions)
 
@@ -402,12 +405,49 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
     """
     Prepare the tensor observations as input for the algorithm.
     Convert raw environment observations to tensor format matching the dataset structure.
-    Returns a dictionary with:
-        - pixels: agent view RGB images
-        - pixels_egocentric: eye in hand RGB images
-        - proprioceptive: concatenated gripper and joint states
-        - task_emb: task embedding
+    For transformer model: Uses LIBERO's raw_obs_to_tensor_obs from metric.py
+    For baku model: Uses the original implementation
     """
+    if cfg.model_type == "transformer":
+        env_num = len(obs)
+        device = cfg.device
+        
+        # Initialize the data structure
+        data = {
+            "obs": {},
+            "task_emb": task_emb.repeat(env_num, 1).to(device),
+        }
+        
+        # Define key mapping from environment to model
+        key_mapping = {
+            "agentview_image": "agentview_rgb",
+            "robot0_eye_in_hand_image": "eye_in_hand_rgb",
+            "robot0_gripper_qpos": "gripper_states",
+            "robot0_joint_pos": "joint_states"
+        }
+        
+        # Process each observation key with mapping
+        for k in range(env_num):
+            for env_key, model_key in key_mapping.items():
+                if model_key not in data["obs"]:
+                    data["obs"][model_key] = []
+                data["obs"][model_key].append(torch.from_numpy(obs[k][env_key]).float())
+        
+        # Stack all observations
+        for model_key in data["obs"].keys():
+            if "rgb" in model_key:  # RGB images need to be normalized and permuted
+                # Stack and move to device
+                stacked = torch.stack(data["obs"][model_key]).to(device)
+                # Normalize to [0, 1]
+                stacked = stacked / 255.0
+                # Permute from [B, H, W, C] to [B, C, H, W]
+                data["obs"][model_key] = stacked.permute(0, 3, 1, 2)
+            else:  # Other observations (proprioceptive) don't need normalization
+                data["obs"][model_key] = torch.stack(data["obs"][model_key]).to(device)
+        
+        return data
+    
+    # Original implementation for baku model
     env_num = len(obs)
     device = cfg.device
 

@@ -1,8 +1,8 @@
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # OpenGL and GPU settings
-os.environ["MUJOCO_GL"] = "egl"  # Use EGL for headless rendering
-os.environ["EGL_DEVICE_ID"] = "0"  # Use first GPU
+os.environ["MUJOCO_GL"] = "osmesa"  # Use EGL for headless rendering
+os.environ["EGL_DEVICE_ID"] = "-1"  # Use first GPU
 import json
 import hydra
 import torch
@@ -18,53 +18,8 @@ from libero.libero.benchmark import get_benchmark
 from models.bc_baku_policy import BCBakuPolicy
 from libero.lifelong.models.base_policy import get_policy_class
 from utils import evaluate_multitask_training_success
-from libero.lifelong.utils import control_seed, get_task_embs
-
-def load_transformer_config():
-    """Load and merge all necessary config files for transformer policy"""
-    # Get absolute path to config directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(current_dir, "sim_env/LIBERO/libero/configs")
-    
-    # Load base transformer policy config
-    with open(os.path.join(config_dir, "policy/bc_transformer_policy.yaml"), 'r') as f:
-        policy_cfg = yaml.safe_load(f)
-    
-    # Load data augmentation configs
-    with open(os.path.join(config_dir, "policy/data_augmentation/default.yaml"), 'r') as f:
-        aug_cfg = yaml.safe_load(f)
-    
-    # Load image encoder config
-    with open(os.path.join(config_dir, "policy/image_encoder/default.yaml"), 'r') as f:
-        img_cfg = yaml.safe_load(f)
-    
-    # Load language encoder config
-    with open(os.path.join(config_dir, "policy/language_encoder/default.yaml"), 'r') as f:
-        lang_cfg = yaml.safe_load(f)
-    
-    # Load policy head config
-    with open(os.path.join(config_dir, "policy/policy_head/default.yaml"), 'r') as f:
-        head_cfg = yaml.safe_load(f)
-    
-    # Load position encoding config
-    with open(os.path.join(config_dir, "policy/position_encoding/default.yaml"), 'r') as f:
-        pos_cfg = yaml.safe_load(f)
-    
-    # Merge all configs
-    cfg = {
-        "policy": {
-            **policy_cfg,
-            "color_aug": aug_cfg["color_aug"],
-            "translation_aug": aug_cfg["translation_aug"],
-            "image_encoder": img_cfg["image_encoder"],
-            "language_encoder": lang_cfg["language_encoder"],
-            "policy_head": head_cfg["policy_head"],
-            "temporal_position_encoding": pos_cfg["temporal_position_encoding"],
-        }
-    }
-    
-    return EasyDict(cfg)
-
+from libero.lifelong.utils import control_seed, get_task_embs, torch_load_model
+import json
 def get_model(model_type, cfg, shape_meta=None):
     if model_type == "baku":
         return BCBakuPolicy(
@@ -103,7 +58,6 @@ def main(hydra_cfg):
     cfg.device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.model_type = args.model_type
     cfg.seed = 2
-    cfg.eval = EasyDict()
     cfg.eval.n_eval = 10  # Number of evaluation episodes per task
     cfg.eval.max_steps = 650  # Maximum steps per episode
     cfg.eval.num_procs = 1  # Reduce number of processes to avoid GPU memory issues
@@ -118,28 +72,61 @@ def main(hydra_cfg):
     cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
     cfg.benchmark_name = "libero_spatial"
 
-    # Additional config for transformer model
+    # Update observation key mapping for robosuite environment
     if args.model_type == "transformer":
-        cfg.data = EasyDict()
-        cfg.data.task_order_index = 0
-        cfg.data.max_word_len = 25
-        cfg.data.img_h = 128  # Add image height
-        cfg.data.img_w = 128  # Add image width
-        cfg.data.obs = EasyDict()
-        cfg.data.obs.modality = EasyDict()
-        cfg.data.obs.modality.rgb = ["agentview_rgb", "robot0_eye_in_hand_rgb"]
-        cfg.data.obs.key_mapping = {
-            "agentview_rgb": "agentview_image",
-            "robot0_eye_in_hand_rgb": "robot0_eye_in_hand_image"
+        # Get base directory for configs
+        base_dir = Path("/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/libero/configs/policy")
+        
+        # Load default transformer policy config
+        transformer_cfg = OmegaConf.load(base_dir / "bc_transformer_policy.yaml")
+        # Load all default configs
+        color_aug_cfg = OmegaConf.load(base_dir / "data_augmentation/batch_wise_img_color_jitter_group_aug.yaml")
+        translation_aug_cfg = OmegaConf.load(base_dir / "data_augmentation/translation_aug.yaml")
+        image_encoder_cfg = OmegaConf.load(base_dir / "image_encoder/resnet_encoder.yaml")
+        language_encoder_cfg = OmegaConf.load(base_dir / "language_encoder/mlp_encoder.yaml")
+        position_encoding_cfg = OmegaConf.load(base_dir / "position_encoding/sinusoidal_position_encoding.yaml")
+        policy_head_cfg = OmegaConf.load(base_dir / "policy_head/gmm_head.yaml")
+        
+        # Update image encoder config to match checkpoint
+        image_encoder_cfg.network_kwargs.update({
+            "backbone_type": "resnet18",
+            "pool_type": "none",
+            "use_group_norm": True,
+            "use_film": True,
+            "input_channel": 3,
+            "image_size": 128
+        })
+        
+        # Merge all configs
+        cfg.policy = OmegaConf.merge(transformer_cfg)
+        cfg.policy.color_aug = color_aug_cfg
+        cfg.policy.translation_aug = translation_aug_cfg
+        cfg.policy.image_encoder = image_encoder_cfg
+        cfg.policy.language_encoder = language_encoder_cfg
+        cfg.policy.temporal_position_encoding = position_encoding_cfg
+        cfg.policy.policy_head = policy_head_cfg
+        
+        # Update observation modalities
+        cfg.data.obs.modality = {
+            "rgb": ["agentview_image", "robot0_eye_in_hand_image"],
+            "depth": [],
+            "low_dim": ["robot0_gripper_qpos", "robot0_joint_pos"]
         }
-        cfg.data.use_joint = True
-        cfg.data.use_gripper = True
-        cfg.data.use_ee = False
-    else:  # baku model
-        cfg.data = EasyDict()
-        cfg.data.img_h = 128
-        cfg.data.img_w = 128
-        cfg.data.task_order_index = 0
+        # Update key mapping to match environment keys
+        cfg.data.obs.key_mapping = {
+            "agentview_image": "agentview_image",
+            "robot0_eye_in_hand_image": "robot0_eye_in_hand_image",
+            "robot0_gripper_qpos": "robot0_gripper_qpos",
+            "robot0_joint_pos": "robot0_joint_pos"
+        }
+        # Update shape meta to match environment keys
+        shape_meta = {
+            "all_shapes": {
+                "agentview_image": (3, 128, 128),
+                "robot0_eye_in_hand_image": (3, 128, 128)
+            },
+            "ac_dim": 7
+        }
 
     # Get benchmark and task embeddings
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
@@ -160,14 +147,11 @@ def main(hydra_cfg):
     if args.model_type == "transformer":
         shape_meta = {
             "all_shapes": {
-                "agentview_rgb": (3, 128, 128),
-                "robot0_eye_in_hand_rgb": (3, 128, 128)
+                "agentview_image": (3, 128, 128),
+                "robot0_eye_in_hand_image": (3, 128, 128)
             },
             "ac_dim": 7
         }
-
-    # Initialize model based on type
-    model = get_model(args.model_type, cfg, shape_meta)
 
     # Path to model checkpoints
     model_dir = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-28/full_train/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001"
@@ -176,6 +160,14 @@ def main(hydra_cfg):
     model_files = [f for f in os.listdir(model_dir) if f.endswith('.pth')]
     model_files.sort(key=lambda x: int(x.split('ep')[-1].split('.')[0]) if 'ep' in x else float('inf'))
 
+    # Load config.json
+    with open(os.path.join(model_dir, 'config.json'), 'r') as f:
+        cfg_dict = json.load(f)
+        cfg = EasyDict(cfg_dict)
+    shape_meta = cfg.shape_meta
+    cfg.eval.num_procs = 1  # Reduce number of processes to avoid GPU memory issues
+    cfg.eval.use_mp = False  # Disable multiprocessing to avoid OpenGL context issues
+    cfg.model_type = args.model_type
     print("\n=================== Evaluation Information ===================")
     print(f"Model type: {args.model_type}")
     print(f"Benchmark: {cfg.benchmark_name}")
@@ -184,25 +176,26 @@ def main(hydra_cfg):
     print(f"Number of evaluation episodes per task: {cfg.eval.n_eval}")
     print("==========================================================\n")
 
+    
+    # Initialize model
+    model = get_model(args.model_type, cfg, shape_meta)
+
     # Evaluate each model checkpoint
     for model_file in model_files:
         print(f"\nEvaluating model: {model_file}")
         
-        # Load model checkpoint
-        checkpoint = torch.load(os.path.join(model_dir, model_file), map_location=cfg.device)
+        # Load model checkpoint using torch_load_model
+        model_path = os.path.join(model_dir, model_file)
+        state_dict, loaded_cfg, _ = torch_load_model(model_path, map_location=cfg.device)
         
-        # Load model state based on model type
-        if args.model_type == "transformer":
-            if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["state_dict"])
-            else:
-                model.load_state_dict(checkpoint)
-        else:  # baku model
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["model_state_dict"])
-            else:
-                model.load_state_dict(checkpoint)
+        # Update config with loaded config
+        cfg.update(loaded_cfg)
         
+        # Load state dict into model
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            model.load_state_dict(state_dict["state_dict"])
+        else:
+            model.load_state_dict(state_dict)
         model.eval()
         
         # Evaluate on all tasks
