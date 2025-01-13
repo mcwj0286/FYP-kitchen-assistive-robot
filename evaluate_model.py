@@ -17,22 +17,10 @@ from libero.libero.utils.video_utils import VideoWriter
 from libero.libero.utils.time_utils import Timer
 from sim_env.LIBERO.BAKU.baku.suite.libero import RGBArrayAsObservationWrapper
 import robomimic.utils.obs_utils as ObsUtils
-from libero.lifelong.utils import (
-    # control_seed,
-    # safe_device,
-    torch_load_model,
-    # NpEncoder,
-    # compute_flops,
-)
-#   evaluation_videos/
-#    └── {model_type}/
-#        └── {weight_name}/
-#            └── {benchmark_name}/
-#                └── {task_name}/
-#                    └── attempt_{N}.mp4
-# sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+from libero.lifelong.utils import torch_load_model
+from libero.lifelong.models.base_policy import get_policy_class
 from models.bc_baku_policy import BCBakuPolicy
-
+from easydict import EasyDict
 class Config:
     def __init__(self):
         # self.task_embedding_format = "gpt2"
@@ -126,7 +114,7 @@ def load_agent(checkpoint_path, model_type='baku', device='cuda'):
             'history': True,
             'history_len': 10,
             'temporal_agg': True,
-            'max_episode_len': 650,
+            'max_episode_len': 1100,
             'use_proprio': True,
             'num_queries': 10
         }
@@ -135,8 +123,22 @@ def load_agent(checkpoint_path, model_type='baku', device='cuda'):
         agent.eval()
     
     else:  # transformer
-        agent = torch_load_model(checkpoint_path, device=device)
-        agent.eval()
+
+        cfg_path = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-28/full_train/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/config.json'
+        with open( cfg_path, 'r') as f:
+            cfg_dict = json.load(f)
+            cfg = EasyDict(cfg_dict)
+        shape_meta = cfg.shape_meta
+
+        # Get transformer policy class and initialize
+        BCTransformerPolicy = get_policy_class("bctransformerpolicy")
+        agent = BCTransformerPolicy(cfg, shape_meta).to(device)
+        
+        state_dict, loaded_cfg, _ = torch_load_model(checkpoint_path, map_location=device)
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            agent.load_state_dict(state_dict["state_dict"])
+        else:
+            agent.load_state_dict(state_dict)
     
     return agent
 
@@ -146,7 +148,7 @@ def get_model_weights(model_type):
         root_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/BAKU'
         return [os.path.join(root_dir, 'baku/weights/weights/libero/baku.pt')]
     elif model_type == 'transformer':
-        checkpoint_path = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-21/19-27-15/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/multitask_model_ep15.pth'
+        checkpoint_path = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-28/full_train/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/multitask_model_ep15.pth'
         return [checkpoint_path]
     elif model_type == 'bc_baku':
         weights_dir = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2025-01-13/01-11-20/experiments/baku_20250113-011120'
@@ -245,7 +247,7 @@ def main():
                     
                     success = False
                     steps = 0
-                    max_steps = 550
+                    max_steps = 800
                     
                     # Initial physics stabilization
                     dummy_action = np.zeros(7)
@@ -278,16 +280,24 @@ def main():
 
                             # Step the environment
                             obs, reward, done, info = env.step(action)
-                            
+                            print(f'done: {done}')
+                            print(f'reward: {reward}')
                             # Record video (use first environment's observation)
-                            video_writer.append_obs(obs[0], done[0], camera_name="agentview_image")
+                            video_frame = obs[0]["agentview_image"]
+                            # Flip the image vertically
+                            video_frame = np.flip(video_frame, axis=0)
+                            # Create a dictionary with camera name as key
+                            video_obs = {"agentview_image": video_frame}
+                            video_writer.append_obs(video_obs, done[0])
                             
-                            success = info[0].get('success', False)
+                            
                             if done[0]:
                                 break
 
+
                     env.close()
-                    
+                    if done[0]:
+                        success = True
                     successes.append(success)
                     eval_stats = {
                         "attempt": eval_idx + 1,

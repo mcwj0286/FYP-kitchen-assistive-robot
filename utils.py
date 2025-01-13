@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 from torch.distributions.utils import _standard_normal
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv, DummyVectorEnv
 from libero.lifelong.metric import raw_obs_to_tensor_obs
-
+from torch import distributions as pyd
 # Initialize BERT model and tokenizer at module level
 _tokenizer = None
 _bert_model = None
