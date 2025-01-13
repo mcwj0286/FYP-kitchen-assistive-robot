@@ -4,7 +4,7 @@ import torch
 import h5py
 import os
 from typing import List, Dict, Optional
-from transformers import AutoTokenizer, AutoModel
+from utils import encode_task
 import logging
 
 class LIBERODataset(Dataset):
@@ -24,7 +24,7 @@ class LIBERODataset(Dataset):
         benchmark: str = 'libero_90',
         device: str = 'cpu',
         load_task_emb: bool = True,
-        num_queries: int = 1,  # Number of future actions to concatenate
+        num_queries: int = 10,  # Number of future actions to concatenate
         max_word_len: int = 77,  # Maximum length for tokenization
         seq_length: int = 10  # Length of each sequence segment
     ):
@@ -49,12 +49,6 @@ class LIBERODataset(Dataset):
         self.num_queries = num_queries
         self.max_word_len = max_word_len
         self.seq_length = seq_length
-        
-        # Initialize BERT tokenizer and model if loading task embeddings
-        if self.load_task_emb:
-            logging.getLogger("transformers").setLevel(logging.ERROR)
-            self.tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-            self.bert_model = AutoModel.from_pretrained("bert-base-cased")  # Keep on CPU
             
         # Load all HDF5 files and organize by tasks
         self.task_files = {}  # Maps task_name to file path
@@ -92,7 +86,7 @@ class LIBERODataset(Dataset):
                         
                 # Pre-compute task embedding if needed
                 if self.load_task_emb and task_name not in self.task_embeddings:
-                    self.task_embeddings[task_name] = self._encode_task(task_name)
+                    self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
                         
         print(f"Loaded {len(self.segment_map)} segments from {len(self.task_files)} tasks")
         for task_name, files in self.task_files.items():
@@ -146,28 +140,6 @@ class LIBERODataset(Dataset):
             processed_actions[t, :actual_futures * action_dim] = future_actions.flatten()
             
         return processed_actions
-    
-    def _encode_task(self, task_name: str) -> torch.Tensor:
-        """Encode task name using BERT"""
-        tokens = self.tokenizer(
-            text=task_name,
-            add_special_tokens=True,
-            max_length=self.max_word_len,
-            padding="max_length",
-            return_attention_mask=True,
-            return_tensors="pt",
-        )
-        
-        # Keep on CPU
-        input_ids = tokens["input_ids"]
-        attention_mask = tokens["attention_mask"]
-        
-        # Get BERT embedding
-        with torch.no_grad():
-            outputs = self.bert_model(input_ids, attention_mask)
-            task_emb = outputs["pooler_output"]  # Use pooled output for [CLS] token
-            
-        return task_emb  # Shape: (1, 768)
     
     def __len__(self) -> int:
         return len(self.segment_map)
