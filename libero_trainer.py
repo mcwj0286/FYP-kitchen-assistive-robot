@@ -53,25 +53,26 @@ def main(hydra_cfg):
     )
     logger = logging.getLogger(__name__)
 
-    # BAKU config overrides
+    
+
+    # Common config overrides
     cfg.device = "cuda"
     cfg.seed = 2
     cfg.train.batch_size = 32
-    cfg.train.lr = 1e-4
+    cfg.train.lr = 5e-4
     cfg.obs_type = "pixels"
     cfg.policy_type = "gpt"
     cfg.policy_head = "deterministic"
     cfg.use_proprio = True
     cfg.use_language = True
-    cfg.temporal_agg = True
-    cfg.num_queries = 10
+    cfg.temporal_agg = False
+    cfg.num_queries = 1
     cfg.hidden_dim = 256
     cfg.history = True
     cfg.history_len = 10
     cfg.eval_history_len = 10
     cfg.film = True
     cfg.train.n_epochs = 50  # Adjust as needed
-    cfg.num_queries = 10
     cfg.max_episode_len = 650 # has to greater than the max episode length in the evaluation
     # print configs
     pp = pprint.PrettyPrinter(indent=2)
@@ -81,6 +82,17 @@ def main(hydra_cfg):
     # control seed
     control_seed(cfg.seed)
 
+    # Create experiment directory for saving checkpoints
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    cfg.experiment_dir = os.path.join("experiments", f"{cfg.model_type}_{timestamp}")
+    os.makedirs(cfg.experiment_dir, exist_ok=True)
+    logger.info(f"Created experiment directory at: {cfg.experiment_dir}")
+
+    # Save experiment config
+    config_path = os.path.join(cfg.experiment_dir, "config.yaml")
+    with open(config_path, "w") as f:
+        yaml.dump(cfg, f)
+    logger.info(f"Saved experiment config to: {config_path}")
     # prepare paths
     cfg.folder = cfg.folder or get_libero_path("datasets")
     cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
@@ -95,25 +107,25 @@ def main(hydra_cfg):
     # get benchmark and number of tasks
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     n_manip_tasks = benchmark.n_tasks
-    for i in range(n_manip_tasks):
-        try:
-            task_i_dataset, shape_meta = get_dataset(
-                dataset_path=os.path.join(cfg.folder, benchmark.get_task_demonstration(i)),
-                obs_modality=cfg.data.obs.modality,
-                initialize_obs_utils=(i == 0),
-                seq_len=cfg.data.seq_len,
-            )
-        except Exception as e:
-            print(f"[error] failed to load task {i} name {benchmark.get_task_names()[i]}")
-            print(f"[error] {e}")
-            continue
+    # for i in range(n_manip_tasks):
+    #     try:
+    #         task_i_dataset, shape_meta = get_dataset(
+    #             dataset_path=os.path.join(cfg.folder, benchmark.get_task_demonstration(i)),
+    #             obs_modality=cfg.data.obs.modality,
+    #             initialize_obs_utils=(i == 0),
+    #             seq_len=cfg.data.seq_len,
+    #         )
+    #     except Exception as e:
+    #         print(f"[error] failed to load task {i} name {benchmark.get_task_names()[i]}")
+    #         print(f"[error] {e}")
+    #         continue
 
-        task_description = benchmark.get_task(i).language
-        descriptions.append(task_description)
-        # manip_datasets.append(task_i_dataset)
-    # Get task embeddings
-    task_embs = get_task_embs(cfg, descriptions)
-    benchmark.set_task_embs(task_embs)
+    #     task_description = benchmark.get_task(i).language
+    #     descriptions.append(task_description)
+    #     # manip_datasets.append(task_i_dataset)
+    # # Get task embeddings
+    # task_embs = get_task_embs(cfg, descriptions)
+    # benchmark.set_task_embs(task_embs)
 
     # Print benchmark information
     print("\n=================== Benchmark Information ===================")
@@ -218,23 +230,27 @@ def main(hydra_cfg):
                         improved_tasks.append(task_idx)
                         best_task_success_rates[task_idx] = curr_rate
                 
-                # Save model if there's improvement in any task
+                # Update best average success if improved
                 if improved:
-                    best_val_success = max(best_val_success, avg_success)  # Update best average success
-                    save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'task_success_rates': success_rates,
-                        'best_task_success_rates': best_task_success_rates,
-                        'avg_success': avg_success,
-                        'improved_tasks': improved_tasks,
-                    }, save_path)
-                    logger.info(f"Saved model at epoch {epoch} due to improvements in tasks {improved_tasks}")
+                    best_val_success = max(best_val_success, avg_success)
+                    logger.info(f"Improvements in tasks {improved_tasks}")
                     logger.info("Task-wise improvements:")
                     for task_idx in improved_tasks:
                         logger.info(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
+                    
+                    # Save model checkpoint every 5 epochs regardless of improvement
+                save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'task_success_rates': success_rates,
+                    'best_task_success_rates': best_task_success_rates,
+                    'avg_success': avg_success,
+                    'improved_tasks': improved_tasks if improved else [],
+                    'is_best': improved,
+                }, save_path)
+                logger.info(f"Saved model checkpoint at epoch {epoch}")
 
     logger.info("Training completed")
     # Clean up dataset

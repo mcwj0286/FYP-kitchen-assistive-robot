@@ -334,7 +334,7 @@ def evaluate_multitask_training_success(cfg,benchmark, task_ids, model ):
     successes = []
     for i in task_ids:
         task_i = benchmark.get_task(i)
-        task_emb = benchmark.get_task_emb(i)
+        task_emb = encode_task(task_i.language)
         success_rate = evaluate_one_task_success(cfg, model, task_i, task_emb, i)
         successes.append(success_rate)
     return np.array(successes)
