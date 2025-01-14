@@ -26,17 +26,27 @@ class LIBERODataset(Dataset):
         load_task_emb: bool = True,
         num_queries: int = 10,  # Number of future actions to concatenate
         max_word_len: int = 77,  # Maximum length for tokenization
-        seq_length: int = 10  # Length of each sequence segment
+        seq_length: int = 10,  # Length of each sequence segment
+        frame_stack: int = 1,  # Number of frames to stack
+        overlap: int = 0,  # Number of overlapping timestamps between sequences
+        pad_frame_stack: bool = True,  # Whether to pad for frame stacking
+        pad_seq_length: bool = True,  # Whether to pad for sequence length
+        get_pad_mask: bool = False  # Whether to return padding masks
     ):
         """
         Args:
             data_path (str): Base path to LIBERO dataset
             benchmark (str): Which benchmark to load
-            device (str): Device to load tensors to (not used anymore, keeping for compatibility)
+            device (str): Device to load tensors to
             load_task_emb (bool): Whether to load task embeddings
             num_queries (int): Number of future actions to concatenate
             max_word_len (int): Maximum length for tokenization
             seq_length (int): Length of each sequence segment
+            frame_stack (int): Number of frames to stack
+            overlap (int): Number of overlapping timestamps between sequences
+            pad_frame_stack (bool): Whether to pad for frame stacking
+            pad_seq_length (bool): Whether to pad for sequence length
+            get_pad_mask (bool): Whether to return padding masks
         """
         super().__init__()
         
@@ -49,6 +59,11 @@ class LIBERODataset(Dataset):
         self.num_queries = num_queries
         self.max_word_len = max_word_len
         self.seq_length = seq_length
+        self.frame_stack = frame_stack
+        self.overlap = min(overlap, seq_length - 1)  # Ensure overlap is less than sequence length
+        self.pad_frame_stack = pad_frame_stack
+        self.pad_seq_length = pad_seq_length
+        self.get_pad_mask = get_pad_mask
             
         # Load all HDF5 files and organize by tasks
         self.task_files = {}  # Maps task_name to file path
@@ -72,17 +87,41 @@ class LIBERODataset(Dataset):
                         # Get number of timesteps in this demo
                         n_timesteps = len(f['data'][demo_key]['actions'])
                         
-                        # Create complete segments of seq_length timesteps
-                        num_complete_segments = n_timesteps // seq_length
-                        for i in range(num_complete_segments):
-                            start_idx = i * seq_length
-                            self.segment_map.append((file_path, demo_key, task_name, start_idx, False, seq_length))
+                        # Determine start index offset based on frame stacking
+                        start_offset = 0 if self.pad_frame_stack else (self.frame_stack - 1)
                         
-                        # Handle remaining timesteps if any
-                        remaining_timesteps = n_timesteps % seq_length
-                        if remaining_timesteps > 0:
-                            start_idx = num_complete_segments * seq_length
-                            self.segment_map.append((file_path, demo_key, task_name, start_idx, True, remaining_timesteps))
+                        # Determine effective sequence length considering overlap
+                        effective_length = self.seq_length - self.overlap
+                        
+                        # Calculate number of sequences with overlap
+                        remaining_length = n_timesteps - start_offset
+                        if not self.pad_seq_length:
+                            remaining_length -= (self.seq_length - 1)
+                        
+                        if remaining_length <= 0:
+                            # Skip if demo is too short
+                            continue
+                            
+                        # Create sequences with overlap
+                        current_start = start_offset
+                        while current_start < n_timesteps:
+                            actual_length = min(self.seq_length, n_timesteps - current_start)
+                            is_padded = actual_length < self.seq_length
+                            
+                            if not self.pad_seq_length and is_padded:
+                                break
+                                
+                            self.segment_map.append((
+                                file_path, 
+                                demo_key, 
+                                task_name, 
+                                current_start, 
+                                is_padded, 
+                                actual_length
+                            ))
+                            
+                            # Move to next sequence start, considering overlap
+                            current_start += (self.seq_length - self.overlap)
                         
                 # Pre-compute task embedding if needed
                 if self.load_task_emb and task_name not in self.task_embeddings:
@@ -145,7 +184,7 @@ class LIBERODataset(Dataset):
         return len(self.segment_map)
     
     def __getitem__(self, idx: int) -> Dict[str, np.ndarray]:
-        """Get a fixed-length segment from a demonstration trajectory"""
+        """Get a sequence segment from a demonstration trajectory"""
         file_path, demo_key, task_name, start_idx, is_padded, actual_length = self.segment_map[idx]
         f = self._get_file(file_path)
         
@@ -158,6 +197,11 @@ class LIBERODataset(Dataset):
             "proprioceptive": np.zeros((self.seq_length, 9), dtype=np.float32)
         }
         
+        # Calculate frame stacking padding
+        frame_stack_pad = 0
+        if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
+            frame_stack_pad = self.frame_stack - 1 - start_idx
+        
         # Load actual data
         data["pixels"][:actual_length] = demo['obs']['agentview_rgb'][start_idx:start_idx + actual_length]
         data["pixels_egocentric"][:actual_length] = demo['obs']['eye_in_hand_rgb'][start_idx:start_idx + actual_length]
@@ -165,6 +209,11 @@ class LIBERODataset(Dataset):
             demo['obs']['gripper_states'][start_idx:start_idx + actual_length],
             demo['obs']['joint_states'][start_idx:start_idx + actual_length]
         ], axis=-1)
+        
+        # Handle frame stacking padding by repeating first frame
+        if frame_stack_pad > 0:
+            for k in data:
+                data[k][:frame_stack_pad] = data[k][frame_stack_pad:frame_stack_pad+1].repeat(frame_stack_pad, axis=0)
         
         # Process actions
         actions = np.zeros((self.seq_length, 7), dtype=np.float32)
@@ -185,6 +234,12 @@ class LIBERODataset(Dataset):
         if self.load_task_emb:
             data["task_emb"] = self.task_embeddings[task_name]
             
+        # Add padding mask if requested
+        if self.get_pad_mask:
+            pad_mask = torch.zeros(self.seq_length, 1, dtype=torch.bool)
+            pad_mask[frame_stack_pad:actual_length] = 1
+            data["pad_mask"] = pad_mask
+            
         return data, torch.from_numpy(gt_actions)
 
     def close(self):
@@ -200,90 +255,115 @@ if __name__ == "__main__":
     # Example usage and validation
     base_path = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/libero/datasets"
     
-    print("Creating dataset...")
-    dataset = LIBERODataset(
+    print("\n=== Testing Different Dataset Configurations ===")
+    
+    # Test Case 1: Basic configuration with no overlap
+    print("\nTest Case 1: Basic Configuration (No Overlap)")
+    dataset_basic = LIBERODataset(
         data_path=base_path,
         benchmark='libero_spatial',
-        device='cuda',
-        num_queries=10,  # Concatenate 10 future actions
-        load_task_emb=True
+        seq_length=10,
+        frame_stack=1,
+        overlap=0,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True
+    )
+    print(f"Number of segments (no overlap): {len(dataset_basic)}")
+    
+    # Test Case 2: With overlap
+    print("\nTest Case 2: With Overlap (3 timesteps)")
+    dataset_overlap = LIBERODataset(
+        data_path=base_path,
+        benchmark='libero_spatial',
+        seq_length=10,
+        frame_stack=1,
+        overlap=3,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True
+    )
+    print(f"Number of segments (with overlap): {len(dataset_overlap)}")
+    
+    # Test Case 3: With frame stacking
+    print("\nTest Case 3: With Frame Stacking")
+    dataset_stack = LIBERODataset(
+        data_path=base_path,
+        benchmark='libero_spatial',
+        seq_length=10,
+        frame_stack=4,
+        overlap=0,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True
     )
     
-    # 1. Validate task organization
-    print("\n=== Task Organization Validation ===")
-    for task_name, files in dataset.task_files.items():
-        n_demos = sum(1 for f in files for _ in h5py.File(f, 'r')['data'].keys())
-        print(f"\nTask: {task_name}")
-        print(f"Number of files: {len(files)}")
-        print(f"Number of demos: {n_demos}")
-        assert n_demos == 50, f"Expected 50 demos per task, got {n_demos} for {task_name}"
-        
-        # Check task embedding
-        if dataset.load_task_emb:
-            emb = dataset.task_embeddings[task_name]
-            print(f"Task embedding shape: {emb.shape}")
-            assert emb.shape == (1, 768), f"Expected embedding shape (1, 768), got {emb.shape}"
+    # Validate overlapping sequences
+    print("\n=== Validating Overlapping Sequences ===")
+    # Get two consecutive sequences
+    data1, actions1 = dataset_overlap[0]
+    data2, actions2 = dataset_overlap[1]
     
-    # 2. Validate data loading and shapes
-    print("\n=== Data Shape Validation ===")
-    # Sample first demo from each task
-    task_names = list(dataset.task_files.keys())
-    for task_name in task_names:
-        # Find first demo for this task
-        demo_idx = next(i for i, (_, _, t) in enumerate(dataset.segment_map) if t == task_name)
-        data = dataset[demo_idx]
-        
-        print(f"\nValidating shapes for task: {task_name}")
-        print(f"Demo index: {demo_idx}")
-        
-        # Check data shapes
-        assert data["pixels"].shape[-3:] == (128, 128, 3), f"Wrong image shape: {data['pixels'].shape}"
-        assert data["pixels_egocentric"].shape[-3:] == (128, 128, 3), f"Wrong ego image shape: {data['pixels_egocentric'].shape}"
-        assert data["proprioceptive"].shape[-1] == 9, f"Wrong proprio shape: {data['proprioceptive'].shape}"
-        assert data["actions"].shape[-1] == 7 * dataset.num_queries, f"Wrong action shape: {data['actions'].shape}"
-        
-        print("Shapes:")
-        for k, v in data.items():
-            if isinstance(v, torch.Tensor):
-                print(f"  {k}: {v.shape}")
-                
-        # Validate pixel range
-        assert torch.all((data["pixels"] >= 0) & (data["pixels"] <= 1)), "Pixels not normalized to [0,1]"
-        assert torch.all((data["pixels_egocentric"] >= 0) & (data["pixels_egocentric"] <= 1)), "Ego pixels not normalized to [0,1]"
+    # Check overlap in proprioceptive data
+    print("\nChecking overlap between consecutive sequences:")
+    seq1_end = data1['proprioceptive'][-3:].numpy()  # Last 3 timesteps of first sequence
+    seq2_start = data2['proprioceptive'][:3].numpy()  # First 3 timesteps of second sequence
+    overlap_match = np.allclose(seq1_end, seq2_start)
+    print(f"Overlap matches: {overlap_match}")
+    print(f"Last 3 timesteps of sequence 1:\n{seq1_end}")
+    print(f"First 3 timesteps of sequence 2:\n{seq2_start}")
     
-    # 3. Validate action processing
-    print("\n=== Action Processing Validation ===")
-    data = dataset[0]
-    actions = data["actions"]
-    print(f"Action tensor shape: {actions.shape}")
-    print(f"Number of queries: {dataset.num_queries}")
-    print(f"Action dimension: {actions.shape[-1]}")
-    assert actions.shape[-1] == 7 * dataset.num_queries, f"Expected action dim {7 * dataset.num_queries}, got {actions.shape[-1]}"
+    # Validate padding masks
+    print("\n=== Validating Padding Masks ===")
+    # Get a sequence near the end of a demonstration (likely padded)
+    for i in range(len(dataset_overlap)):
+        data, _ = dataset_overlap[i]
+        if data['pad_mask'].sum() < dataset_overlap.seq_length:  # Found a padded sequence
+            print(f"\nFound padded sequence at index {i}")
+            print(f"Padding mask: {data['pad_mask'].squeeze().numpy()}")
+            print(f"Number of valid timesteps: {data['pad_mask'].sum().item()}")
+            break
     
-    # Check if later timesteps are properly zero-padded
-    last_timestep_actions = actions[-1]  # Should be partially or fully padded
-    n_nonzero = torch.count_nonzero(last_timestep_actions)
-    print(f"Number of non-zero values in last timestep: {n_nonzero}")
-    print(f"Total values in last timestep: {last_timestep_actions.shape[0]}")
+    # Validate frame stacking
+    print("\n=== Validating Frame Stacking ===")
+    data, _ = dataset_stack[0]
+    print(f"Sequence length: {dataset_stack.seq_length}")
+    print(f"Frame stack size: {dataset_stack.frame_stack}")
+    if dataset_stack.pad_frame_stack:
+        print("Checking first few frames (should be repeated for padding):")
+        for k in ['pixels', 'pixels_egocentric', 'proprioceptive']:
+            first_frames = data[k][:dataset_stack.frame_stack]
+            are_identical = torch.allclose(first_frames[0], first_frames[1])
+            print(f"{k} first frames are identical: {are_identical}")
     
-    # 4. Validate task embedding consistency
-    if dataset.load_task_emb:
-        print("\n=== Task Embedding Consistency Validation ===")
-        # Check if all demos of same task have same embedding
-        for task_name in task_names:
-            # Get indices for all demos of this task
-            task_indices = [i for i, (_, _, t) in enumerate(dataset.segment_map) if t == task_name][:2]  # Check first two demos
-            
-            if len(task_indices) >= 2:
-                emb1 = dataset[task_indices[0]]["task_emb"]
-                emb2 = dataset[task_indices[1]]["task_emb"]
-                assert torch.allclose(emb1, emb2), f"Inconsistent embeddings for task {task_name}"
-                print(f"Task {task_name}: Embeddings consistent across demos")
+    # Test different combinations of padding settings
+    print("\n=== Testing Padding Configurations ===")
+    padding_configs = [
+        {"pad_frame_stack": True, "pad_seq_length": True},
+        {"pad_frame_stack": True, "pad_seq_length": False},
+        {"pad_frame_stack": False, "pad_seq_length": True},
+        {"pad_frame_stack": False, "pad_seq_length": False},
+    ]
     
-    print("\n=== All Validations Passed ===")
-    print(f"Total number of demonstrations: {len(dataset)}")
-    print(f"Number of tasks: {len(dataset.task_files)}")
+    for config in padding_configs:
+        dataset = LIBERODataset(
+            data_path=base_path,
+            benchmark='libero_spatial',
+            seq_length=10,
+            frame_stack=4,
+            overlap=2,
+            get_pad_mask=True,
+            **config
+        )
+        print(f"\nConfiguration: {config}")
+        print(f"Number of segments: {len(dataset)}")
+        data, _ = dataset[0]
+        print(f"First sequence padding mask sum: {data['pad_mask'].sum().item()}/{dataset.seq_length}")
+    
+    print("\n=== All Tests Completed ===")
     
     # Clean up
-    dataset.close()
-    print("\nDataset closed successfully")
+    dataset_basic.close()
+    dataset_overlap.close()
+    dataset_stack.close()
+    print("\nDatasets closed successfully")
