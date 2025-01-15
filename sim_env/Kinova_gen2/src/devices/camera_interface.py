@@ -2,6 +2,8 @@
 
 import cv2
 import time
+import signal
+import sys
 
 class CameraInterface:
     def __init__(self, camera_id=0, width=640, height=480, fps=30):
@@ -34,12 +36,18 @@ class CameraInterface:
         """
         available_cameras = []
         for i in range(max_cameras):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    available_cameras.append(i)
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        available_cameras.append(i)
                 cap.release()
+            except Exception as e:
+                print(f"Error checking camera {i}: {e}")
+            finally:
+                if 'cap' in locals():
+                    cap.release()
         return available_cameras
         
     def initialize_camera(self):
@@ -140,6 +148,17 @@ class MultiCameraInterface:
 
 def main():
     """Test the camera interfaces"""
+    def signal_handler(sig, frame):
+        print("\nSignal received, cleaning up...")
+        if 'cameras' in locals():
+            cameras.close()
+        cv2.destroyAllWindows()
+        sys.exit(0)
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTSTP, signal_handler)  # Ctrl+Z
+
     try:
         # List available cameras
         available_cameras = CameraInterface.list_available_cameras()
@@ -168,8 +187,8 @@ def main():
                 
             time.sleep(1/30)  # Limit to ~30 FPS
             
-    except KeyboardInterrupt:
-        print("\nTest interrupted by user")
+    except Exception as e:
+        print(f"\nError occurred: {e}")
     finally:
         if 'cameras' in locals():
             cameras.close()

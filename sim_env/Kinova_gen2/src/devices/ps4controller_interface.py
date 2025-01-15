@@ -7,8 +7,8 @@ class PS4Interface(Controller):
         Controller.__init__(self, **kwargs)
         # Initialize controller state values
         self.reset_values()
-        # Define deadzone threshold (adjust this value as needed)
-        self.deadzone = 2000  # Typical values between 1000-3000
+        # Increase deadzone value (default was 2000)
+        self.deadzone = 8000  # Increased to ~25% of max range (32767)
         print("PS4 Controller initialized")
 
     def reset_values(self):
@@ -42,6 +42,8 @@ class PS4Interface(Controller):
         """
         if abs(value) < self.deadzone:
             return 0.0
+        # Add this debug print to see raw values
+        print(f"Raw value: {value}, Deadzone: {self.deadzone}")
         return value / 32767.0
 
     # Stick Callbacks with deadzone
