@@ -5,6 +5,7 @@ import pprint
 import time
 from pathlib import Path
 import logging
+import json
 
 import hydra
 import numpy as np
@@ -21,26 +22,151 @@ from libero.libero.benchmark import get_benchmark
 from torch.utils.data import DataLoader, RandomSampler
 from dataset import LIBERODataset
 from models.bc_baku_policy import BCBakuPolicy
+from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
-from libero.lifelong.utils import control_seed , get_task_embs
-from libero.lifelong.datasets import get_dataset
+from libero.lifelong.utils import control_seed, get_task_embs
+
+def get_model(model_type):
+    """Initialize model based on type and return both model and config.
+    
+    Args:
+        model_type (str): Type of model to initialize ('baku' or 'transformer')
+        
+    Returns:
+        tuple: (model, cfg) where model is the initialized model and cfg is its configuration
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if model_type == "baku":
+        # Default configuration for BCBaku
+        cfg = EasyDict({
+            'device': device,
+            'seed': 2,
+            'train': {
+                'batch_size': 32,
+                'lr': 5e-4,
+                'n_epochs': 50,
+                'optimizer': {
+                    'name': 'torch.optim.Adam',
+                    'kwargs': {
+                        'lr': 5e-4,
+                        'betas': [0.9, 0.999]
+                    }
+                }
+            },
+            'data': {
+                'task_order_index': 0,
+                'seq_len': 10
+            },
+            'obs_type': "pixels",
+            'policy_type': "gpt",
+            'policy_head': "deterministic",
+            'use_proprio': True,
+            'use_language': True,
+            'temporal_agg': False,
+            'num_queries': 1,
+            'hidden_dim': 256,
+            'history': True,
+            'history_len': 10,
+            'eval_history_len': 10,
+            'film': True,
+            'max_episode_len': 650,
+            'eval': {
+                'n_eval': 10,
+                'eval_every': 5,
+                'max_steps': 650
+            }
+        })
+        
+        model = BCBakuPolicy(
+            repr_dim=512,
+            act_dim=7,
+            hidden_dim=cfg.hidden_dim,
+            policy_head=cfg.policy_head,
+            obs_type=cfg.obs_type,
+            history=cfg.history,
+            history_len=cfg.history_len,
+            temporal_agg=cfg.temporal_agg,
+            use_proprio=cfg.use_proprio,
+            language_fusion="film" if cfg.film else None,
+            num_queries=cfg.num_queries,
+            max_episode_len=cfg.max_episode_len,
+            device=cfg.device
+        ).to(cfg.device)
+        
+    elif model_type == "transformer":
+        # Load transformer config from json
+        transformer_cfg_path = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/outputs/2024-12-28/full_train/experiments/LIBERO_SPATIAL/Multitask/BCTransformerPolicy_seed10000/run_001/config.json"
+        with open(transformer_cfg_path, 'r') as f:
+            cfg = EasyDict(json.load(f))
+        
+        # Update device and training settings
+        cfg.device = device
+        if not hasattr(cfg.train, 'lr'):
+            cfg.train.lr = cfg.train.optimizer.kwargs.lr
+        
+        # Initialize transformer model
+        model = BCTransformerPolicy(cfg, cfg.shape_meta).to(cfg.device)
+        
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+        
+    return model, cfg
+
+def convert_to_transformer_format(data_dict):
+    """Convert dataset output format to transformer input format.
+    
+    Args:
+        data_dict (dict): Dataset output with keys:
+            - pixels: [B, T, 3, 128, 128]
+            - pixels_egocentric: [B, T, 3, 128, 128]
+            - proprioceptive: [B, T, 9]
+            - task_emb: [B, 768]
+            
+    Returns:
+        dict: Transformer format with:
+            obs: {
+                agentview_rgb: [B, T, 3, 128, 128],
+                eye_in_hand_rgb: [B, T, 3, 128, 128],
+                gripper_states: [B, T, 2],
+                joint_states: [B, T, 7]
+            },
+            task_emb: [B, 768]
+    """
+    # Split proprioceptive into gripper and joint states
+    gripper_states = data_dict["proprioceptive"][..., :2]  # First 2 dimensions
+    joint_states = data_dict["proprioceptive"][..., 2:9]   # Next 7 dimensions
+    
+    return {
+        "obs": {
+            "agentview_rgb": data_dict["pixels"],
+            "eye_in_hand_rgb": data_dict["pixels_egocentric"],
+            "gripper_states": gripper_states,
+            "joint_states": joint_states
+        },
+        "task_emb": data_dict["task_emb"]
+    }
 
 #loss function 
-def loss_fn( dist, target, reduction="mean", **kwargs):
-        log_probs = dist.log_prob(target)
-        loss = -log_probs
+def loss_fn(dist, target, reduction="mean", **kwargs):
+    log_probs = dist.log_prob(target)
+    loss = -log_probs
 
-        if reduction == "mean":
-            loss = loss.mean() * 1.0
-        else:
-            raise NotImplementedError
+    if reduction == "mean":
+        loss = loss.mean() * 1.0
+    else:
+        raise NotImplementedError
 
-        return loss
+    return loss
+
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
-    # preprocessing
-    yaml_config = OmegaConf.to_yaml(hydra_cfg)
-    cfg = EasyDict(yaml.safe_load(yaml_config))
+    # Add model type selection
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_type', type=str, default='transformer', choices=['baku', 'transformer'],
+                      help='Type of model to train (baku or transformer)')
+    args = parser.parse_args()
 
     # Setup logging
     logging.basicConfig(
@@ -53,33 +179,15 @@ def main(hydra_cfg):
     )
     logger = logging.getLogger(__name__)
 
-    
+    # Get model and its configuration
+    model, cfg = get_model(args.model_type)
+    cfg.model_type = args.model_type  # Add model type to config
 
-    # Common config overrides
-    cfg.device = "cuda"
-    cfg.seed = 2
-    cfg.train.batch_size = 32
-    cfg.train.lr = 5e-4
-    cfg.obs_type = "pixels"
-    cfg.policy_type = "gpt"
-    cfg.policy_head = "deterministic"
-    cfg.use_proprio = True
-    cfg.use_language = True
-    cfg.temporal_agg = False
-    cfg.num_queries = 1
-    cfg.hidden_dim = 256
-    cfg.history = True
-    cfg.history_len = 10
-    cfg.eval_history_len = 10
-    cfg.film = True
-    cfg.train.n_epochs = 50  # Adjust as needed
-    cfg.max_episode_len = 650 # has to greater than the max episode length in the evaluation
-    # print configs
+    # Print configs
     pp = pprint.PrettyPrinter(indent=2)
-    cfg.model_type = "baku"
     pp.pprint(cfg)
 
-    # control seed
+    # Control seed
     control_seed(cfg.seed)
 
     # Create experiment directory for saving checkpoints
@@ -93,7 +201,8 @@ def main(hydra_cfg):
     with open(config_path, "w") as f:
         yaml.dump(cfg, f)
     logger.info(f"Saved experiment config to: {config_path}")
-    # prepare paths
+
+    # Prepare paths
     cfg.folder = cfg.folder or get_libero_path("datasets")
     cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
     cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
@@ -101,31 +210,9 @@ def main(hydra_cfg):
     # you can specify the benchmark name here
     cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
 
-    manip_datasets = []
-    descriptions = []
-    shape_meta = None
-    # get benchmark and number of tasks
+    # Get benchmark and task information
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     n_manip_tasks = benchmark.n_tasks
-    # for i in range(n_manip_tasks):
-    #     try:
-    #         task_i_dataset, shape_meta = get_dataset(
-    #             dataset_path=os.path.join(cfg.folder, benchmark.get_task_demonstration(i)),
-    #             obs_modality=cfg.data.obs.modality,
-    #             initialize_obs_utils=(i == 0),
-    #             seq_len=cfg.data.seq_len,
-    #         )
-    #     except Exception as e:
-    #         print(f"[error] failed to load task {i} name {benchmark.get_task_names()[i]}")
-    #         print(f"[error] {e}")
-    #         continue
-
-    #     task_description = benchmark.get_task(i).language
-    #     descriptions.append(task_description)
-    #     # manip_datasets.append(task_i_dataset)
-    # # Get task embeddings
-    # task_embs = get_task_embs(cfg, descriptions)
-    # benchmark.set_task_embs(task_embs)
 
     # Print benchmark information
     print("\n=================== Benchmark Information ===================")
@@ -134,13 +221,15 @@ def main(hydra_cfg):
     for i in range(n_manip_tasks):
         print(f"    - Task {i+1}: {benchmark.get_task(i).language}")
     print("=======================================================================\n")
-
-    # Create dataset directly using LIBERODataset
+    # Set default num_queries if not specified in config
+    if not hasattr(cfg, 'num_queries'):
+        cfg.num_queries = 1
+    # Create dataset
     train_dataset = LIBERODataset(
         data_path=cfg.folder,
         benchmark=cfg.benchmark_name,
         device=cfg.device,
-        load_task_emb=cfg.use_language,
+        load_task_emb=True,
         num_queries=cfg.num_queries
     )
 
@@ -148,55 +237,40 @@ def main(hydra_cfg):
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.train.batch_size,
-        num_workers=0,  # Set to 0 to avoid deadlock
+        num_workers=0,
         sampler=RandomSampler(train_dataset),
         pin_memory=True,
     )
 
-    # Initialize model with BAKU config
-    model = BCBakuPolicy(
-        repr_dim=512,
-        act_dim=7,
-        hidden_dim=cfg.hidden_dim,
-        policy_head=cfg.policy_head,
-        obs_type=cfg.obs_type,
-        history=cfg.history,
-        history_len=cfg.history_len,
-        temporal_agg=cfg.temporal_agg,
-        use_proprio=cfg.use_proprio,
-        language_fusion="film" if cfg.film else None,
-        num_queries=cfg.num_queries,
-        max_episode_len=cfg.max_episode_len,
-        device=cfg.device
-    ).to(cfg.device)
-
-    # Initialize optimizer with BAKU learning rate
+    # Initialize optimizer
     optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     
-    # Loss function
-    criterion = loss_fn
-
     # Training loop
-    print("[info] Starting training...")
+    logger.info("Starting training...")
     best_val_success = 0.0
     task_ids = list(range(n_manip_tasks))
-    best_task_success_rates = np.zeros(n_manip_tasks)  # Track best success rate for each task
+    best_task_success_rates = np.zeros(n_manip_tasks)
     
     for epoch in range(cfg.train.n_epochs):
         model.train()
         total_loss = 0.0
         
         for batch_idx, (obs_dict, gt_actions) in enumerate(train_dataloader):
-            # Move all tensors in obs_dict to GPU
+            # Move tensors to device
             for key, value in obs_dict.items():
                 if isinstance(value, torch.Tensor):
                     obs_dict[key] = value.to(cfg.device)
             gt_actions = gt_actions.to(cfg.device)
+
+            # Convert format for transformer if needed
+            if cfg.model_type == "transformer":
+                obs_dict = convert_to_transformer_format(obs_dict)
+
             # Forward pass
             pred_actions = model.forward(obs_dict)
             
             # Compute loss
-            loss = criterion(pred_actions, gt_actions)
+            loss = loss_fn(pred_actions, gt_actions)
             
             # Backward pass and optimize
             optimizer.zero_grad()
@@ -204,14 +278,11 @@ def main(hydra_cfg):
             optimizer.step()
             
             total_loss += loss.item()
-            
-            # if batch_idx % 10 == 0:
-            #     print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
-        # Validation step every 5 epochs, but skip epoch 0
+        # Validation step every 5 epochs
         if epoch > 0 and epoch % 5 == 0:
             logger.info(f"Running validation at epoch {epoch}...")
             model.eval()
@@ -221,7 +292,7 @@ def main(hydra_cfg):
                 logger.info(f"Validation Success Rates: {success_rates}")
                 logger.info(f"Average Success Rate: {avg_success:.4f}")
                 
-                # Check for improvements in any task
+                # Check for improvements
                 improved = False
                 improved_tasks = []
                 for task_idx, (curr_rate, best_rate) in enumerate(zip(success_rates, best_task_success_rates)):
@@ -230,15 +301,14 @@ def main(hydra_cfg):
                         improved_tasks.append(task_idx)
                         best_task_success_rates[task_idx] = curr_rate
                 
-                # Update best average success if improved
                 if improved:
                     best_val_success = max(best_val_success, avg_success)
                     logger.info(f"Improvements in tasks {improved_tasks}")
                     logger.info("Task-wise improvements:")
                     for task_idx in improved_tasks:
                         logger.info(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
-                    
-                    # Save model checkpoint every 5 epochs regardless of improvement
+                
+                # Save checkpoint
                 save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
                 torch.save({
                     'epoch': epoch,
@@ -253,7 +323,6 @@ def main(hydra_cfg):
                 logger.info(f"Saved model checkpoint at epoch {epoch}")
 
     logger.info("Training completed")
-    # Clean up dataset
     train_dataset.close()
 
 if __name__ == "__main__":
