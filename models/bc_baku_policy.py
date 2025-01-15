@@ -91,19 +91,35 @@ class Obersvation_trunk(nn.Module):
             obs = obs.view(B, 1, T * D)
             features = self._policy(obs)
         elif self._policy_type == "gpt":
-            # insert action token at each self._num_feat_per_step interval
-            prompt = obs[:, :num_prompt_feats]
-            obs = obs[:, num_prompt_feats:]
-            obs = obs.view(B, -1, self._num_feat_per_step, obs.shape[-1])
-            action_token = self._action_token.repeat(B, obs.shape[1], 1, 1)
-            obs = torch.cat([obs, action_token], dim=-2).view(B, -1, D)
-            obs = torch.cat([prompt, obs], dim=1)
+            # Shape explanations:
+            # obs starts as (B, T, D) where:
+            #   B = batch size
+            #   T = total sequence length 
+            #   D = feature dimension
+            
+            # 1. Split into prompt and rest
+            prompt = obs[:, :num_prompt_feats]  # (B, num_prompt_feats, D)
+            obs = obs[:, num_prompt_feats:]     # (B, T-num_prompt_feats, D)
+            
+            # 2. Reshape to group features per step
+            obs = obs.view(B, -1, self._num_feat_per_step, obs.shape[-1])  # (B, T', num_feat_per_step, D)
+            # where T' = (T-num_prompt_feats)/num_feat_per_step
+            
+            # 3. Add action token
+            action_token = self._action_token.repeat(B, obs.shape[1], 1, 1)  # (B, T', 1, D)
+            obs = torch.cat([obs, action_token], dim=-2)  # (B, T', num_feat_per_step+1, D) 
+            obs = obs.view(B, -1, D)  # (B, T'*(num_feat_per_step+1), D)
+            
+            # 4. Combine with prompt
+            obs = torch.cat([prompt, obs], dim=1)  # (B, num_prompt_feats + T'*(num_feat_per_step+1), D)
 
-            # get action features
-            features = self._policy(obs)
-            features = features[:, num_prompt_feats:]
+            # 5. Get features from GPT
+            features = self._policy(obs)  # (B, num_prompt_feats + T'*(num_feat_per_step+1), D)
+            features = features[:, num_prompt_feats:]  # (B, T'*(num_feat_per_step+1), D)
+            
+            # 6. Extract only action token features
             num_feat_per_step = self._num_feat_per_step + 1  # +1 for action token
-            features = features[:, num_feat_per_step - 1 :: num_feat_per_step]
+            features = features[:, num_feat_per_step-1::num_feat_per_step]  # (B, T', D)
 
         # action head
         pred_actions = self._action_head(
@@ -135,7 +151,8 @@ class BCBakuPolicy(nn.Module):
                  history=True, history_len=10, num_queries=10,
                  temporal_agg=True,
                  max_episode_len=200,
-                 use_proprio=True):
+                 use_proprio=True,
+                 num_feat_per_step=3):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -154,6 +171,7 @@ class BCBakuPolicy(nn.Module):
         self.observation_buffer = {}
         self.num_queries = num_queries
         self.act_dim = act_dim
+        self.num_prompt_feats = num_feat_per_step
         # number of inputs per time step
         if obs_type == "features":
             num_feat_per_step = 1
@@ -177,7 +195,7 @@ class BCBakuPolicy(nn.Module):
             act_dim=action_dim,
             hidden_dim=hidden_dim,
             policy_head=policy_head,
-            num_feat_per_step=num_feat_per_step,
+            num_feat_per_step=self.num_prompt_feats,
             device=device,
         )
 
@@ -246,12 +264,17 @@ class BCBakuPolicy(nn.Module):
             pred_actions: Predicted action distribution
             loss_dict (optional): Dictionary of losses if action is provided
         """
-        # 1. Process language embedding for FiLM
-        lang_features = data["task_emb"].float()  # (B, E)
-        lang_features = self.language_projector(lang_features)  # (B, lang_repr_dim)
 
-        # 2. Process vision features
         features = []
+        # 1. Process language embedding for FiLM
+        lang_features = data["task_emb"].float()  # (B, 1, E)
+        lang_features = self.language_projector(lang_features)  # (B, 1,lang_repr_dim)
+        # Expand language features to match temporal dimension
+        # B, T = data[self.pixel_keys[0]].shape[:2]  # Get batch and time dimensions from image data
+        # prompt_features = lang_features.expand(-1, T, -1)  # (B, T, lang_repr_dim)
+        # features.append(prompt_features)
+        # 2. Process vision features
+        
         for key in self.pixel_keys:
             pixel = data[key].float()  # (B, T, C, H, W)
             shape = pixel.shape
@@ -277,11 +300,13 @@ class BCBakuPolicy(nn.Module):
         features = torch.cat(features, dim=-1).view(
             shape[0], -1, self.repr_dim
         )  # (B, T * num_feat_per_step, D)
-
+        
+        features = torch.cat([lang_features,features ], dim=1)
+        
         # 5. Forward through GPT trunk
         pred_actions = self.obs_trunk(
             features, 
-            num_prompt_feats=0,
+            num_prompt_feats=1,
             stddev=1.0,
             action=action  # Pass ground truth actions if provided
         )
