@@ -26,7 +26,7 @@ from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
 
-def get_model(model_type):
+def get_model(model_type,cfg):
     """Initialize model based on type and return both model and config.
     
     Args:
@@ -39,44 +39,35 @@ def get_model(model_type):
     
     if model_type == "baku":
         # Default configuration for BCBaku
-        cfg = EasyDict({
-            'device': device,
-            'seed': 2,
-            'train': {
-                'batch_size': 32,
-                'lr': 5e-4,
-                'n_epochs': 50,
-                'optimizer': {
-                    'name': 'torch.optim.Adam',
-                    'kwargs': {
-                        'lr': 5e-4,
-                        'betas': [0.9, 0.999]
-                    }
-                }
-            },
-            'data': {
-                'task_order_index': 0,
-                'seq_len': 10
-            },
-            'obs_type': "pixels",
-            'policy_type': "gpt",
-            'policy_head': "deterministic",
-            'use_proprio': True,
-            'use_language': True,
-            'temporal_agg': False,
-            'num_queries': 1,
-            'hidden_dim': 256,
-            'history': True,
-            'history_len': 10,
-            'eval_history_len': 10,
-            'film': True,
-            'max_episode_len': 650,
-            'eval': {
-                'n_eval': 10,
-                'eval_every': 5,
-                'max_steps': 650
-            }
-        })
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 32
+        cfg.train.lr = 1e-4
+        cfg.train.n_epochs = 50
+        cfg.train.optimizer.name = 'torch.optim.Adam'
+        cfg.train.optimizer.kwargs.lr = 1e-4
+        cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
+        cfg.data.task_order_index = 0
+        cfg.data.seq_len = 10
+        cfg.obs_type = "pixels"
+        cfg.policy_type = "gpt"
+        cfg.policy_head = "deterministic"
+        cfg.use_proprio = True
+        cfg.use_language = True
+        cfg.temporal_agg = False
+        cfg.num_queries = 1
+        cfg.hidden_dim = 256
+        cfg.history = True
+        cfg.history_len = 10
+        cfg.eval_history_len = 10
+        cfg.film = True
+        cfg.max_episode_len = 650
+        cfg.eval.n_eval = 10
+        cfg.eval.eval_every = 5
+        cfg.eval.max_steps = 650
+        cfg.eval.use_mp = True
+        cfg.eval.num_procs = 3
+        cfg.eval.n_eval = 3
         
         model = BCBakuPolicy(
             repr_dim=512,
@@ -164,9 +155,11 @@ def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='transformer', choices=['baku', 'transformer'],
+    parser.add_argument('--model_type', type=str, default='baku', choices=['baku', 'transformer'],
                       help='Type of model to train (baku or transformer)')
     args = parser.parse_args()
+    yaml_config = OmegaConf.to_yaml(hydra_cfg)
+    cfg = EasyDict(yaml.safe_load(yaml_config))
 
     # Setup logging
     logging.basicConfig(
@@ -180,7 +173,7 @@ def main(hydra_cfg):
     logger = logging.getLogger(__name__)
 
     # Get model and its configuration
-    model, cfg = get_model(args.model_type)
+    model, cfg = get_model(args.model_type,cfg)
     cfg.model_type = args.model_type  # Add model type to config
 
     # Print configs
@@ -203,9 +196,9 @@ def main(hydra_cfg):
     logger.info(f"Saved experiment config to: {config_path}")
 
     # Prepare paths
-    cfg.folder = cfg.folder or get_libero_path("datasets")
-    cfg.bddl_folder = cfg.bddl_folder or get_libero_path("bddl_files")
-    cfg.init_states_folder = cfg.init_states_folder or get_libero_path("init_states")
+    cfg.folder = get_libero_path("datasets")
+    cfg.bddl_folder = get_libero_path("bddl_files")
+    cfg.init_states_folder =get_libero_path("init_states")
     
     # you can specify the benchmark name here
     cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
@@ -230,7 +223,8 @@ def main(hydra_cfg):
         benchmark=cfg.benchmark_name,
         device=cfg.device,
         load_task_emb=True,
-        num_queries=cfg.num_queries
+        num_queries=cfg.num_queries,
+        seq_length=10,
     )
 
     # Create data loader
@@ -268,6 +262,14 @@ def main(hydra_cfg):
 
             # Forward pass
             pred_actions = model.forward(obs_dict)
+            
+            # Print shapes for debugging
+            # if isinstance(pred_actions, torch.distributions.Distribution):
+            #     print(f'pred_actions mean shape: {pred_actions.mean.shape}')
+            #     print(f'gt_actions shape: {gt_actions.shape}')
+            # else:
+            #     print(f'pred_actions shape: {pred_actions.shape}')
+            #     print(f'gt_actions shape: {gt_actions.shape}')
             
             # Compute loss
             loss = loss_fn(pred_actions, gt_actions)
