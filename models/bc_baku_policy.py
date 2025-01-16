@@ -172,6 +172,7 @@ class BCBakuPolicy(nn.Module):
         self.num_queries = num_queries
         self.act_dim = act_dim
         self.num_prompt_feats = num_feat_per_step
+        self.step = 0
         # number of inputs per time step
         if obs_type == "features":
             num_feat_per_step = 1
@@ -246,6 +247,7 @@ class BCBakuPolicy(nn.Module):
                 self.max_episode_len + self.num_queries,
                 self.act_dim
             ).to(self.device)
+            self.step = 0
 
     def forward(self, data, action=None):
         """
@@ -313,7 +315,7 @@ class BCBakuPolicy(nn.Module):
 
         return pred_actions
 
-    def get_action(self, data, step):
+    def get_action(self, data):
         """ 
             Args:
             data (dict): Dictionary containing:
@@ -345,14 +347,15 @@ class BCBakuPolicy(nn.Module):
 
         # Get predicted actions from forward pass
         with torch.no_grad():
-            pred_actions = self.forward(stacked_data) # [2,1,70]
+            pred_actions = self.forward(stacked_data) # [2,10,70]
             
             pred_actions = pred_actions.mean
+            
+            
             # action chunking with batch dimension
             if self.temporal_agg:
                 B = pred_actions.shape[0]  # batch dimension
-                # Reshape to (B, num_queries, act_dim)
-                action = pred_actions.view(B, -1, self.num_queries, self.act_dim)[:, -1]
+                pred_actions = pred_actions[:, -1]
                 
                 # Resize all_time_actions if batch size changes
                 if self.all_time_actions.shape[0] != B:
@@ -363,39 +366,23 @@ class BCBakuPolicy(nn.Module):
                         self.act_dim
                     ).to(self.device)
                 
-                # Store predictions for each batch
-                self.all_time_actions[:, step, step:step + self.num_queries] = action
-                
-                # Get actions for current step across all batches
-                actions_for_curr_step = self.all_time_actions[:, :, step]  # (B, max_episode_len, act_dim)
-                
-                # Find valid (non-zero) actions for each batch
-                actions_populated = torch.all(actions_for_curr_step != 0, dim=-1)  # (B, max_episode_len)
-                
-                # Calculate exponential weights
-                k = 0.01
-                max_populated = int(actions_populated.sum(dim=1).max().item())
-                if max_populated > 0:
-                    exp_weights = np.exp(-k * np.arange(max_populated))
+                actions = []
+                for i in range(B):
+                    action = pred_actions[i]
+                    action = action.view(-1, self.num_queries, self.act_dim)
+                    self.all_time_actions[i, self.step, self.step : self.step + self.num_queries] = action[-1:]
+                    actions_for_curr_step = self.all_time_actions[i,:, self.step]
+                    actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                    actions_for_curr_step = actions_for_curr_step[actions_populated]
+                    k = 0.01
+                    exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
                     exp_weights = exp_weights / exp_weights.sum()
-                    exp_weights = torch.from_numpy(exp_weights).to(self.device)
-                    
-                    # Initialize final actions
-                    final_actions = torch.zeros(B, self.act_dim).to(self.device)
-                    
-                    # Process each batch separately
-                    for b in range(B):
-                        valid_actions = actions_for_curr_step[b, actions_populated[b]]
-                        if len(valid_actions) > 0:
-                            # Use only as many weights as we have valid actions
-                            b_weights = exp_weights[:len(valid_actions)]
-                            b_weights = b_weights / b_weights.sum()
-                            final_actions[b] = (valid_actions * b_weights.unsqueeze(-1)).sum(dim=0)
-                    
-                    action = final_actions
-                else:
-                    # If no valid actions, use the latest prediction
-                    action = pred_actions[:, -1]
+                    exp_weights = torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1)
+                    action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                    actions.append(action)
+                action = torch.cat(actions, dim=0)  # [B,7]
+                self.step += 1         
+                
                 
                 
                 return action.detach().cpu().numpy()
