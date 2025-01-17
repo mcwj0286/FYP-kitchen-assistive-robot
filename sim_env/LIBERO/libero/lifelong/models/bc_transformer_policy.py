@@ -251,6 +251,9 @@ class BCTransformerPolicy(BasePolicy):
         x = self.temporal_transformer(x)
         x = x.reshape(*sh)
         return x[:, :, 0]  # (B, T, E)hidden_dim
+    
+    def spatial_encode(self, data):
+    
         # 1. encode extra
         extra = self.extra_encoder(data["obs"])  # (B, T, num_extra, E)
 
@@ -279,6 +282,19 @@ class BCTransformerPolicy(BasePolicy):
         return encoded
 
     def forward(self, data):
+        # print("Data contents:")
+        # for key, value in data.items():
+        #     if isinstance(value, torch.Tensor):
+        #         print(f"  {key}: tensor shape {value.shape}")
+        #     elif isinstance(value, dict):
+        #         print(f"  {key}:")
+        #         for k, v in value.items():
+        #             if isinstance(v, torch.Tensor):
+        #                 print(f"    {k}: tensor shape {v.shape}")
+        #             else:
+        #                 print(f"    {k}: {type(v)}")
+        #     else:
+        #         print(f"  {key}: {type(value)}")
         x = self.spatial_encode(data)
         x = self.temporal_encode(x)
         dist = self.policy_head(x)
