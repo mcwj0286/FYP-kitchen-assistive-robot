@@ -6,6 +6,10 @@ import sys
 import os
 import time
 
+# Define the position types as in KinovaTypes.h
+ANGULAR_POSITION = 2
+ANGULAR_VELOCITY = 3
+
 class KinovaDevice(Structure):
     _fields_ = [
         ("SerialNumber", c_char * 20),
@@ -16,6 +20,42 @@ class KinovaDevice(Structure):
         ("DeviceType", c_int),
         ("DeviceID", c_int)
     ]
+
+class AngularInfo(Structure):
+    _fields_ = [
+        ("Actuator1", c_float),
+        ("Actuator2", c_float),
+        ("Actuator3", c_float),
+        ("Actuator4", c_float),
+        ("Actuator5", c_float),
+        ("Actuator6", c_float),
+        ("Actuator7", c_float),
+    ]
+
+class FingersPosition(Structure):
+    _fields_ = [
+        ("Finger1", c_float),
+        ("Finger2", c_float),
+        ("Finger3", c_float),
+    ]
+
+class TrajectoryPoint(Structure):
+    _fields_ = [
+        ("Position", c_int),  # Type of position
+        ("Actuators", AngularInfo),  # Actuator position or velocity
+        ("Fingers", FingersPosition),  # Finger position
+        ("HandMode", c_int),
+        ("Limitations", c_int),
+        ("SynchroType", c_int),
+        ("Time", c_float),
+    ]
+    
+    def InitStruct(self):
+        self.Position = 0
+        self.HandMode = 0
+        self.Limitations = 0
+        self.SynchroType = 0
+        self.Time = 0
 
 class KinovaInterface:
     def __init__(self):
@@ -40,7 +80,6 @@ class KinovaInterface:
                     print(f"Found Kinova API at: {path}")
                     try:
                         self.api = CDLL(path)
-                        # Test if we can access a known function
                         if not hasattr(self.api, 'InitAPI'):
                             raise Exception("InitAPI function not found in library")
                         break
@@ -59,30 +98,37 @@ class KinovaInterface:
     def initialize_functions(self):
         """Initialize all required function pointers from the API"""
         try:
-            # Define function prototypes
+            # Basic API functions
             self.init_api = self.api.InitAPI
             self.init_api.restype = c_int
             
             self.close_api = self.api.CloseAPI
             self.close_api.restype = c_int
             
-            # Get devices list
+            # Device functions
             self.get_devices = self.api.GetDevices
-            self.get_devices.argtypes = [POINTER(KinovaDevice)]
+            self.get_devices.argtypes = [POINTER(KinovaDevice), POINTER(c_int)]
             self.get_devices.restype = c_int
             
             self.set_active_device = self.api.SetActiveDevice
-            self.set_active_device.argtypes = [c_int]  # Changed to use device index
+            self.set_active_device.argtypes = [KinovaDevice]
             self.set_active_device.restype = c_int
             
-            self.start_control_api = self.api.StartControlAPI
-            self.start_control_api.restype = c_int
-            
+            # Movement and position functions
             self.move_home = self.api.MoveHome
             self.move_home.restype = c_int
             
             self.init_fingers = self.api.InitFingers
             self.init_fingers.restype = c_int
+            
+            self.get_angular_command = self.api.GetAngularCommand
+            self.get_angular_command.argtypes = [POINTER(AngularInfo)]
+            self.get_angular_command.restype = c_int
+            
+            # Trajectory functions
+            self.send_basic_trajectory = self.api.SendBasicTrajectory
+            self.send_basic_trajectory.argtypes = [TrajectoryPoint]
+            self.send_basic_trajectory.restype = c_int
             
             print("Successfully initialized API functions")
         except Exception as e:
@@ -102,14 +148,16 @@ class KinovaInterface:
             # Wait a bit for the API to fully initialize
             time.sleep(1)
             
-            # Create a single device structure first
+            # Get devices
             print("Checking for connected devices...")
-            device = KinovaDevice()
-            result = self.get_devices(byref(device))
+            devices = (KinovaDevice * 20)()
+            result_count = c_int()
+            result = self.get_devices(devices, byref(result_count))
             
-            if result != 1:
-                raise Exception(f"Failed to get device list. Result: {result}")
+            if result != 1 or result_count.value == 0:
+                raise Exception("No devices found")
             
+            device = devices[0]
             try:
                 serial = device.SerialNumber.decode().strip('\x00')
                 model = device.Model.decode().strip('\x00')
@@ -117,19 +165,12 @@ class KinovaInterface:
             except Exception as e:
                 print(f"Warning: Could not decode device info: {e}")
             
-            # Set the device as active using index 0
+            # Set the device as active
             print("Setting active device...")
-            result = self.set_active_device(0)  # Use index 0 for first device
+            result = self.set_active_device(device)
             if result != 1:
                 raise Exception(f"Failed to set active device. Result: {result}")
             print("Active device set successfully")
-            
-            # Start the control API
-            print("Starting control API...")
-            result = self.start_control_api()
-            if result != 1:
-                raise Exception(f"Failed to start control API. Result: {result}")
-            print("Control API started successfully")
             
             # Initialize fingers
             print("Initializing fingers...")
@@ -150,13 +191,36 @@ class KinovaInterface:
         """Move the arm to home position"""
         try:
             print("Moving to home position...")
+            
+            # Get current position before moving
+            try:
+                current_pos = AngularInfo()
+                result = self.get_angular_command(byref(current_pos))
+                if result == 1:
+                    print("Current position:", [
+                        current_pos.Actuator1, current_pos.Actuator2,
+                        current_pos.Actuator3, current_pos.Actuator4,
+                        current_pos.Actuator5, current_pos.Actuator6
+                    ])
+            except Exception as e:
+                print(f"Warning: Could not get current position: {e}")
+            
+            # Send home command
+            print("Sending home command...")
             result = self.move_home()
             if result != 1:
                 print(f"Warning: Move home returned {result}")
-            else:
-                print("Moved to home position")
+                return False
+            
+            print("Home command sent successfully")
+            print("The arm is moving to home position...")
+            print("Note: The arm will stop automatically when it reaches home position")
+            
+            return True
+            
         except Exception as e:
             print(f"Failed to move home: {e}")
+            return False
 
     def close(self):
         """Close the connection to the arm"""
@@ -185,4 +249,4 @@ def main():
             arm.close()
 
 if __name__ == "__main__":
-    main() 
+    main()
