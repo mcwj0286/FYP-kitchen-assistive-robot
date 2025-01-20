@@ -25,27 +25,28 @@ from models.bc_baku_policy import BCBakuPolicy
 from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
+from models.act_policy import ACTPolicy
 
 def get_model(model_type,cfg):
     """Initialize model based on type and return both model and config.
     
     Args:
-        model_type (str): Type of model to initialize ('baku' or 'transformer')
+        model_type (str): Type of model to initialize ('baku', 'transformer', or 'act')
         
     Returns:
         tuple: (model, cfg) where model is the initialized model and cfg is its configuration
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    if model_type == "baku":
+    if model_type == "bc_baku":
         # Default configuration for BCBaku
         cfg.device = device
         cfg.seed = 2
-        cfg.train.batch_size = 32
-        cfg.train.lr = 1e-4
+        cfg.train.batch_size = 64
+        cfg.train.lr = 1e-5
         cfg.train.n_epochs = 50
         cfg.train.optimizer.name = 'torch.optim.Adam'
-        cfg.train.optimizer.kwargs.lr = 1e-4
+        cfg.train.optimizer.kwargs.lr = 1e-5
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.data.task_order_index = 0
         cfg.data.seq_len = 10
@@ -54,8 +55,8 @@ def get_model(model_type,cfg):
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
         cfg.use_language = True
-        cfg.temporal_agg = False
-        cfg.num_queries = 1
+        cfg.temporal_agg = True
+        cfg.num_queries = 10
         cfg.hidden_dim = 256
         cfg.history = True
         cfg.history_len = 10
@@ -66,9 +67,9 @@ def get_model(model_type,cfg):
         cfg.eval.eval_every = 5
         cfg.eval.max_steps = 650
         cfg.eval.use_mp = True
-        cfg.eval.num_procs = 3
-        cfg.eval.n_eval = 3
-        
+        cfg.eval.num_procs = 5
+        cfg.eval.n_eval = 5
+        cfg.seq_length = 10
         model = BCBakuPolicy(
             repr_dim=512,
             act_dim=7,
@@ -95,9 +96,53 @@ def get_model(model_type,cfg):
         cfg.device = device
         if not hasattr(cfg.train, 'lr'):
             cfg.train.lr = cfg.train.optimizer.kwargs.lr
-        
+        cfg.seq_length = 10
         # Initialize transformer model
         model = BCTransformerPolicy(cfg, cfg.shape_meta).to(cfg.device)
+        
+    elif model_type == "act":
+        # Default configuration for ACT
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 64
+        cfg.train.n_epochs = 100
+        
+        # ACT optimizer settings
+        cfg.optimizer = EasyDict()
+        cfg.optimizer.name = 'torch.optim.AdamW'
+        cfg.lr = 1e-4  # Main learning rate
+        cfg.lr_backbone = 1e-5  # Backbone learning rate
+        cfg.weight_decay = 1e-4
+        
+        # Core model parameters required by detr_vae.py
+        cfg.hidden_dim = 512  # Transformer hidden dimension
+        cfg.nheads = 8  # Number of attention heads
+        cfg.enc_layers = 4  # Encoder layers
+        cfg.dec_layers = 7  # Decoder layers
+        cfg.dim_feedforward = 2048
+        cfg.dropout = 0.1
+        cfg.pre_norm = False
+        cfg.num_queries = 10  # Chunk size
+        cfg.state_dim = 9  # 7 DoF joints + 2 gripper
+        cfg.action_dim = 7   # 6 DoF + 1 gripper
+        cfg.camera_names = ['pixels', 'pixels_egocentric']
+        cfg.multitask = True
+        cfg.obs_type = "pixels"
+        cfg.max_episode_len = 650
+        # Backbone settings required by backbone.py
+        cfg.backbone = 'resnet18'
+        cfg.position_embedding = 'sine'
+        cfg.dilation = False
+        cfg.masks = False
+        cfg.seq_length = 1
+        cfg.get_pad_mask = True
+        cfg.get_action_padding = True
+        # Initialize ACT model
+        model = ACTPolicy(
+            cfg=cfg,
+            kl_weight=10.0,  # From official ACT implementation
+            device=cfg.device,
+        )
         
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -139,24 +184,30 @@ def convert_to_transformer_format(data_dict):
     }
 
 #loss function 
-def loss_fn(dist, target, reduction="mean", **kwargs):
-    log_probs = dist.log_prob(target)
-    loss = -log_probs
-
-    if reduction == "mean":
-        loss = loss.mean() * 1.0
+def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
+    """Compute loss based on model type"""
+    if model_type == "act":
+        # ACT returns a loss dictionary with l1, kl, and total loss
+        return dist  # dist is actually the loss_dict for ACT
     else:
-        raise NotImplementedError
+        # Original loss computation for other models
+        log_probs = dist.log_prob(target)
+        loss = -log_probs
 
-    return loss
+        if reduction == "mean":
+            loss = loss.mean() * 1.0
+        else:
+            raise NotImplementedError
+
+        return loss
 
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='baku', choices=['baku', 'transformer'],
-                      help='Type of model to train (baku or transformer)')
+    parser.add_argument('--model_type', type=str, default='act', choices=['bc_baku', 'transformer', 'act'],
+                      help='Type of model to train (baku, transformer, or act)')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
@@ -217,6 +268,8 @@ def main(hydra_cfg):
     # Set default num_queries if not specified in config
     if not hasattr(cfg, 'num_queries'):
         cfg.num_queries = 1
+    if not hasattr(cfg, 'get_pad_mask'):
+        cfg.get_pad_mask = False
     # Create dataset
     train_dataset = LIBERODataset(
         data_path=cfg.folder,
@@ -224,7 +277,9 @@ def main(hydra_cfg):
         device=cfg.device,
         load_task_emb=True,
         num_queries=cfg.num_queries,
-        seq_length=10,
+        seq_length=cfg.seq_length,
+        get_pad_mask = cfg.get_pad_mask,
+        get_action_padding=cfg.get_action_padding,
     )
 
     # Create data loader
@@ -236,8 +291,22 @@ def main(hydra_cfg):
         pin_memory=True,
     )
 
-    # Initialize optimizer
-    optimizer = Adam(model.parameters(), lr=cfg.train.lr)
+    # Initialize optimizer based on model type
+    if args.model_type == "act":
+        # ACT uses different learning rates for backbone and other parameters
+        param_dicts = [
+            {
+                "params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad],
+                "lr": cfg.lr,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
+                "lr": cfg.lr_backbone,
+            },
+        ]
+        optimizer = torch.optim.AdamW(param_dicts, weight_decay=cfg.weight_decay)
+    else:
+        optimizer = Adam(model.parameters(), lr=cfg.train.lr)
     
     # Training loop
     logger.info("Starting training...")
@@ -249,43 +318,54 @@ def main(hydra_cfg):
         model.train()
         total_loss = 0.0
         
-        for batch_idx, (obs_dict, gt_actions) in enumerate(train_dataloader):
+        for batch_idx, obs_dict in enumerate(train_dataloader):
             # Move tensors to device
             for key, value in obs_dict.items():
                 if isinstance(value, torch.Tensor):
                     obs_dict[key] = value.to(cfg.device)
-            gt_actions = gt_actions.to(cfg.device)
+                    
+            # Get ground truth actions
+            gt_actions = obs_dict["actions"]
 
-            # Convert format for transformer if needed
-            if cfg.model_type == "transformer":
-                obs_dict = convert_to_transformer_format(obs_dict)
-
-            # Forward pass
-            pred_actions = model.forward(obs_dict)
-            
-            # Print shapes for debugging
-            # if isinstance(pred_actions, torch.distributions.Distribution):
-            #     print(f'pred_actions mean shape: {pred_actions.mean.shape}')
-            #     print(f'gt_actions shape: {gt_actions.shape}')
-            # else:
-            #     print(f'pred_actions shape: {pred_actions.shape}')
-            #     print(f'gt_actions shape: {gt_actions.shape}')
-            
-            # Compute loss
-            loss = loss_fn(pred_actions, gt_actions)
+            # Forward pass based on model type
+            if args.model_type == "act":
+                # Check and reshape actions if needed
+                if obs_dict['actions'].shape[-1] != cfg.action_dim:
+                    obs_dict['actions'] = obs_dict['actions'].view(-1, cfg.num_queries, cfg.action_dim)
+                # ACT forward pass returns loss dictionary
+                loss_dict = model.forward(obs_dict)
+                loss = loss_dict["loss"]  # Combined L1 and KL loss
+                
+                # Log individual losses
+                if batch_idx % 10 == 0:
+                    logger.info(f"Epoch {epoch} Batch {batch_idx} Losses: "
+                              f"L1={loss_dict['l1']:.4f}, "
+                              f"KL={loss_dict['kl']:.4f}, "
+                              f"Total={loss_dict['loss']:.4f}")
+            else:
+                # Convert format for transformer if needed
+                if args.model_type == "transformer":
+                    obs_dict = convert_to_transformer_format(obs_dict)
+                
+                # Original models' forward pass
+                pred_actions = model.forward(obs_dict)
+                loss = loss_fn(pred_actions, gt_actions, model_type=args.model_type)
             
             # Backward pass and optimize
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
-            total_loss += loss.item()
+            if isinstance(loss, torch.Tensor):
+                total_loss += loss.item()
+            else:
+                total_loss += loss_dict["loss"].item()  # For ACT
         
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
-        # Validation step every 5 epochs
-        if epoch > 0 and epoch % 5 == 0:
+        # Validation step every eval_every epochs
+        if epoch > 0 and epoch % cfg.eval.eval_every == 0:
             logger.info(f"Running validation at epoch {epoch}...")
             model.eval()
             with torch.no_grad():
@@ -294,35 +374,18 @@ def main(hydra_cfg):
                 logger.info(f"Validation Success Rates: {success_rates}")
                 logger.info(f"Average Success Rate: {avg_success:.4f}")
                 
-                # Check for improvements
-                improved = False
-                improved_tasks = []
-                for task_idx, (curr_rate, best_rate) in enumerate(zip(success_rates, best_task_success_rates)):
-                    if curr_rate > best_rate:
-                        improved = True
-                        improved_tasks.append(task_idx)
-                        best_task_success_rates[task_idx] = curr_rate
-                
-                if improved:
-                    best_val_success = max(best_val_success, avg_success)
-                    logger.info(f"Improvements in tasks {improved_tasks}")
-                    logger.info("Task-wise improvements:")
-                    for task_idx in improved_tasks:
-                        logger.info(f"    Task {task_idx}: {best_task_success_rates[task_idx]:.4f}")
-                
-                # Save checkpoint
-                save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'task_success_rates': success_rates,
-                    'best_task_success_rates': best_task_success_rates,
-                    'avg_success': avg_success,
-                    'improved_tasks': improved_tasks if improved else [],
-                    'is_best': improved,
-                }, save_path)
-                logger.info(f"Saved model checkpoint at epoch {epoch}")
+                # Save checkpoint if improved
+                if avg_success > best_val_success:
+                    best_val_success = avg_success
+                    save_path = os.path.join(cfg.experiment_dir, f'model_best.pth')
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'success_rates': success_rates,
+                        'avg_success': avg_success,
+                    }, save_path)
+                    logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
 
     logger.info("Training completed")
     train_dataset.close()
