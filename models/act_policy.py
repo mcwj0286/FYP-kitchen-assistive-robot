@@ -10,7 +10,8 @@ import numpy as np
 from collections import deque
 import torchvision.transforms as transforms
 # from networks.utils.act.policy import ACTPolicy as OriginalACTPolicy
-from networks.utils.act.detr.models.detr_vae import build as build_ACT_model
+from .networks.utils.act.detr.models.detr_vae import build as build_ACT_model
+
 def kl_divergence(mu, logvar):
     batch_size = mu.size(0)
     assert batch_size != 0
@@ -26,7 +27,7 @@ def kl_divergence(mu, logvar):
 
     return total_kld, dimension_wise_kld, mean_kld
 
-class ACTPolicy:
+class ACTPolicy(nn.Module):
     """ACT Policy wrapper with training and inference methods.
     
     Implements the training and inference algorithms from the ACT paper:
@@ -35,9 +36,8 @@ class ACTPolicy:
     
     def __init__(self, 
                  cfg,
-                 kl_weight=0.1,
-                 device='cuda',
-                 inference_weight=1.0):
+                 kl_weight=10,
+                 device='cuda'):
         """Initialize ACT Policy.
         
         Args:
@@ -74,10 +74,12 @@ class ACTPolicy:
             device (str): Device to run model on
             inference_weight (float): Weight for exponential averaging during inference
         """
+        super(ACTPolicy, self).__init__()  # Initialize the parent nn.Module
+        
         self.device = torch.device(device)
         self.num_queries = cfg.num_queries
         self.kl_weight = kl_weight
-        self.inference_weight = inference_weight
+       
         self.max_episode_len = cfg.max_episode_len
         self.act_dim = cfg.action_dim
         self.temporal_agg = True # Default to True if not specified
@@ -115,20 +117,20 @@ class ACTPolicy:
         ).to(self.device)
         self.step = 0
         
-    def forward(self, data):
+    def forward(self, data ,is_training=True):
         """Forward pass through the policy network"""
         # Reshape proprioceptive data from (B,1,D) to (B,D)
         if data["proprioceptive"].dim() == 3:
             data["proprioceptive"] = data["proprioceptive"].squeeze(1)
             
-        # Check temporal dimension of input images
-        if "pixels" in data:
-            if data["pixels"].shape[1] == 1:
-                raise ValueError("Expected pixels temporal dimension > 1, got shape: " + str(data["pixels"].shape))
+        # # Check temporal dimension of input images
+        # if "pixels" in data:
+        #     if data["pixels"].shape[1] == 1:
+        #         raise ValueError("Expected pixels temporal dimension > 1, got shape: " + str(data["pixels"].shape))
                 
-        if "pixels_egocentric" in data:
-            if data["pixels_egocentric"].shape[1] == 1:
-                raise ValueError("Expected pixels_egocentric temporal dimension > 1, got shape: " + str(data["pixels_egocentric"].shape))
+        # if "pixels_egocentric" in data:
+        #     if data["pixels_egocentric"].shape[1] == 1:
+        #         raise ValueError("Expected pixels_egocentric temporal dimension > 1, got shape: " + str(data["pixels_egocentric"].shape))
 
         # Normalize images and ensure consistent dimensions
         if "pixels" in data:
@@ -149,18 +151,19 @@ class ACTPolicy:
             task_emb = data["task_emb"]
             
         # Process inputs through model
-        if "actions" in data and data["actions"] is not None:
+        if is_training:
             # Training mode
+            data["action_padding_mask"] = data["action_padding_mask"].squeeze(1)
             # Ensure actions and padding mask have same sequence length
-            if data["actions"].shape[1] != data["pad_mask"].shape[1]:
-                raise ValueError(f"Actions shape {data['actions'].shape} and padding mask shape {data['pad_mask'].shape} must have same sequence length")
+            if data["actions"].shape[1] != data["action_padding_mask"].shape[1]:
+                raise ValueError(f"Actions shape {data['actions'].shape} and padding mask shape {data['action_padding_mask'].shape} must have same sequence length")
                 
             pred_actions, is_pad_hat, (mu, logvar) = self.model(
                 qpos=data["proprioceptive"],  # [B, state_dim]
                 image=images,  # [B, num_cameras, C, H, W]
                 env_state=None,
                 actions=data["actions"],  # [B, seq_len, action_dim]
-                is_pad=data["pad_mask"],  # [B, seq_len]
+                is_pad=data["action_padding_mask"],  # [B, seq_len]
                 task_emb=task_emb  # [B, hidden_dim]
             )
             
@@ -199,7 +202,7 @@ class ACTPolicy:
                 - task_emb: Task embedding (B,1, E)
         Get action for evaluation/inference
         """
-        pred_actions = self.forward(data)  # [B, seq_len, act_dim]
+        pred_actions = self.forward(data, is_training=False)  # [B, seq_len, act_dim]
             
         # action chunking with batch dimension
         if self.temporal_agg:
@@ -254,19 +257,19 @@ if __name__ == "__main__":
         
         # Transformer config
         nheads=8,
-        num_encoder_layers=6,
-        num_decoder_layers=6,
-        dim_feedforward=2048,
+        # num_encoder_layers=4,
+        # num_decoder_layers=7,
+        dim_feedforward=256,
         dropout=0.1,
         pre_norm=False,
-        enc_layers=6,  # Required by transformer
-        dec_layers=6,  # Required by transformer
+        enc_layers=4,  # Required by transformer
+        dec_layers=7,  # Required by transformer
         
         # Model config
         state_dim=14,
         action_dim=7,  # [x, y, z, rx, ry, rz, gripper]
         num_queries=10,  # chunk size
-        camera_names=['camera1', 'camera2'],
+        camera_names=['pixels', 'pixels_egocentric'],
         multitask=True,
         obs_type='pixels',
         max_episode_len=1000,
@@ -280,14 +283,14 @@ if __name__ == "__main__":
         # Additional required params from detr_vae.py
         num_feature_levels=1,
         num_pos_feats=256,  # hidden_dim//2
-        temperature=10000.0,
-        normalize=True,
-        scale=None,
-        aux_loss=False,
-        with_box_refine=False,
-        two_stage=False,
-        activation='relu',
-        batch_first=True
+        # temperature=10000.0,
+        # normalize=True,
+        # scale=None,
+        # aux_loss=False,
+        # with_box_refine=False,
+        # two_stage=False,
+        # activation='relu',
+        # batch_first=True
     )
     
     # Initialize policy
@@ -295,8 +298,38 @@ if __name__ == "__main__":
         cfg=cfg,
         kl_weight=0.1,
         device='cuda',
-        inference_weight=1.0
+       
     )
+    
+    # Print detailed parameter counts
+    def count_parameters(model):
+        total_params = 0
+        param_counts = {}
+        
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                num_params = param.numel()
+                total_params += num_params
+                
+                # Group parameters by component
+                component = name.split('.')[0]
+                if component not in param_counts:
+                    param_counts[component] = 0
+                param_counts[component] += num_params
+                
+        #         # Print individual layer details
+        #         print(f"{name}: {param.shape}, params: {num_params:,}")
+        
+        # Print summary by component
+        print("\nParameters by component:")
+        for component, count in param_counts.items():
+            print(f"{component}: {count:,} parameters ({count/total_params*100:.2f}%)")
+            
+        print(f"\nTotal trainable parameters: {total_params:,}")
+        return total_params
+    
+    print("\nDetailed model architecture:")
+    total_params = count_parameters(policy.model)
     
     # Example training data with correct shapes
     batch_size = 2
@@ -306,19 +339,38 @@ if __name__ == "__main__":
         'pixels_egocentric': torch.randn(batch_size, seq_len, 3, 224, 224).to('cuda'),  # [B, T, C, H, W]
         'proprioceptive': torch.randn(batch_size, cfg.state_dim).to('cuda'),  # [B, state_dim]
         'task_emb': torch.randn(batch_size, cfg.hidden_dim).to('cuda'),  # [B, hidden_dim]
-        'pad_mask': torch.zeros(batch_size, cfg.num_queries).bool().to('cuda'),  # [B, num_queries]
+        'pad_mask': torch.ones(batch_size, cfg.num_queries).bool().to('cuda'),  # [B, num_queries]
         'actions': torch.randn(batch_size, cfg.num_queries, cfg.action_dim).to('cuda')  # [B, num_queries, action_dim]
     }
     
-
+    # Test training with backpropagation
+    print("\nTesting training with backpropagation...")
     
-    # Test training
-    print("\nTesting training...")
-    loss_dict = policy.forward(data)
-    print("Losses:", loss_dict)
+    # Training loop
+    num_epochs = 2
+    for epoch in range(num_epochs):
+        # Zero gradients
+        policy.optimizer.zero_grad()
+        
+        # Forward pass
+        loss_dict = policy.forward(data)
+        print(f"Epoch {epoch + 1} Losses:", loss_dict)
+        
+        # Backward pass
+        total_loss = loss_dict['loss']
+        total_loss.backward()
+        
+        # Print gradients for debugging
+        # for name, param in policy.model.named_parameters():
+        #     if param.grad is not None:
+        #         print(f"Gradient norm for {name}: {param.grad.norm().item()}")
+        
+        # Update parameters
+        policy.optimizer.step()
     
     # Remove actions for inference test
-    inference_data = {k:v for k,v in data.items() if k != 'actions'}
+    inference_data = {k:v for k,v in data.items() if k != 'actions' or k != 'pad_mask'}
+    
     # Test inference
     print("\nTesting inference...")
     pred_actions = policy.get_action(inference_data)
