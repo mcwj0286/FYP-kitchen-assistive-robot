@@ -116,6 +116,8 @@ class DETRVAE(nn.Module):
                 2, hidden_dim
             )  # learned position embedding for proprio and latent
 
+        self.lang_proj = nn.Linear(768, hidden_dim) #hardcoded for bert 768
+
     def forward(self, qpos, image, env_state, actions=None, is_pad=None, task_emb=None):
         """
         qpos: batch, qpos_dim
@@ -179,6 +181,8 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
+            
+
             hs = self.transformer(
                 src,
                 None,
@@ -187,7 +191,7 @@ class DETRVAE(nn.Module):
                 latent_input,
                 proprio_input,
                 self.additional_pos_embed.weight,
-                task_emb=task_emb,
+                task_emb=self.lang_proj(task_emb),
             )[
                 0
             ]
