@@ -31,7 +31,8 @@ class LIBERODataset(Dataset):
         overlap: int = 0,  # Number of overlapping timestamps between sequences
         pad_frame_stack: bool = True,  # Whether to pad for frame stacking
         pad_seq_length: bool = True,  # Whether to pad for sequence length
-        get_pad_mask: bool = False  # Whether to return padding masks
+        get_pad_mask: bool = False,  # Whether to return padding masks
+        get_action_padding: bool = False  # Whether to return action padding masks
     ):
         """
         Args:
@@ -47,6 +48,7 @@ class LIBERODataset(Dataset):
             pad_frame_stack (bool): Whether to pad for frame stacking
             pad_seq_length (bool): Whether to pad for sequence length
             get_pad_mask (bool): Whether to return padding masks
+            get_action_padding (bool): Whether to return action padding masks
         """
         super().__init__()
         
@@ -64,6 +66,7 @@ class LIBERODataset(Dataset):
         self.pad_frame_stack = pad_frame_stack
         self.pad_seq_length = pad_seq_length
         self.get_pad_mask = get_pad_mask
+        self.get_action_padding = get_action_padding
             
         # Load all HDF5 files and organize by tasks
         self.task_files = {}  # Maps task_name to file path
@@ -155,35 +158,57 @@ class LIBERODataset(Dataset):
             self.file_cache[file_path] = h5py.File(file_path, 'r')
         return self.file_cache[file_path]
     
-    def _process_actions(self, actions: np.ndarray) -> np.ndarray:
-        """Process actions to include future actions
+    def _process_actions(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Process actions to include future actions and create padding mask
         
         Args:
             actions: Original actions array of shape (T, 7)
             
         Returns:
-            Processed actions of shape (T, 7 * num_queries) where each timestep
-            includes the current and future actions, padded with zeros if needed
+            tuple: (processed_actions, action_padding_mask) where:
+                - processed_actions: shape (T, 7 * num_queries) where each timestep
+                  includes the current and future actions, padded with zeros if needed
+                - action_padding_mask: shape (T, num_queries) where True indicates valid
+                  actions and False indicates padded actions
         """
         T, action_dim = actions.shape
         total_dim = action_dim * self.num_queries
         
-        # Initialize output array with zeros (this handles padding automatically)
+        # Initialize output arrays with zeros
         processed_actions = np.zeros((T, total_dim), dtype=actions.dtype)
+        action_padding_mask = np.zeros((T, self.num_queries), dtype=bool)
         
         # For each timestep, concatenate the next num_queries actions
         for t in range(T):
             future_actions = actions[t:t + self.num_queries]  # Get next actions (might be less than num_queries)
             actual_futures = len(future_actions)
+            
             # Place the available future actions in the correct position
             processed_actions[t, :actual_futures * action_dim] = future_actions.flatten()
             
-        return processed_actions
+            # Mark which future actions are valid (not padded)
+            action_padding_mask[t, :actual_futures] = True
+            
+        return processed_actions, action_padding_mask
     
     def __len__(self) -> int:
         return len(self.segment_map)
     
     def __getitem__(self, idx: int) -> Dict[str, np.ndarray]:
+        """
+        Returns:
+            dict: Dictionary containing:
+                - pixels: Agent view RGB images (T, 3, 128, 128) float32 tensor normalized to [0,1]
+                - pixels_egocentric: Eye-in-hand RGB images (T, 3, 128, 128) float32 tensor normalized to [0,1] 
+                - proprioceptive: Robot state features (T, 9) float32 tensor
+                - actions: Ground truth actions (T, 7*num_queries) float32 tensor
+                - padding_mask: Binary mask indicating padded timesteps (T,) bool tensor (if get_pad_mask=True)
+                - task_emb: Task embedding (768,) float32 tensor (if load_task_emb=True)
+                - action_padding_mask: Binary mask indicating padded actions (T, num_queries) bool tensor (if get_action_padding=True)
+                
+            where T is the sequence length. Padding mask is True for padded timesteps
+            and False for valid timesteps.
+        """
         """Get a sequence segment from a demonstration trajectory"""
         file_path, demo_key, task_name, start_idx, is_padded, actual_length = self.segment_map[idx]
         f = self._get_file(file_path)
@@ -218,7 +243,10 @@ class LIBERODataset(Dataset):
         # Process actions
         actions = np.zeros((self.seq_length, 7), dtype=np.float32)
         actions[:actual_length] = demo['actions'][start_idx:start_idx + actual_length]
-        gt_actions = self._process_actions(actions)
+        if self.get_action_padding:
+            gt_actions, action_padding_mask = self._process_actions(actions)
+        else:
+            gt_actions = self._process_actions(actions)[0]  # Only get the actions, ignore the mask
         
         # Convert images to float and normalize
         data["pixels"] = data["pixels"].astype(np.float32) / 255.0
@@ -239,8 +267,12 @@ class LIBERODataset(Dataset):
             pad_mask = torch.zeros(self.seq_length, 1, dtype=torch.bool)
             pad_mask[frame_stack_pad:actual_length] = 1
             data["pad_mask"] = pad_mask
-            
-        return data, torch.from_numpy(gt_actions)
+        
+        data["actions"] = torch.from_numpy(gt_actions)
+        if self.get_action_padding:
+            data["action_padding_mask"] = torch.from_numpy(action_padding_mask)
+        
+        return data
 
     def close(self):
         """Close all open HDF5 files"""
@@ -267,7 +299,8 @@ if __name__ == "__main__":
         overlap=0,
         pad_frame_stack=True,
         pad_seq_length=True,
-        get_pad_mask=True
+        get_pad_mask=True,
+        get_action_padding=True
     )
     print(f"Number of segments (no overlap): {len(dataset_basic)}")
     
@@ -281,7 +314,8 @@ if __name__ == "__main__":
         overlap=3,
         pad_frame_stack=True,
         pad_seq_length=True,
-        get_pad_mask=True
+        get_pad_mask=True,
+        get_action_padding=True
     )
     print(f"Number of segments (with overlap): {len(dataset_overlap)}")
     
@@ -295,7 +329,8 @@ if __name__ == "__main__":
         overlap=0,
         pad_frame_stack=True,
         pad_seq_length=True,
-        get_pad_mask=True
+        get_pad_mask=True,
+        get_action_padding=True
     )
     
     # Validate overlapping sequences
@@ -353,6 +388,7 @@ if __name__ == "__main__":
             frame_stack=4,
             overlap=2,
             get_pad_mask=True,
+            get_action_padding=True,
             **config
         )
         print(f"\nConfiguration: {config}")
