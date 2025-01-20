@@ -16,6 +16,7 @@ from torch.distributions.utils import _standard_normal
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv, DummyVectorEnv
 from libero.lifelong.metric import raw_obs_to_tensor_obs
 from torch import distributions as pyd
+from sentence_transformers import SentenceTransformer
 # Initialize BERT model and tokenizer at module level
 _tokenizer = None
 _bert_model = None
@@ -29,39 +30,53 @@ def get_bert_model_and_tokenizer():
         _bert_model = AutoModel.from_pretrained("bert-base-cased")
     return _tokenizer, _bert_model
 
-def encode_task(task_name: str, max_word_len: int = 77, device: str = 'cpu') -> torch.Tensor:
-    """Encode task name using BERT
+def encode_task(task_name: str, max_word_len: int = 77, device: str = 'cpu', model_type: str = 'transformer') -> torch.Tensor:
+    """Encode task name using either BERT or SentenceTransformer
     
     Args:
         task_name (str): Name of the task to encode
-        max_word_len (int): Maximum length for tokenization
+        max_word_len (int): Maximum length for tokenization (used for BERT only)
         device (str): Device to put the model on
+        model_type (str): Type of model to use ('transformer' or 'baku')
         
     Returns:
-        torch.Tensor: Task embedding of shape (1, 768)
+        torch.Tensor: Task embedding of shape (1, 768) for BERT or (1, 384) for SentenceTransformer
     """
-    tokenizer, bert_model = get_bert_model_and_tokenizer()
-    
-    tokens = tokenizer(
-        text=task_name,
-        add_special_tokens=True,
-        max_length=max_word_len,
-        padding="max_length",
-        return_attention_mask=True,
-        return_tensors="pt",
-    )
-    
-    # Move to specified device
-    input_ids = tokens["input_ids"].to(device)
-    attention_mask = tokens["attention_mask"].to(device)
-    bert_model = bert_model.to(device)
-    
-    # Get BERT embedding
-    with torch.no_grad():
-        outputs = bert_model(input_ids, attention_mask)
-        task_emb = outputs["pooler_output"]  # Use pooled output for [CLS] token
+    if model_type == 'baku':
+        # Use SentenceTransformer for Baku model
+        sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        sentence_encoder = sentence_encoder.to(device)
         
-    return task_emb  # Shape: (1, 768)
+        with torch.no_grad():
+            # Encode and convert to numpy first
+            embedding = sentence_encoder.encode(task_name)
+            # Convert to tensor
+            embedding = torch.tensor(embedding, device=device)  # Shape: (384,)
+            return embedding  # Shape: (384,)
+    else:
+        # Use BERT for transformer model (existing implementation)
+        tokenizer, bert_model = get_bert_model_and_tokenizer()
+        
+        tokens = tokenizer(
+            text=task_name,
+            add_special_tokens=True,
+            max_length=max_word_len,
+            padding="max_length",
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        
+        # Move to specified device
+        input_ids = tokens["input_ids"].to(device)
+        attention_mask = tokens["attention_mask"].to(device)
+        bert_model = bert_model.to(device)
+        
+        # Get BERT embedding
+        with torch.no_grad():
+            outputs = bert_model(input_ids, attention_mask)
+            task_emb = outputs["pooler_output"]  # Use pooled output for [CLS] token
+            
+        return task_emb  # Shape: (1, 768)
 
 class eval_mode:
     def __init__(self, *models):
@@ -334,7 +349,7 @@ def evaluate_multitask_training_success(cfg,benchmark, task_ids, model ):
     successes = []
     for i in task_ids:
         task_i = benchmark.get_task(i)
-        task_emb = encode_task(task_i.language)
+        task_emb = encode_task(task_i.language, model_type=cfg.model_type)
         success_rate = evaluate_one_task_success(cfg, model, task_i, task_emb, i)
         successes.append(success_rate)
     return np.array(successes)
@@ -421,7 +436,7 @@ def evaluate_one_task_success(
                 if cfg.model_type == "transformer":
                     actions = model.get_action(data)
                 else:
-                    actions = model.get_action(data,steps)
+                    actions = model.get_action(data)
 
                 obs, reward, done, info = env.step(actions)
 
@@ -464,7 +479,7 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
         # Initialize the data structure
         data = {
             "obs": {},
-            "task_emb": task_emb.repeat(env_num, 1).to(device),
+            "task_emb": task_emb.repeat(env_num, 1, 1).to(device),
         }
         
         # Define key mapping from environment to model
@@ -526,7 +541,7 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
         "pixels": torch.stack(agentview_images).to(device),  # [B, H, W, C]
         "pixels_egocentric": torch.stack(hand_images).to(device),  # [B, H, W, C]
         "proprioceptive": torch.stack(proprio_states).to(device),  # [B, D]
-        "task_emb": task_emb.repeat(env_num, 1).to(device)  # [B, E]
+        "task_emb": task_emb.repeat(env_num, 1).unsqueeze(1).to(device)  # [B, 1, E]
     }
 
     # Permute image dimensions from [B, H, W, C] to [B, C, H, W] for PyTorch
