@@ -100,11 +100,11 @@ class ACTPolicy(nn.Module):
         ]
         self.optimizer = torch.optim.AdamW(param_dicts, weight_decay=cfg.weight_decay)
         
-        # Image normalization
-        self.normalize = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225]
-        )
+        # Remove image normalization if data is already normalized
+        # self.normalize = transforms.Normalize(
+        #     mean=[0.485, 0.456, 0.406], 
+        #     std=[0.229, 0.224, 0.225]
+        # )
         self.reset()
     
     def reset(self):
@@ -132,14 +132,12 @@ class ACTPolicy(nn.Module):
         #     if data["pixels_egocentric"].shape[1] == 1:
         #         raise ValueError("Expected pixels_egocentric temporal dimension > 1, got shape: " + str(data["pixels_egocentric"].shape))
 
-        # Normalize images and ensure consistent dimensions
-        if "pixels" in data:
-            B, T, C, H, W = data["pixels"].shape
-            data["pixels"] = self.normalize(data["pixels"].reshape(-1, C, H, W)).reshape(B, T, C, H, W)
+        # Remove normalization step since data is already normalized
+        # if "pixels" in data:
+        #     B, T, C, H, W = data["pixels"].shape
+        #     data["pixels"] = self.normalize(data["pixels"].reshape(-1, C, H, W)).reshape(B, T, C, H, W)
             
         if "pixels_egocentric" in data:
-            B, T, C, H, W = data["pixels_egocentric"].shape
-            data["pixels_egocentric"] = self.normalize(data["pixels_egocentric"].reshape(-1, C, H, W)).reshape(B, T, C, H, W)
             images = torch.cat([data["pixels"], data["pixels_egocentric"]], dim=1)
         else:
             images = data["pixels"]
