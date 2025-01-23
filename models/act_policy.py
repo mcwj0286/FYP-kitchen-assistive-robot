@@ -89,11 +89,7 @@ class ACTPolicy(nn.Module):
         self.model = build_ACT_model(cfg).to(self.device)
         self.lang_proj = nn.Linear(lang_dim, cfg.hidden_dim).to(self.device)
         
-        # Image normalization
-        self.normalize = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225]
-        )
+   
         
         # Setup optimizer with all parameters including lang_proj
         param_dicts = [
@@ -130,20 +126,12 @@ class ACTPolicy(nn.Module):
         # Reshape proprioceptive data from (B,1,D) to (B,D)
         if data["proprioceptive"].dim() == 3:
             data["proprioceptive"] = data["proprioceptive"].squeeze(1)
-            
-        # # Check temporal dimension of input images
-        # if "pixels" in data:
-        #     if data["pixels"].shape[1] == 1:
-        #         raise ValueError("Expected pixels temporal dimension > 1, got shape: " + str(data["pixels"].shape))
-                
-        # if "pixels_egocentric" in data:
-        #     if data["pixels_egocentric"].shape[1] == 1:
-        #         raise ValueError("Expected pixels_egocentric temporal dimension > 1, got shape: " + str(data["pixels_egocentric"].shape))
+   
 
-        # Normalize images and ensure consistent dimensions
-        if "pixels" in data:
-            B, T, C, H, W = data["pixels"].shape
-            data["pixels"] = self.normalize(data["pixels"].reshape(-1, C, H, W)).reshape(B, T, C, H, W)
+        # # Normalize images and ensure consistent dimensions
+        # if "pixels" in data:
+        #     B, T, C, H, W = data["pixels"].shape
+        #     data["pixels"] = self.normalize(data["pixels"].reshape(-1, C, H, W)).reshape(B, T, C, H, W)
             
         if "pixels_egocentric" in data:
             images = torch.cat([data["pixels"], data["pixels_egocentric"]], dim=1)
