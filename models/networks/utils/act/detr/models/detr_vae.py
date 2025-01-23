@@ -116,7 +116,7 @@ class DETRVAE(nn.Module):
                 2, hidden_dim
             )  # learned position embedding for proprio and latent
 
-        self.lang_proj = nn.Linear(768, hidden_dim) #hardcoded for bert 768
+        
 
     def forward(self, qpos, image, env_state, actions=None, is_pad=None, task_emb=None):
         """
@@ -191,7 +191,7 @@ class DETRVAE(nn.Module):
                 latent_input,
                 proprio_input,
                 self.additional_pos_embed.weight,
-                task_emb=self.lang_proj(task_emb),
+                task_emb=task_emb,
             )[
                 0
             ]

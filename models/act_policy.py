@@ -37,6 +37,7 @@ class ACTPolicy(nn.Module):
     def __init__(self, 
                  cfg,
                  kl_weight=10,
+                 lang_dim=768,
                  device='cuda'):
         """Initialize ACT Policy.
         
@@ -86,25 +87,27 @@ class ACTPolicy(nn.Module):
         
         # Initialize the ACT model
         self.model = build_ACT_model(cfg).to(self.device)
-        
-        # Setup optimizer
-        param_dicts = [
-            {
-                "params": [p for n, p in self.model.named_parameters() if "backbone" not in n and p.requires_grad],
-                "lr": cfg.lr,
-            },
-            {
-                "params": [p for n, p in self.model.named_parameters() if "backbone" in n and p.requires_grad],
-                "lr": cfg.lr_backbone,
-            },
-        ]
-        self.optimizer = torch.optim.AdamW(param_dicts, weight_decay=cfg.weight_decay)
+        self.lang_proj = nn.Linear(lang_dim, cfg.hidden_dim).to(self.device)
         
         # Image normalization
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], 
             std=[0.229, 0.224, 0.225]
         )
+        
+        # Setup optimizer with all parameters including lang_proj
+        param_dicts = [
+            {
+                "params": [p for n, p in self.named_parameters() if "backbone" not in n and p.requires_grad],
+                "lr": cfg.lr,
+            },
+            {
+                "params": [p for n, p in self.named_parameters() if "backbone" in n and p.requires_grad],
+                "lr": cfg.lr_backbone,
+            },
+        ]
+        self.optimizer = torch.optim.AdamW(param_dicts, weight_decay=cfg.weight_decay)
+        
         self.reset()
     
     def reset(self):
@@ -123,15 +126,6 @@ class ACTPolicy(nn.Module):
         if data["proprioceptive"].dim() == 3:
             data["proprioceptive"] = data["proprioceptive"].squeeze(1)
             
-        # # Check temporal dimension of input images
-        # if "pixels" in data:
-        #     if data["pixels"].shape[1] == 1:
-        #         raise ValueError("Expected pixels temporal dimension > 1, got shape: " + str(data["pixels"].shape))
-                
-        # if "pixels_egocentric" in data:
-        #     if data["pixels_egocentric"].shape[1] == 1:
-        #         raise ValueError("Expected pixels_egocentric temporal dimension > 1, got shape: " + str(data["pixels_egocentric"].shape))
-
         # Normalize images and ensure consistent dimensions
         if "pixels" in data:
             B, T, C, H, W = data["pixels"].shape
@@ -144,16 +138,25 @@ class ACTPolicy(nn.Module):
         else:
             images = data["pixels"]
             
-        # Reshape task embedding
+        # Move task embedding to correct device and reshape
         if data["task_emb"].dim() == 3:
-            task_emb = data["task_emb"].squeeze(1)  # Remove temporal dimension if present
+            task_emb = data["task_emb"].to(self.device)
+            task_emb = self.lang_proj(task_emb)
+            task_emb = task_emb.squeeze(1)  # Remove temporal dimension if present
         else:
-            task_emb = data["task_emb"]
-            
+            task_emb = data["task_emb"].to(self.device)
+            task_emb = task_emb.unsqueeze(1)
+            task_emb = self.lang_proj(task_emb)
+            task_emb = task_emb.squeeze(1)
+
         # Process inputs through model
         if is_training:
             # Training mode
-            data["action_padding_mask"] = data["action_padding_mask"].squeeze(1)
+            data["action_padding_mask"] = data["action_padding_mask"].to(self.device).squeeze(1)
+            data["actions"] = data["actions"].to(self.device)
+            data["proprioceptive"] = data["proprioceptive"].to(self.device)
+            images = images.to(self.device)
+            
             # Ensure actions and padding mask have same sequence length
             if data["actions"].shape[1] != data["action_padding_mask"].shape[1]:
                 raise ValueError(f"Actions shape {data['actions'].shape} and padding mask shape {data['action_padding_mask'].shape} must have same sequence length")
@@ -182,6 +185,9 @@ class ACTPolicy(nn.Module):
             
         else:
             # Inference mode
+            data["proprioceptive"] = data["proprioceptive"].to(self.device)
+            images = images.to(self.device)
+            
             pred_actions, _, _ = self.model(
                 qpos=data["proprioceptive"],
                 image=images,
