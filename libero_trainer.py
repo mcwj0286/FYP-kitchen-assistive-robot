@@ -22,7 +22,7 @@ from libero.libero.benchmark import get_benchmark
 from torch.utils.data import DataLoader, RandomSampler
 from dataset import LIBERODataset
 from models.bc_baku_policy import BCBakuPolicy
-from model.bc_transformer_policy import bc_transformer_policy
+from models.bc_transformer_policy import bc_transformer_policy
 from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
@@ -148,20 +148,22 @@ def get_model(model_type,cfg):
         # Configuration for our bc_transformer_policy
         cfg.device = device
         cfg.seed = 2
-        cfg.train.batch_size = 64
+        cfg.train.batch_size = 32
         cfg.train.lr = 1e-4
         cfg.train.n_epochs = 50
         cfg.obs_type = "pixels"
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
         cfg.temporal_agg = False
-        cfg.num_queries = 10
+        cfg.num_queries = 1
         cfg.hidden_dim = 256
         cfg.history = True
         cfg.history_len = 10
         cfg.film = True
         cfg.max_episode_len = 650
-        
+        cfg.seq_length = 10
+        cfg.get_pad_mask = False
+        cfg.get_action_padding = False
         # Initialize our transformer model
         model = bc_transformer_policy(
             repr_dim=512,
@@ -232,6 +234,10 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
     if model_type == "act":
         # ACT returns a loss dictionary with l1, kl, and total loss
         return dist  # dist is actually the loss_dict for ACT
+    elif model_type == "bc_transformer":
+        # Use Mean Squared Error (MSE) loss for bc_transformer
+        loss = nn.MSELoss(reduction=reduction)(dist, target)
+        return loss
     else:
         # Original loss computation for other models
         log_probs = dist.log_prob(target)
@@ -249,7 +255,7 @@ def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='act', choices=['bc_baku', 'transformer', 'act'],
+    parser.add_argument('--model_type', type=str, default='bc_transformer', choices=['bc_baku', 'transformer', 'act', 'bc_transformer'],
                       help='Type of model to train (baku, transformer, or act)')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
@@ -429,6 +435,27 @@ def main(hydra_cfg):
                         'avg_success': avg_success,
                     }, save_path)
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
+                
+                # Save model checkpoint for every eval epoch
+                eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'success_rates': success_rates,
+                    'avg_success': avg_success,
+                }, eval_save_path)
+                logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
+
+
+    # Save final model checkpoint regardless of performance
+    final_save_path = os.path.join(cfg.experiment_dir, f'model_final.pth')
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, final_save_path)
+    logger.info(f"Saved final model checkpoint at {final_save_path}")
 
     logger.info("Training completed")
     train_dataset.close()

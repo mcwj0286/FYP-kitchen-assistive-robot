@@ -61,7 +61,10 @@ class bc_transformer_policy(nn.Module):
         action_dim = (
             self.act_dim * self.num_queries
         )
-        
+        if obs_type == "pixels":
+            if use_proprio:
+                proprio_shape = obs_shape[self.proprio_key]
+            obs_shape = obs_shape[self.pixel_keys[0]]
         # Initialize transformer decoder
         self.transformer = TransformerDecoder(
             input_size=repr_dim,
@@ -147,14 +150,14 @@ class bc_transformer_policy(nn.Module):
         
         # 1. Process language embedding for FiLM
         lang_features = data["task_emb"].float()  # (B, 1, E)
-        lang_features = self.language_projector(lang_features.squeeze(1))  # (B, lang_repr_dim)
+        lang_features = self.language_projector(lang_features)  # (B, 1, lang_repr_dim)
         
         # Get batch and time dimensions from first image
         B, T = data["obs"][self.pixel_keys[0]].shape[:2]
         
         # Expand language features
-        lang_features = lang_features.view(B, 1, 1, -1).expand(-1, T, -1, -1)  # (B, T, 1, E)
-        encoded.append(lang_features)
+        lang_token = lang_features.view(B, 1, 1, -1).expand(-1, T, -1, -1)  # (B, T, 1, E)
+        encoded.append(lang_token)
         
         # 2. Process vision features
         for key in self.pixel_keys:
@@ -163,9 +166,11 @@ class bc_transformer_policy(nn.Module):
             
             # Process each timestep
             pixel = pixel.reshape(B * T, C, H, W)
+            lang = lang_features.repeat_interleave(T, dim=0) if self.language_fusion == "film" else None
+
             pixel = self.vision_encoder[key](
                 pixel,
-                langs=data["task_emb"].squeeze(1).repeat_interleave(T, dim=0)  # Reshape [B,E] -> [B*T,E]
+                lang=lang  # Reshape [B,E] -> [B*T,E]
             )
             pixel = pixel.view(B, T, 1, -1)
             encoded.append(pixel)
