@@ -234,10 +234,6 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
     if model_type == "act":
         # ACT returns a loss dictionary with l1, kl, and total loss
         return dist  # dist is actually the loss_dict for ACT
-    elif model_type == "bc_transformer":
-        # Use Mean Squared Error (MSE) loss for bc_transformer
-        loss = nn.MSELoss(reduction=reduction)(dist, target)
-        return loss
     else:
         # Original loss computation for other models
         log_probs = dist.log_prob(target)

@@ -12,7 +12,7 @@ from collections import deque
 import torchvision.transforms as T
 import einops
 import numpy as np
-
+from models.networks.policy_head import DeterministicHead
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
 
@@ -83,10 +83,8 @@ class bc_transformer_policy(nn.Module):
         
         # Action head for final prediction
         if policy_head == "deterministic":
-            self.action_head = nn.Sequential(
-                nn.Linear(repr_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, action_dim)
+            self._action_head = DeterministicHead(
+                hidden_dim, self._act_dim, hidden_size=hidden_dim, num_layers=2
             )
 
         # initialize the vision encoder
@@ -280,7 +278,7 @@ class bc_transformer_policy(nn.Module):
             
             # Apply temporal encoding
             x = self.temporal_encode(x)
-            
+            pred_actions = pred_actions.mean
             # Get action prediction
             pred_actions = self.action_head(x[:, -1])
             
