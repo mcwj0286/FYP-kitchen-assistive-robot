@@ -48,33 +48,25 @@ class bc_transformer_policy(nn.Module):
         self.max_episode_len = max_episode_len
         self.use_proprio = use_proprio
         self.observation_buffer = {}
-        self.num_queries = num_queries
+        # self.num_queries = num_queries
         self.act_dim = act_dim
         self.num_prompt_feats = num_feat_per_step
         self.step = 0
-        # number of inputs per time step
-        if obs_type == "features":
-            num_feat_per_step = 1
-        elif obs_type == "pixels":
-            num_feat_per_step = len(self.pixel_keys)
-            if use_proprio:
-                num_feat_per_step += 1
 
-        # observation params
-        if obs_type == "pixels":
-            if use_proprio:
-                proprio_shape = obs_shape[self.proprio_key]
-            obs_shape = obs_shape[self.pixel_keys[0]]
-
+        if self.temporal_agg:
+            self.num_queries = num_queries
+        else: 
+            self.num_queries = 1
+ 
         action_dim = (
-            self.act_dim * self.num_queries if self.temporal_agg else self.act_dim
+            self.act_dim * self.num_queries
         )
         
         # Initialize transformer decoder
         self.transformer = TransformerDecoder(
             input_size=repr_dim,
             num_layers=8,
-            num_heads=8,
+            num_heads=4,
             head_output_size=64,
             mlp_hidden_size=hidden_dim,
             dropout=0.1
