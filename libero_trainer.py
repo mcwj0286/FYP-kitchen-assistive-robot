@@ -22,6 +22,7 @@ from libero.libero.benchmark import get_benchmark
 from torch.utils.data import DataLoader, RandomSampler
 from dataset import LIBERODataset
 from models.bc_baku_policy import BCBakuPolicy
+from model.bc_transformer_policy import bc_transformer_policy
 from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
@@ -143,7 +144,49 @@ def get_model(model_type,cfg):
             kl_weight=10.0,  # From official ACT implementation
             device=cfg.device,
         )
+    elif model_type == "bc_transformer": #custom implementation from libero transformer
+        # Configuration for our bc_transformer_policy
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 64
+        cfg.train.lr = 1e-4
+        cfg.train.n_epochs = 50
+        cfg.obs_type = "pixels"
+        cfg.policy_head = "deterministic"
+        cfg.use_proprio = True
+        cfg.temporal_agg = False
+        cfg.num_queries = 10
+        cfg.hidden_dim = 256
+        cfg.history = True
+        cfg.history_len = 10
+        cfg.film = True
+        cfg.max_episode_len = 650
         
+        # Initialize our transformer model
+        model = bc_transformer_policy(
+            repr_dim=512,
+            act_dim=7,
+            hidden_dim=cfg.hidden_dim,
+            policy_head=cfg.policy_head,
+            obs_type=cfg.obs_type,
+            obs_shape={
+                'pixels': (3, 128, 128),
+                'pixels_egocentric': (3, 128, 128),
+                'proprioceptive': (9,),
+            },
+            language_dim=768,
+            lang_repr_dim=512,
+            language_fusion="film" if cfg.film else None,
+            pixel_keys=['pixels', 'pixels_egocentric'],
+            proprio_key='proprioceptive',
+            device=cfg.device,
+            history=cfg.history,
+            history_len=cfg.history_len,
+            num_queries=cfg.num_queries,
+            temporal_agg=cfg.temporal_agg,
+            max_episode_len=cfg.max_episode_len,
+            use_proprio=cfg.use_proprio
+        ).to(cfg.device)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
         
