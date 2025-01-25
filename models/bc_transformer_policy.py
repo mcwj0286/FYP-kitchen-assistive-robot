@@ -58,7 +58,7 @@ class bc_transformer_policy(nn.Module):
         else: 
             self.num_queries = 1
  
-        action_dim = (
+        self.action_dim = (
             self.act_dim * self.num_queries
         )
         if obs_type == "pixels":
@@ -83,8 +83,8 @@ class bc_transformer_policy(nn.Module):
         
         # Action head for final prediction
         if policy_head == "deterministic":
-            self._action_head = DeterministicHead(
-                hidden_dim, self._act_dim, hidden_size=hidden_dim, num_layers=2
+            self.action_head = DeterministicHead(
+                self.repr_dim, self.action_dim, hidden_size=hidden_dim, num_layers=2
             )
 
         # initialize the vision encoder
@@ -249,7 +249,7 @@ class bc_transformer_policy(nn.Module):
         x = self.temporal_encode(x)
         
         # Get action predictions from action head
-        pred_actions = self.action_head(x)
+        pred_actions = self.action_head(x,1.0)
 
         return pred_actions
 
@@ -278,9 +278,10 @@ class bc_transformer_policy(nn.Module):
             
             # Apply temporal encoding
             x = self.temporal_encode(x)
-            pred_actions = pred_actions.mean
+            
             # Get action prediction
             pred_actions = self.action_head(x[:, -1])
+            pred_actions = pred_actions.mean
             
             # Process for temporal aggregation if needed
             if self.temporal_agg:

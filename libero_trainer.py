@@ -149,13 +149,13 @@ def get_model(model_type,cfg):
         cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 32
-        cfg.train.lr = 1e-4
-        cfg.train.n_epochs = 50
+        cfg.train.lr = 1e-5
+        cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
-        cfg.temporal_agg = False
-        cfg.num_queries = 1
+        cfg.temporal_agg = True
+        cfg.num_queries = 10
         cfg.hidden_dim = 256
         cfg.history = True
         cfg.history_len = 10
@@ -433,15 +433,15 @@ def main(hydra_cfg):
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
                 
                 # Save model checkpoint for every eval epoch
-                eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'success_rates': success_rates,
-                    'avg_success': avg_success,
-                }, eval_save_path)
-                logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
+                # eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                # torch.save({
+                #         'epoch': epoch,
+                #         'model_state_dict': model.state_dict(),
+                #         'optimizer_state_dict': optimizer.state_dict(),
+                #         'success_rates': success_rates,
+                #     'avg_success': avg_success,
+                # }, eval_save_path)
+                # logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
 
 
     # Save final model checkpoint regardless of performance
