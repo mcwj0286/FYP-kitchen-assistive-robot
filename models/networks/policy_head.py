@@ -15,7 +15,7 @@ from .mlp import MLP
 
 ######################################### Deterministic Head #########################################
 class DeterministicHead(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=1024, num_layers=2):
+    def __init__(self, input_size, output_size, hidden_size=1024, num_layers=2, action_squash=True):
 
         super().__init__()
         sizes = [input_size] + [hidden_size] * num_layers + [output_size]
