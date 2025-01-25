@@ -84,7 +84,7 @@ class bc_transformer_policy(nn.Module):
         # Action head for final prediction
         if policy_head == "deterministic":
             self.action_head = DeterministicHead(
-                self.repr_dim, self.action_dim, hidden_size=hidden_dim, num_layers=2
+                self.repr_dim, self.action_dim, num_layers=2
             )
 
         # initialize the vision encoder
@@ -204,7 +204,7 @@ class bc_transformer_policy(nn.Module):
         
         # Reshape back
         x = x.reshape(*sh)
-        return x[:, :, 0]  # Return first modality features (B, T, E)
+        return x[:, :, -1]  # Return last modality features (B, T, E)
 
     def reset(self):
         """Reset history buffers"""
@@ -249,7 +249,7 @@ class bc_transformer_policy(nn.Module):
         x = self.temporal_encode(x)
         
         # Get action predictions from action head
-        pred_actions = self.action_head(x,1.0)
+        pred_actions = self.action_head(x)
 
         return pred_actions
 

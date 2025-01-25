@@ -38,7 +38,7 @@ def get_model(model_type,cfg):
         tuple: (model, cfg) where model is the initialized model and cfg is its configuration
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
+    cfg.overlap = 0
     if model_type == "bc_baku":
         # Default configuration for BCBaku
         cfg.device = device
@@ -149,19 +149,25 @@ def get_model(model_type,cfg):
         cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 32
-        cfg.train.lr = 1e-5
+        cfg.train.lr = 1e-4
+        cfg.train.optimizer.name = 'torch.optim.Adam'
+        cfg.train.optimizer.kwargs.lr = 1e-4
+        cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
-        cfg.temporal_agg = True
-        cfg.num_queries = 10
+        cfg.temporal_agg = False
+        cfg.num_queries = 1
         cfg.hidden_dim = 256
         cfg.history = True
         cfg.history_len = 10
         cfg.film = True
         cfg.max_episode_len = 650
         cfg.seq_length = 10
+
+        cfg.overlap =0
+
         cfg.get_pad_mask = False
         cfg.get_action_padding = False
         # Initialize our transformer model
@@ -234,6 +240,7 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
     if model_type == "act":
         # ACT returns a loss dictionary with l1, kl, and total loss
         return dist  # dist is actually the loss_dict for ACT
+    
     else:
         # Original loss computation for other models
         log_probs = dist.log_prob(target)
@@ -325,6 +332,7 @@ def main(hydra_cfg):
         seq_length=cfg.seq_length,
         get_pad_mask = cfg.get_pad_mask,
         get_action_padding=cfg.get_action_padding,
+        overlap=cfg.overlap
     )
 
     # Create data loader
@@ -352,6 +360,16 @@ def main(hydra_cfg):
         optimizer = torch.optim.AdamW(param_dicts, weight_decay=cfg.weight_decay)
     else:
         optimizer = Adam(model.parameters(), lr=cfg.train.lr)
+    
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,  # Reduce LR by half when plateauing
+        patience=5,   # Number of epochs to wait before reducing LR
+        verbose=True,
+        min_lr=1e-6  # Minimum learning rate
+    )
     
     # Training loop
     logger.info("Starting training...")
@@ -409,6 +427,13 @@ def main(hydra_cfg):
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
+        # Step the scheduler based on average training loss
+        scheduler.step(avg_train_loss)
+        
+        # Log current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"Current learning rate: {current_lr:.2e}")
+        
         # Validation step every eval_every epochs
         if epoch > 0 and epoch % cfg.eval.eval_every == 0:
             logger.info(f"Running validation at epoch {epoch}...")
@@ -427,6 +452,7 @@ def main(hydra_cfg):
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),  # Save scheduler state
                         'success_rates': success_rates,
                         'avg_success': avg_success,
                     }, save_path)
