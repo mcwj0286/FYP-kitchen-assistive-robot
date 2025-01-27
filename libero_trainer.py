@@ -157,16 +157,16 @@ def get_model(model_type,cfg):
         cfg.obs_type = "pixels"
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
-        cfg.temporal_agg = False
-        cfg.num_queries = 1
+        cfg.temporal_agg = True
+        cfg.num_queries = 10
         cfg.hidden_dim = 256
-        cfg.history = True
+        cfg.history = False
         cfg.history_len = 10
         cfg.film = True
         cfg.max_episode_len = 650
         cfg.seq_length = 10
 
-        cfg.overlap =0
+        cfg.overlap =3
 
         cfg.get_pad_mask = False
         cfg.get_action_padding = False
@@ -432,7 +432,7 @@ def main(hydra_cfg):
         
         # Log current learning rate
         current_lr = optimizer.param_groups[0]['lr']
-        logger.info(f"Current learning rate: {current_lr:.2e}")
+        # logger.info(f"Current learning rate: {current_lr:.2e}")
         
         # Validation step every eval_every epochs
         if epoch > 0 and epoch % cfg.eval.eval_every == 0:
