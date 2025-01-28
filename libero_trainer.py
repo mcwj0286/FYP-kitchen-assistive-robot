@@ -260,6 +260,8 @@ def main(hydra_cfg):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_type', type=str, default='bc_transformer', choices=['bc_baku', 'transformer', 'act', 'bc_transformer'],
                       help='Type of model to train (baku, transformer, or act)')
+    parser.add_argument('--eval_sample_size', type=int, default=None,
+                      help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
@@ -304,11 +306,20 @@ def main(hydra_cfg):
     cfg.init_states_folder =get_libero_path("init_states")
     
     # you can specify the benchmark name here
-    cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10"}
+    cfg.benchmark_name = "libero90" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero90"}
 
     # Get benchmark and task information
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     n_manip_tasks = benchmark.n_tasks
+
+    # Setup evaluation task IDs based on sampling option
+    if args.eval_sample_size is not None and args.eval_sample_size < n_manip_tasks:
+        np.random.seed(cfg.seed)  # Use same seed for reproducibility
+        eval_task_ids = np.random.choice(n_manip_tasks, size=args.eval_sample_size, replace=False)
+        logger.info(f"Selected {len(eval_task_ids)} tasks for evaluation: {eval_task_ids}")
+    else:
+        eval_task_ids = list(range(n_manip_tasks))  # Use all tasks
+        logger.info("Using all tasks for evaluation")
 
     # Print benchmark information
     print("\n=================== Benchmark Information ===================")
@@ -374,8 +385,8 @@ def main(hydra_cfg):
     # Training loop
     logger.info("Starting training...")
     best_val_success = 0.0
-    task_ids = list(range(n_manip_tasks))
-    best_task_success_rates = np.zeros(n_manip_tasks)
+    task_ids = list(range(n_manip_tasks))  # Full task list for training
+    best_task_success_rates = np.zeros(len(eval_task_ids))  # Track best success rates for eval tasks
     
     for epoch in range(cfg.train.n_epochs):
         model.train()
@@ -398,13 +409,7 @@ def main(hydra_cfg):
                 # ACT forward pass returns loss dictionary
                 loss_dict = model.forward(obs_dict)
                 loss = loss_dict["loss"]  # Combined L1 and KL loss
-                
-                # Log individual losses
-                if batch_idx % 10 == 0:
-                    logger.info(f"Epoch {epoch} Batch {batch_idx} Losses: "
-                              f"L1={loss_dict['l1']:.4f}, "
-                              f"KL={loss_dict['kl']:.4f}, "
-                              f"Total={loss_dict['loss']:.4f}")
+           
             else:
                 # Convert format for transformer if needed
                 if args.model_type == "transformer":
@@ -439,9 +444,10 @@ def main(hydra_cfg):
             logger.info(f"Running validation at epoch {epoch}...")
             model.eval()
             with torch.no_grad():
-                success_rates = evaluate_multitask_training_success(cfg, benchmark, task_ids, model)
+                # Use sampled eval_task_ids instead of full task_ids for evaluation
+                success_rates = evaluate_multitask_training_success(cfg, benchmark, eval_task_ids, model)
                 avg_success = np.mean(success_rates)
-                logger.info(f"Validation Success Rates: {success_rates}")
+                logger.info(f"Validation Success Rates for sampled tasks: {success_rates}")
                 logger.info(f"Average Success Rate: {avg_success:.4f}")
                 
                 # Save checkpoint if improved
@@ -459,15 +465,15 @@ def main(hydra_cfg):
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
                 
                 # Save model checkpoint for every eval epoch
-                # eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                # torch.save({
-                #         'epoch': epoch,
-                #         'model_state_dict': model.state_dict(),
-                #         'optimizer_state_dict': optimizer.state_dict(),
-                #         'success_rates': success_rates,
-                #     'avg_success': avg_success,
-                # }, eval_save_path)
-                # logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
+                eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'success_rates': success_rates,
+                    'avg_success': avg_success,
+                }, eval_save_path)
+                logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
 
 
     # Save final model checkpoint regardless of performance
