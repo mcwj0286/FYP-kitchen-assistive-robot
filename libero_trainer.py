@@ -27,6 +27,7 @@ from libero.lifelong.models.bc_transformer_policy import BCTransformerPolicy
 from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
 from models.act_policy import ACTPolicy
+from models.bc_act_policy import bc_act_policy
 
 def get_model(model_type,cfg):
     """Initialize model based on type and return both model and config.
@@ -195,6 +196,63 @@ def get_model(model_type,cfg):
             max_episode_len=cfg.max_episode_len,
             use_proprio=cfg.use_proprio
         ).to(cfg.device)
+    elif model_type == "bc_act":
+        # Configuration for BC-ACT
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 32
+        cfg.train.n_epochs = 100
+        
+        # Optimizer settings
+        cfg.train.optimizer = EasyDict()
+        cfg.train.optimizer.name = 'torch.optim.AdamW'
+        cfg.train.lr = 1e-4
+        cfg.train.optimizer.kwargs = EasyDict()
+        cfg.train.optimizer.kwargs.lr = cfg.train.lr
+        cfg.train.optimizer.kwargs.weight_decay = 1e-4
+        
+        # Model parameters
+        cfg.obs_type = "pixels"
+        cfg.policy_head = "deterministic"
+        cfg.use_proprio = True
+        cfg.temporal_agg = True
+        cfg.num_queries = 10
+        cfg.hidden_dim = 256
+        cfg.history = True
+        cfg.history_len = 10
+        cfg.film = True
+        cfg.max_episode_len = 650
+        cfg.seq_length = 1
+        cfg.get_pad_mask = True
+        cfg.get_action_padding = True
+        cfg.overlap = 0
+        
+        # Initialize BC-ACT model
+        model = bc_act_policy(
+            repr_dim=512,
+            act_dim=7,
+            hidden_dim=cfg.hidden_dim,
+            policy_head=cfg.policy_head,
+            obs_type=cfg.obs_type,
+            obs_shape={
+                'pixels': (3, 128, 128),
+                'pixels_egocentric': (3, 128, 128),
+                'proprioceptive': (9,),
+            },
+            language_dim=768,
+            lang_repr_dim=512,
+            language_fusion="film" if cfg.film else None,
+            pixel_keys=['pixels', 'pixels_egocentric'],
+            proprio_key='proprioceptive',
+            device=cfg.device,
+            history=cfg.history,
+            history_len=cfg.history_len,
+            num_queries=cfg.num_queries,
+            temporal_agg=cfg.temporal_agg,
+            max_episode_len=cfg.max_episode_len,
+            use_proprio=cfg.use_proprio,
+            learnable_tokens=True
+        ).to(cfg.device)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
         
@@ -258,8 +316,9 @@ def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='bc_transformer', choices=['bc_baku', 'transformer', 'act', 'bc_transformer'],
-                      help='Type of model to train (baku, transformer, or act)')
+    parser.add_argument('--model_type', type=str, default='bc_act', 
+                      choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act'],
+                      help='Type of model to train')
     parser.add_argument('--eval_sample_size', type=int, default=20,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     args = parser.parse_args()
@@ -414,7 +473,8 @@ def main(hydra_cfg):
                 # Convert format for transformer if needed
                 if args.model_type == "transformer":
                     obs_dict = convert_to_transformer_format(obs_dict)
-                
+                elif args.model_type == "bc_act":
+                    gt_actions = gt_actions.view(-1, cfg.num_queries, cfg.action_dim)
                 # Original models' forward pass
                 pred_actions = model.forward(obs_dict)
                 loss = loss_fn(pred_actions, gt_actions, model_type=args.model_type)
