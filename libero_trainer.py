@@ -260,7 +260,7 @@ def main(hydra_cfg):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_type', type=str, default='bc_transformer', choices=['bc_baku', 'transformer', 'act', 'bc_transformer'],
                       help='Type of model to train (baku, transformer, or act)')
-    parser.add_argument('--eval_sample_size', type=int, default=None,
+    parser.add_argument('--eval_sample_size', type=int, default=20,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
@@ -306,7 +306,7 @@ def main(hydra_cfg):
     cfg.init_states_folder =get_libero_path("init_states")
     
     # you can specify the benchmark name here
-    cfg.benchmark_name = "libero90" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero90"}
+    cfg.benchmark_name = "libero_90" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"}
 
     # Get benchmark and task information
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
