@@ -202,7 +202,7 @@ def get_model(model_type,cfg):
         cfg.seed = 2
         cfg.train.batch_size = 32
         cfg.train.n_epochs = 100
-        
+        cfg.action_dim = 7
         # Optimizer settings
         cfg.train.optimizer = EasyDict()
         cfg.train.optimizer.name = 'torch.optim.AdamW'
@@ -230,7 +230,7 @@ def get_model(model_type,cfg):
         # Initialize BC-ACT model
         model = bc_act_policy(
             repr_dim=512,
-            act_dim=7,
+            act_dim=cfg.action_dim,
             hidden_dim=cfg.hidden_dim,
             policy_head=cfg.policy_head,
             obs_type=cfg.obs_type,
