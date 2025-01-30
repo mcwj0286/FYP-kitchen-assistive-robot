@@ -16,7 +16,7 @@ from models.networks.policy_head import DeterministicHead
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
 
-class CustomTransformerDecoder(nn.Module):
+class ACT_TransformerDecoder(nn.Module):
     def __init__(
         self,
         input_size,
@@ -202,7 +202,7 @@ class bc_act_policy(nn.Module):
                 proprio_shape = obs_shape[self.proprio_key]
             obs_shape = obs_shape[self.pixel_keys[0]]
         # Initialize transformer decoder
-        self.transformer = CustomTransformerDecoder(
+        self.transformer = ACT_TransformerDecoder(
             input_size=repr_dim,
             num_layers=8,
             num_heads=4,
@@ -210,7 +210,7 @@ class bc_act_policy(nn.Module):
             mlp_hidden_size=hidden_dim,
             dropout=0.1,
             num_queries=self.num_queries,
-            learnable_tokens=learnable_tokens
+            learnable_tokens=False
         )
         
         # Initialize temporal position encoding
