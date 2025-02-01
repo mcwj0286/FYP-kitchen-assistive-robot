@@ -473,7 +473,22 @@ class bc_act_policy(nn.Module):
             
             return pred_actions.detach().cpu().numpy()
 
-
+    # NEW: train_step method for bc_act_policy
+    def train_step(self, data):
+        """
+        Performs a training step for BC-ACT.
+        Expects data to contain ground truth actions under the key "actions".
+        Returns:
+            loss (torch.Tensor): the negative log likelihood loss.
+        """
+        gt_actions = data.get("actions", None)
+        if gt_actions is None:
+            raise ValueError("Ground truth actions missing in training batch")
+        # Forward pass returns an output distribution.
+        pred_dist = self.forward(data)
+        # Compute the negative log likelihood loss from the output distribution.
+        loss = -pred_dist.log_prob(gt_actions).mean()
+        return loss
 
 if __name__ == "__main__":
     # Test CustomTransformerDecoder

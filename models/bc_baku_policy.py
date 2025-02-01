@@ -324,30 +324,11 @@ class BCBakuPolicy(nn.Module):
                 - proprioceptive: Robot state features (B, 1, D_proprio)
                 - task_emb: Task embedding (B, E)
         Get action for evaluation/inference"""
-        # Add current observations to buffer
-        for key in self.pixel_keys:
-            self.observation_buffer[key].append(data[key])
-        
-        if self.use_proprio:
-            self.proprio_buffer.append(data["proprioceptive"])
 
-        # Stack buffered observations into tensors
-        stacked_data = {}
-        
-        # Stack image observations
-        for key in self.pixel_keys:
-            stacked_data[key] = torch.cat(list(self.observation_buffer[key]), dim=1)
-            
-        # Stack proprioceptive features if used    
-        if self.use_proprio:
-            stacked_data["proprioceptive"] = torch.cat(list(self.proprio_buffer), dim=1)
-            
-        # Add task embedding
-        stacked_data["task_emb"] = data["task_emb"]
-
+      
         # Get predicted actions from forward pass
         with torch.no_grad():
-            pred_actions = self.forward(stacked_data) # [2,10,70]
+            pred_actions = self.forward(data) # [2,1,70]
             
             pred_actions = pred_actions.mean
             
@@ -388,6 +369,21 @@ class BCBakuPolicy(nn.Module):
                 return action.detach().cpu().numpy()
             
             return pred_actions[:, -1].detach().cpu().numpy()
+
+    # NEW: train_step method for BCBakuPolicy
+    def train_step(self, data):
+        """
+        Performs a training step for BC Baku Policy.
+        Expects data to contain ground truth actions under the key "actions".
+        Returns:
+            loss (torch.Tensor): the negative log likelihood loss.
+        """
+        gt_actions = data.get("actions", None)
+        if gt_actions is None:
+            raise ValueError("Ground truth actions missing in training batch")
+        pred_dist = self.forward(data)
+        loss = -pred_dist.log_prob(gt_actions).mean()
+        return loss
 
 
 

@@ -319,7 +319,7 @@ def main(hydra_cfg):
     parser.add_argument('--model_type', type=str, default='bc_act', 
                       choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act'],
                       help='Type of model to train')
-    parser.add_argument('--eval_sample_size', type=int, default=20,
+    parser.add_argument('--eval_sample_size', type=int, default=None,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
@@ -365,7 +365,7 @@ def main(hydra_cfg):
     cfg.init_states_folder =get_libero_path("init_states")
     
     # you can specify the benchmark name here
-    cfg.benchmark_name = "libero_90" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"}
+    cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"}
 
     # Get benchmark and task information
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
@@ -452,34 +452,22 @@ def main(hydra_cfg):
         total_loss = 0.0
         
         for batch_idx, obs_dict in enumerate(train_dataloader):
-            # Move tensors to device
+            # Move tensors in obs_dict to cfg.device
             for key, value in obs_dict.items():
                 if isinstance(value, torch.Tensor):
                     obs_dict[key] = value.to(cfg.device)
                     
-            # Get ground truth actions
-            gt_actions = obs_dict["actions"]
-
-            # Forward pass based on model type
-            if args.model_type == "act":
-                # Check and reshape actions if needed
-                if obs_dict['actions'].shape[-1] != cfg.action_dim:
-                    obs_dict['actions'] = obs_dict['actions'].view(-1, cfg.num_queries, cfg.action_dim)
-                # ACT forward pass returns loss dictionary
-                loss_dict = model.forward(obs_dict)
-                loss = loss_dict["loss"]  # Combined L1 and KL loss
-           
+            # Use the new train_step function
+            loss_output = model.train_step(obs_dict)
+            # For ACTPolicy, loss_output is a dict (and we extract loss via "loss"); 
+            # for bc models, train_step returns a loss tensor.
+            if isinstance(loss_output, dict):
+                loss = loss_output.get("loss", None)
+                if loss is None:
+                    raise KeyError("train_step returned a dict without key 'loss'")
             else:
-                # Convert format for transformer if needed
-                if args.model_type == "transformer":
-                    obs_dict = convert_to_transformer_format(obs_dict)
-                elif args.model_type == "bc_act":
-                    gt_actions = gt_actions.view(-1, cfg.num_queries, cfg.action_dim)
-                # Original models' forward pass
-                pred_actions = model.forward(obs_dict)
-                loss = loss_fn(pred_actions, gt_actions, model_type=args.model_type)
-            
-            # Backward pass and optimize
+                loss = loss_output
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -487,7 +475,7 @@ def main(hydra_cfg):
             if isinstance(loss, torch.Tensor):
                 total_loss += loss.item()
             else:
-                total_loss += loss_dict["loss"].item()  # For ACT
+                total_loss += float(loss)
         
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
@@ -525,15 +513,15 @@ def main(hydra_cfg):
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
                 
                 # Save model checkpoint for every eval epoch
-                eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'success_rates': success_rates,
-                    'avg_success': avg_success,
-                }, eval_save_path)
-                logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
+                # eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
+                # torch.save({
+                #         'epoch': epoch,
+                #         'model_state_dict': model.state_dict(),
+                #         'optimizer_state_dict': optimizer.state_dict(),
+                #         'success_rates': success_rates,
+                #     'avg_success': avg_success,
+                # }, eval_save_path)
+                # logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
 
 
     # Save final model checkpoint regardless of performance

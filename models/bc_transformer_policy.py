@@ -316,7 +316,20 @@ class bc_transformer_policy(nn.Module):
             
             return pred_actions.detach().cpu().numpy()
 
-
+    # NEW: train_step method for bc_transformer_policy
+    def train_step(self, data):
+        """
+        Performs a training step for BC Transformer Policy.
+        Expects data to contain ground truth actions under the key "actions".
+        Returns:
+            loss (torch.Tensor): the negative log likelihood loss.
+        """
+        gt_actions = data.get("actions", None)
+        if gt_actions is None:
+            raise ValueError("Ground truth actions missing in training batch")
+        pred_dist = self.forward(data)
+        loss = -pred_dist.log_prob(gt_actions).mean()
+        return loss
 
 if __name__ == "__main__":
 

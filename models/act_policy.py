@@ -245,8 +245,18 @@ class ACTPolicy(nn.Module):
         
         return pred_actions[:, -1].detach().cpu().numpy()
     
-    
-    
+    # NEW: train_step method for ACTPolicy
+    def train_step(self, data):
+        """
+        Performs a training step with data.
+        Returns:
+            loss_dict (dict): dictionary with keys "l1", "kl", and "loss"
+        """
+        if data['actions'].shape[-1] != self.act_dim:
+                    data['actions'] = data['actions'].view(-1, self.num_queries, self.act_dim)
+        # Forward pass in training mode returns loss_dict
+        loss_dict = self.forward(data, is_training=True)
+        return loss_dict
 
 if __name__ == "__main__":
     # Example config
