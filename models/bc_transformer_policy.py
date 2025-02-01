@@ -12,7 +12,7 @@ from collections import deque
 import torchvision.transforms as T
 import einops
 import numpy as np
-from models.networks.policy_head import DeterministicHead
+from models.networks.policy_head import DeterministicHead, MultiTokenDeterministicHead
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
 
@@ -86,6 +86,12 @@ class bc_transformer_policy(nn.Module):
             self.action_head = DeterministicHead(
                 self.repr_dim, self.action_dim, num_layers=2
             )
+        elif policy_head == "mtdh":
+            self.action_head = MultiTokenDeterministicHead(
+                self.repr_dim, self.act_dim, num_tokens=self.num_queries, num_layers=2 , hidden_size=256
+            )
+        else:
+            raise ValueError(f"Invalid policy head: {policy_head}")
 
         # initialize the vision encoder
         self.vision_encoder = nn.ModuleDict()
@@ -117,6 +123,15 @@ class bc_transformer_policy(nn.Module):
         
         self.latent_queue = []
         self.reset()
+        num_params = self.count_parameters()
+        print(f"Total trainable parameters: {num_params:,}")
+    def count_parameters(self):
+        """
+        Count total trainable parameters in the model
+        """
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
 
     def preprocess_input(self, data, train_mode=True):
         """
@@ -255,13 +270,14 @@ class bc_transformer_policy(nn.Module):
 
     def get_action(self, data):
         """ 
-            Args:
+        Args:
             data (dict): Dictionary containing:
                 - pixels: Agent view RGB images (B, 1, C, H, W) 
                 - pixels_egocentric: Eye-in-hand RGB images (B, 1, C, H, W)
                 - proprioceptive: Robot state features (B, 1, D_proprio)
                 - task_emb: Task embedding (B, E)
-        Get action for evaluation/inference"""
+        Get action for evaluation/inference
+        """
         self.eval()
         with torch.no_grad():
             # Preprocess input
@@ -279,9 +295,16 @@ class bc_transformer_policy(nn.Module):
             # Apply temporal encoding
             x = self.temporal_encode(x)
             
-            # Get action prediction
-            pred_actions = self.action_head(x[:, -1])
-            pred_actions = pred_actions.mean
+            # Get action prediction based on policy head type
+            if self._policy_head == "deterministic":
+                pred_dist = self.action_head(x[:, -1])
+                pred_actions = pred_dist.mean
+            elif self._policy_head == "mtdh":
+                pred_dists = self.action_head(x[:, -1])
+                # For MTDH, concatenate all token predictions
+                pred_actions = torch.cat([dist.mean for dist in pred_dists], dim=-1)
+            else:
+                raise ValueError(f"Unsupported policy head: {self._policy_head}")
             
             # Process for temporal aggregation if needed
             if self.temporal_agg:
@@ -317,18 +340,45 @@ class bc_transformer_policy(nn.Module):
             return pred_actions.detach().cpu().numpy()
 
     # NEW: train_step method for bc_transformer_policy
-    def train_step(self, data):
+    def train_step(self, data, optimizer, scheduler=None):
         """
         Performs a training step for BC Transformer Policy.
         Expects data to contain ground truth actions under the key "actions".
+        Args:
+            data: Dictionary containing training data
+            optimizer: Optimizer to use for parameter updates
+            scheduler: Learning rate scheduler (optional)
         Returns:
             loss (torch.Tensor): the negative log likelihood loss.
         """
         gt_actions = data.get("actions", None)
         if gt_actions is None:
             raise ValueError("Ground truth actions missing in training batch")
-        pred_dist = self.forward(data)
-        loss = -pred_dist.log_prob(gt_actions).mean()
+            
+        
+        optimizer.zero_grad()
+            
+        if self._policy_head == "deterministic":
+            pred_dist = self.forward(data)
+            loss = -pred_dist.log_prob(gt_actions).mean()
+            
+            loss.backward()
+            optimizer.step()
+        elif self._policy_head == "mtdh":
+            # Reshape ground truth actions from [B, T, act_dim * num_queries] to [B, T, num_queries, act_dim]
+            gt_actions = einops.rearrange(gt_actions, 'b t (q a) -> b t q a', q=self.num_queries, a=self.act_dim)
+            # Split ground truth actions into list of [B, T, act_dim] tensors
+            gt_actions_list = [gt_actions[..., i, :] for i in range(self.num_queries)]
+            data = self.preprocess_input(data)
+            # Encode spatial features
+            x = self.spatial_encode(data)
+            # Apply temporal encoding
+            z = self.temporal_encode(x)
+            pred_actions_probs = self.action_head(z)
+            loss = self.action_head.multi_token_loss(pred_actions_probs, gt_actions_list)
+            loss.backward()
+            optimizer.step()
+            
         return loss
 
 if __name__ == "__main__":

@@ -156,7 +156,7 @@ def get_model(model_type,cfg):
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = "mtdh"
         cfg.use_proprio = True
         cfg.temporal_agg = True
         cfg.num_queries = 10
@@ -316,7 +316,7 @@ def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='bc_act', 
+    parser.add_argument('--model_type', type=str, default='bc_transformer', 
                       choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act'],
                       help='Type of model to train')
     parser.add_argument('--eval_sample_size', type=int, default=None,
@@ -457,8 +457,9 @@ def main(hydra_cfg):
                 if isinstance(value, torch.Tensor):
                     obs_dict[key] = value.to(cfg.device)
                     
-            # Use the new train_step function
-            loss_output = model.train_step(obs_dict)
+            # Use the train_step function with optimizer and scheduler
+            loss_output = model.train_step(obs_dict, optimizer=optimizer)  # Pass scheduler=scheduler if you want per-step updates
+            
             # For ACTPolicy, loss_output is a dict (and we extract loss via "loss"); 
             # for bc models, train_step returns a loss tensor.
             if isinstance(loss_output, dict):
@@ -467,16 +468,12 @@ def main(hydra_cfg):
                     raise KeyError("train_step returned a dict without key 'loss'")
             else:
                 loss = loss_output
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
             
             if isinstance(loss, torch.Tensor):
                 total_loss += loss.item()
             else:
                 total_loss += float(loss)
-        
+                
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
