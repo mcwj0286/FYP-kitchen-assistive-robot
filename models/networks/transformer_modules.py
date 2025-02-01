@@ -159,6 +159,211 @@ class SinusoidalPositionEncoding(nn.Module):
 ###############################################################################
 
 
+class Gate(nn.Module):
+    """
+    Gating mechanism for routing inputs in a mixture-of-experts (MoE) model.
+    """
+    def __init__(self, dim, n_experts=8, n_expert_groups=1, n_limited_groups=1, 
+                 n_activated_experts=2, score_func="softmax", route_scale=1.0):
+        super().__init__()
+        self.dim = dim
+        self.topk = n_activated_experts
+        self.n_groups = n_expert_groups
+        self.topk_groups = n_limited_groups
+        self.score_func = score_func
+        self.route_scale = route_scale
+        self.weight = nn.Parameter(torch.empty(n_experts, dim))
+        self.bias = None
+        
+        # Initialize weights
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, x):
+        scores = F.linear(x, self.weight)
+        if self.score_func == "softmax":
+            scores = scores.softmax(dim=-1, dtype=torch.float32)
+        else:
+            scores = scores.sigmoid()
+        original_scores = scores
+        
+        if self.n_groups > 1:
+            scores = scores.view(x.size(0), self.n_groups, -1)
+            group_scores = scores.amax(dim=-1)
+            indices = group_scores.topk(self.topk_groups, dim=-1)[1]
+            mask = torch.zeros_like(scores[..., 0]).scatter_(1, indices, True)
+            scores = (scores * mask.unsqueeze(-1)).flatten(1)
+            
+        indices = torch.topk(scores, self.topk, dim=-1)[1]
+        weights = original_scores.gather(1, indices)
+        
+        if self.score_func == "sigmoid":
+            weights /= weights.sum(dim=-1, keepdim=True)
+        weights *= self.route_scale
+        
+        return weights.type_as(x), indices
+
+
+class Expert(nn.Module):
+    """
+    Expert layer for Mixture-of-Experts (MoE) models.
+    """
+    def __init__(self, input_size, mlp_hidden_size, dropout=0.0):
+        super().__init__()
+        self.w1 = nn.Linear(input_size, mlp_hidden_size)
+        self.w2 = nn.Linear(mlp_hidden_size, input_size)
+        self.w3 = nn.Linear(input_size, mlp_hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.w2(self.dropout(F.silu(self.w1(x)) * self.w3(x)))
+
+
+class MoE(nn.Module):
+    """
+    Mixture-of-Experts (MoE) module.
+    """
+    def __init__(self, input_size, mlp_hidden_size, n_experts=8, n_expert_groups=1, 
+                 n_limited_groups=1, n_activated_experts=2, dropout=0.0):
+        super().__init__()
+        self.input_size = input_size
+        self.n_experts = n_experts
+        self.n_activated_experts = n_activated_experts
+        
+        self.gate = Gate(
+            input_size, 
+            n_experts=n_experts,
+            n_expert_groups=n_expert_groups,
+            n_limited_groups=n_limited_groups,
+            n_activated_experts=n_activated_experts
+        )
+        
+        self.experts = nn.ModuleList([
+            Expert(input_size, mlp_hidden_size, dropout) 
+            for _ in range(n_experts)
+        ])
+
+    def forward(self, x):
+        original_shape = x.size()
+        x = x.view(-1, self.input_size)
+        
+        # Get routing weights and expert indices
+        weights, indices = self.gate(x)
+        
+        # Initialize output tensor
+        output = torch.zeros_like(x)
+        
+        # Route inputs to experts
+        for expert_idx in range(self.n_experts):
+            idx, top = torch.where(indices == expert_idx)
+            if len(idx) > 0:
+                expert_output = self.experts[expert_idx](x[idx])
+                output[idx] += expert_output * weights[idx, top, None]
+        
+        return output.view(original_shape)
+
+
+class MoE_TransformerDecoder(nn.Module):
+    def __init__(
+        self,
+        input_size,
+        num_layers,
+        num_heads,
+        head_output_size,
+        mlp_hidden_size,
+        dropout,
+        n_dense_layers=1,  # Number of dense layers before MoE layers
+        n_experts=8,       # Number of experts
+        n_expert_groups=1,
+        n_limited_groups=1,
+        n_activated_experts=2,
+        **kwargs
+    ):
+        super().__init__()
+
+        self.layers = nn.ModuleList([])
+        self.drop_path = DropPath(dropout) if dropout > 0.0 else nn.Identity()
+        self.attention_output = {}
+        
+        self.n_dense_layers = n_dense_layers
+
+        for layer_idx in range(num_layers):
+            layer = nn.ModuleList([
+                Norm(input_size),
+                Attention(
+                    input_size,
+                    num_heads=num_heads,
+                    head_output_size=head_output_size,
+                    dropout=dropout,
+                ),
+                Norm(input_size),
+            ])
+            
+            # Use dense layers for the first n_dense_layers, then MoE for the rest if use_moe is True
+            if layer_idx < n_dense_layers:
+                layer.append(
+                    TransformerFeedForwardNN(
+                        input_size, mlp_hidden_size, dropout=dropout
+                    )
+                )
+            else:
+                layer.append(
+                    MoE(
+                        input_size=input_size,
+                        mlp_hidden_size=mlp_hidden_size,
+                        n_experts=n_experts,
+                        n_expert_groups=n_expert_groups,
+                        n_limited_groups=n_limited_groups,
+                        n_activated_experts=n_activated_experts,
+                        dropout=dropout
+                    )
+                )
+            
+            self.layers.append(layer)
+            self.attention_output[layer_idx] = None
+
+        self.seq_len = None
+        self.num_elements = None
+        self.mask = None
+
+    def compute_mask(self, input_shape):
+        # input_shape = (:, seq_len, num_elements)
+        if (
+            (self.num_elements is None)
+            or (self.seq_len is None)
+            or (self.num_elements != input_shape[2])
+            or (self.seq_len != input_shape[1])
+        ):
+            self.seq_len = input_shape[1]
+            self.num_elements = input_shape[2]
+            self.original_mask = (
+                torch.triu(torch.ones(self.seq_len, self.seq_len))
+                - torch.eye(self.seq_len, self.seq_len)
+            ).to(self.device)
+            self.mask = 1 - self.original_mask.repeat_interleave(
+                self.num_elements, dim=-1
+            ).repeat_interleave(self.num_elements, dim=-2).unsqueeze(0)
+            # (1, N, N), N = seq_len * num_elements
+
+    def forward(self, x, mask=None):
+        for layer_idx, layer in enumerate(self.layers):
+            att_norm, att, ff_norm, ff = layer
+            if mask is not None:
+                x = x + drop_path(att(att_norm(x), mask))
+            elif self.mask is not None:
+                x = x + drop_path(att(att_norm(x), self.mask))
+            else:  # no masking, just use full attention
+                x = x + drop_path(att(att_norm(x)))
+
+            if not self.training:
+                self.attention_output[layer_idx] = att.att_weights
+            x = x + self.drop_path(ff(ff_norm(x)))
+        return x
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+
 class TransformerDecoder(nn.Module):
     def __init__(
         self,
