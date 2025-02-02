@@ -75,7 +75,11 @@ class bc_moe_policy(nn.Module):
             num_heads=4,
             head_output_size=64,
             mlp_hidden_size=hidden_dim,
-            dropout=0.1
+            dropout=0.1,
+            n_experts=8,
+            n_expert_groups=1,
+            n_limited_groups=1,
+            n_activated_experts=2
         )
         
         # Initialize temporal position encoding
@@ -318,6 +322,40 @@ class bc_moe_policy(nn.Module):
                 return action.detach().cpu().numpy()
             
             return pred_actions.detach().cpu().numpy()
+        
+    def train_step(self, data, optimizer, scheduler=None):
+        """
+        Performs a training step for BC Transformer Policy.
+        Expects data to contain ground truth actions under the key "actions".
+        Args:
+            data: Dictionary containing training data
+            optimizer: Optimizer to use for parameter updates
+            scheduler: Learning rate scheduler (optional)
+        Returns:
+            loss (torch.Tensor): the negative log likelihood loss.
+        """
+        gt_actions = data.get("actions", None)
+        if gt_actions is None:
+            raise ValueError("Ground truth actions missing in training batch")
+            
+        
+        optimizer.zero_grad()
+
+        data = self.preprocess_input(data)
+        # Encode spatial features
+        x = self.spatial_encode(data)
+        # Apply temporal encoding
+        z = self.temporal_encode(x)
+
+        pred_actions = self.action_head(z)
+            
+        if self._policy_head == "deterministic":
+            
+            loss = -pred_actions.log_prob(gt_actions).mean()
+            
+            loss.backward()
+            optimizer.step()
+        return loss
 
 
 
