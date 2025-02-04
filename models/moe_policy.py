@@ -1216,7 +1216,7 @@ class moe_policy(nn.Module):
                     # Update: b = b + u * sign(error)
                     module.gate.bias += u * torch.sign(error)
 
-    def count_expert_parameters(self):
+    def count_expert_parameters(self):#TODO: check if this is correct way to count moe paramters
         """
         Count the total number of parameters in the expert modules and the subset
         of parameters that belong to activated experts (i.e., those that received at least one token).
