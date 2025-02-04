@@ -582,7 +582,8 @@ class Gate(nn.Module):
         self.topk_groups = args.n_limited_groups
         self.score_func = args.score_func
         self.route_scale = args.route_scale
-        self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
+        # self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
+        self.gate_score = nn.Linear(args.dim, args.n_routed_experts)
         self.bias = nn.Parameter(torch.empty(args.n_routed_experts)) 
         self.token_counts = None
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -595,7 +596,11 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Routing weights and selected expert indices.
         """
-        scores = linear(x, self.weight)
+        scores = self.gate_score(x)
+        # Get top 10 scores for debugging/monitoring
+        top_scores, _ = torch.topk(scores, k=min(10, scores.size(-1)), dim=-1)
+        print("Top 10 scores:", top_scores[0].detach().cpu().numpy())  # Print first batch item's scores
+
         if self.score_func == "softmax":
             scores = scores.softmax(dim=-1, dtype=torch.float32)
         else:
@@ -879,9 +884,10 @@ class moe_policy(nn.Module):
                  temporal_agg=True,
                  max_episode_len=200,
                  use_proprio=True,
-                 num_feat_per_step=3):
+                 moe_args=ModelArgs):
         super().__init__()
-
+        
+        # Store the original arguments
         self.device = device
         self.language_dim = language_dim
         self.lang_repr_dim = lang_repr_dim
@@ -913,31 +919,10 @@ class moe_policy(nn.Module):
                 proprio_shape = obs_shape[self.proprio_key]
             obs_shape = obs_shape[self.pixel_keys[0]]
 
-        # Initialize MoE transformer configuration
-        moe_args = ModelArgs(
-            max_batch_size=32,  # Can be adjusted based on your needs
-            max_seq_len=max_episode_len,
-            dim=repr_dim,
-            inter_dim=hidden_dim,
-            moe_inter_dim=hidden_dim,
-            n_layers=8,
-            n_dense_layers=2,
-            n_heads=8,
-            n_routed_experts=64,
-            n_shared_experts=2,
-            n_activated_experts=6,
-            action_dim=act_dim,
-            dtype="bf16"  # Using bfloat16 for better numerical stability
-        )
+    
 
         # Initialize MoE transformer
         self.transformer = Transformer(moe_args)
-
-        # # Initialize temporal position encoding
-        # self.temporal_position_encoding = SinusoidalPositionEncoding(
-        #     input_size=repr_dim,
-        #     inv_freq_factor=10000
-        # )
 
         # Action head for final prediction
         if policy_head == "deterministic":
@@ -976,6 +961,9 @@ class moe_policy(nn.Module):
         self.reset()
         num_params = self.count_parameters()
         print(f"Total trainable parameters: {num_params:,}")
+        count_expert_parameters = self.count_expert_parameters()
+        print(f"Total expert parameters: {count_expert_parameters['total_expert_parameters']:,}")
+        print(f"Activated expert parameters: {count_expert_parameters['activated_expert_parameters']:,}")
 
     def count_parameters(self):
         """Count total trainable parameters in the model"""
@@ -1160,7 +1148,7 @@ class moe_policy(nn.Module):
             
             return pred_actions.detach().cpu().numpy()
 
-    def train_step(self, data, optimizer, scheduler=None, bias_update_rate=0.01):
+    def train_step(self, data, optimizer, scheduler=None, bias_update_rate=0.001):
         """
         Performs one training step for the MoE policy.
         """
@@ -1184,8 +1172,14 @@ class moe_policy(nn.Module):
         if scheduler:
             scheduler.step()
         
+
         # Update expert bias
         self.update_expert_bias(bias_update_rate)
+        for module in self.modules():
+            if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+                print(module.gate.bias)
+                print(module.gate.token_counts)
+                
         
         return loss
 
@@ -1206,7 +1200,7 @@ class moe_policy(nn.Module):
         """
         for module in self.modules():
             # Check if the module has a gate with bias and token counts
-            if hasattr(module, 'gate') and hasattr(module.gate, 'bias') and hasattr(module.gate, 'token_counts'):
+            if hasattr(module, 'gate') and hasattr(module.gate, "bias") and hasattr(module.gate, "token_counts"):
                 counts = module.gate.token_counts  # assumed to be a tensor of shape [num_experts]
                 # Make sure counts are in float for the arithmetic
                 counts = counts.float()
@@ -1295,44 +1289,44 @@ if __name__ == "__main__":
     print(f"Total expert parameters: {stats['total_expert_parameters']:,}")
     print(f"Activated expert parameters: {stats['activated_expert_parameters']:,}")
     # # First training step
-    # dummy_data = create_dummy_data()
+    dummy_data = create_dummy_data()
     
-    # # Capture the bias of gating modules before training
-    # print("Bias values in gating modules BEFORE training:")
-    # for module in model.modules():
-    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
-    #         print(module.gate.bias)
-    #         print(module.gate.token_counts)
+    # Capture the bias of gating modules before training
+    print("Bias values in gating modules BEFORE training:")
+    for module in model.modules():
+        if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+            print(module.gate.bias)
+            print(module.gate.token_counts)
 
-    # # Run first training step
-    # loss = model.train_step(dummy_data, optimizer, bias_update_rate=0.001)
-    # print(f"First train step loss: {loss.item()}")
+    # Run first training step
+    loss = model.train_step(dummy_data, optimizer, bias_update_rate=0.001)
+    print(f"First train step loss: {loss.item()}")
 
-    # # Check the gating bias values after the first update
-    # print("\nBias values in gating modules AFTER first training step:")
-    # for module in model.modules():
-    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
-    #         print(module.gate.bias)
-    #         print(module.gate.token_counts)
+    # Check the gating bias values after the first update
+    print("\nBias values in gating modules AFTER first training step:")
+    for module in model.modules():
+        if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+            print(module.gate.bias)
+            print(module.gate.token_counts)
 
-    # # Create new dummy data for second training step
-    # dummy_data_2 = create_dummy_data()
+    # Create new dummy data for second training step
+    dummy_data_2 = create_dummy_data()
     
-    # # Run second training step with new data
-    # loss = model.train_step(dummy_data_2, optimizer, bias_update_rate=0.001)
-    # print(f"\nSecond train step loss: {loss.item()}")
+    # Run second training step with new data
+    loss = model.train_step(dummy_data_2, optimizer, bias_update_rate=0.001)
+    print(f"\nSecond train step loss: {loss.item()}")
 
-    # # Check the gating bias values after the second update
-    # print("\nBias values in gating modules AFTER second training step:")
-    # for module in model.modules():
-    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
-    #         print(module.gate.bias)
-    #         print(module.gate.token_counts)
+    # Check the gating bias values after the second update
+    print("\nBias values in gating modules AFTER second training step:")
+    for module in model.modules():
+        if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+            print(module.gate.bias)
+            print(module.gate.token_counts)
 
-    # # Test inference
-    # model.eval()  # Set to evaluation mode
-    # with torch.no_grad():
-    #     test_data = create_dummy_data()
-    #     action = model.get_action(test_data)
-    #     print(f"\nPredicted action shape: {action.shape}")
-    #     print(f"Predicted action: {action}")
+    # Test inference
+    model.eval()  # Set to evaluation mode
+    with torch.no_grad():
+        test_data = create_dummy_data()
+        action = model.get_action(test_data)
+        print(f"\nPredicted action shape: {action.shape}")
+        print(f"Predicted action: {action}")
