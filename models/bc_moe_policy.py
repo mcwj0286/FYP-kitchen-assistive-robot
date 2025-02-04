@@ -79,7 +79,8 @@ class bc_moe_policy(nn.Module):
             n_experts=8,
             n_expert_groups=1,
             n_limited_groups=1,
-            n_activated_experts=2
+            n_activated_experts=2,
+            n_shared_experts=1
         )
         
         # Initialize temporal position encoding
@@ -115,6 +116,7 @@ class bc_moe_policy(nn.Module):
             proprio_shape[0], hidden_channels=[self.repr_dim, self.repr_dim]
         )
         
+        self.action_token=nn.Parameter(torch.randn(1,1,self.repr_dim))
         
         # augmentations
         # MEAN = torch.tensor([0.485, 0.456, 0.406])
@@ -162,7 +164,7 @@ class bc_moe_policy(nn.Module):
         
         # Expand language features
         lang_token = lang_features.view(B, 1, 1, -1).expand(-1, T, -1, -1)  # (B, T, 1, E)
-        encoded.append(lang_token)
+        # encoded.append(lang_token)
         
         # 2. Process vision features
         for key in self.pixel_keys:
@@ -187,6 +189,9 @@ class bc_moe_policy(nn.Module):
             proprio = proprio.unsqueeze(2)  # Add modality dimension
             encoded.append(proprio)
             
+        encoded.append(lang_token)
+        action_token = self.action_token.expand(B, T, -1)
+        encoded.append(action_token)
         # Combine all features
         encoded = torch.cat(encoded, dim=2)  # (B, T, num_modalities, E)
         return encoded
@@ -323,40 +328,76 @@ class bc_moe_policy(nn.Module):
             
             return pred_actions.detach().cpu().numpy()
         
-    def train_step(self, data, optimizer, scheduler=None):
+    def train_step(self, data, optimizer, bias_update_rate=0.001):
         """
-        Performs a training step for BC Transformer Policy.
-        Expects data to contain ground truth actions under the key "actions".
+        Performs a training step for BC-MoE Policy.
+        
         Args:
-            data: Dictionary containing training data
-            optimizer: Optimizer to use for parameter updates
-            scheduler: Learning rate scheduler (optional)
+            data: Dictionary containing training data including ground truth actions
+            optimizer: Optimizer for parameter updates
+            bias_update_rate: Rate for updating expert bias
+            
         Returns:
-            loss (torch.Tensor): the negative log likelihood loss.
+            loss (torch.Tensor): The training loss
         """
+        self.train()  # Set to training mode
+        
+        # Get ground truth actions
         gt_actions = data.get("actions", None)
         if gt_actions is None:
             raise ValueError("Ground truth actions missing in training batch")
-            
         
+        # Zero gradients
         optimizer.zero_grad()
-
-        data = self.preprocess_input(data)
-        # Encode spatial features
-        x = self.spatial_encode(data)
-        # Apply temporal encoding
-        z = self.temporal_encode(x)
-
-        pred_actions = self.action_head(z)
-            
+        
+        # Forward pass
+        pred_actions = self.forward(data)
+        
+        # Compute loss
         if self._policy_head == "deterministic":
-            
+            # For deterministic head, use negative log probability
             loss = -pred_actions.log_prob(gt_actions).mean()
-            
-            loss.backward()
-            optimizer.step()
+        else:
+            raise ValueError(f"Unsupported policy head: {self._policy_head}")
+        
+        # Backward pass
+        loss.backward()
+        
+        # Update parameters
+        optimizer.step()
+        
+        # Update expert bias after parameter update
+        self.update_expert_bias(bias_update_rate)
+        
         return loss
 
+    def update_expert_bias(self, u):
+        """
+        Update the per-expert bias based on the token assignment counts from the gating modules.
+        
+        This function iterates over all submodules in the model, and for any module that contains a gate
+        with a bias parameter and token_counts attribute, it computes:
+        
+            avg = mean(c_i)
+            e_i = avg - c_i
+            
+        and updates the bias as: b_i = b_i + u * sign(e_i)
+        
+        Args:
+            u (float): The bias update rate.
+        """
+        for module in self.modules():
+            # Check if the module has a gate with bias and token counts
+            if hasattr(module, 'gate') and hasattr(module.gate, "bias") and hasattr(module.gate, "token_counts"):
+                counts = module.gate.token_counts  # assumed to be a tensor of shape [num_experts]
+                print(counts)
+                # Make sure counts are in float for the arithmetic
+                counts = counts.float()
+                avg = counts.mean()
+                error = avg - counts # avg - counts
+                with torch.no_grad():
+                    # Update: b = b + u * sign(error)
+                    module.gate.bias += u * torch.sign(error)
 
 
 if __name__ == "__main__":
