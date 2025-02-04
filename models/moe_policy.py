@@ -480,15 +480,31 @@ class MLA(nn.Module):
             kv = kv.view(bsz, seqlen, self.n_local_heads, self.qk_nope_head_dim + self.v_head_dim)
             k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
             k = torch.cat([k_nope, k_pe.expand(-1, -1, self.n_local_heads, -1)], dim=-1)
-            self.k_cache[:bsz, start_pos:end_pos] = k
-            self.v_cache[:bsz, start_pos:end_pos] = v
+            
+            if self.training:
+                # During training, detach cached tensors
+                self.k_cache[:bsz, start_pos:end_pos] = k.detach()
+                self.v_cache[:bsz, start_pos:end_pos] = v.detach()
+            else:
+                # During inference, use tensors as is
+                self.k_cache[:bsz, start_pos:end_pos] = k
+                self.v_cache[:bsz, start_pos:end_pos] = v
+                
             scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
         else:
             wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size) 
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
             q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
-            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
-            self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+            
+            if self.training:
+                # During training, detach cached tensors
+                self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv).detach()
+                self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2).detach()
+            else:
+                # During inference, use tensors as is
+                self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
+                self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+                
             scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
                       torch.einsum("bshr,btr->bsht", q_pe, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
         if mask is not None:
@@ -567,8 +583,8 @@ class Gate(nn.Module):
         self.score_func = args.score_func
         self.route_scale = args.route_scale
         self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
-        self.bias = nn.Parameter(torch.empty(args.n_routed_experts)) if self.dim == 7168 else None
-
+        self.bias = nn.Parameter(torch.empty(args.n_routed_experts)) 
+        self.token_counts = None
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for the gating mechanism.
@@ -601,6 +617,10 @@ class Gate(nn.Module):
         if self.score_func == "sigmoid":
             weights /= weights.sum(dim=-1, keepdim=True)
         weights *= self.route_scale
+
+        # NEW: Store token counts for load balancing.
+        self.token_counts = torch.bincount(indices.flatten(), minlength=self.weight.size(0))
+        
         return weights.type_as(x), indices
 
 
@@ -1140,47 +1160,102 @@ class moe_policy(nn.Module):
             
             return pred_actions.detach().cpu().numpy()
 
-# if __name__ == "__main__":
-    # torch.set_default_dtype(torch.bfloat16)
-    # torch.set_default_device("cuda")
-    # torch.manual_seed(0)
-    # args = ModelArgs()
+    def train_step(self, data, optimizer, scheduler=None, bias_update_rate=0.01):
+        """
+        Performs one training step for the MoE policy.
+        """
+        # Set model to training mode
+        self.train()  # Enable training mode
+        
+        gt_actions = data.get("actions", None)
+        if gt_actions is None:
+            raise ValueError("Ground truth actions missing in training batch")
+        
+        optimizer.zero_grad()
+        
+        # Forward pass
+        output = self.forward(data)
+        loss = -output.log_prob(gt_actions).mean()
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        if scheduler:
+            scheduler.step()
+        
+        # Update expert bias
+        self.update_expert_bias(bias_update_rate)
+        
+        return loss
 
-    # x = torch.randn(8,40,512)
-    # model = Transformer(args)
-    # print(model(x).size())
-    # print(f"Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
-    # active_params = 0
-    # for layer in model.layers:
-    #     if hasattr(layer, 'ffn') and hasattr(layer.ffn, 'n_activated_experts'):
-    #         # Assume that within the MoE layer you can distinguish:
-    #         # - gate_params: parameters of the gating network (always active)
-    #         # - shared_params: parameters of the shared expert network (always active)
-    #         # - expert_params: parameters of the individual experts (conditionally active)
-    #         gate_params = sum(p.numel() for p in layer.ffn.gate.parameters())
-    #         shared_params = sum(p.numel() for p in layer.ffn.shared_experts.parameters())
-    #         expert_params = sum(p.numel() for p in layer.ffn.experts.parameters())
+    def update_expert_bias(self, u):
+        """
+        Update the per-expert bias based on the token assignment counts from the gating modules.
+        
+        This function iterates over all submodules in the model, and for any module that contains a gate
+        with a bias parameter and token_counts attribute, it computes:
+        
+            avg = mean(c_i)
+            e_i = avg - c_i
             
-    #         # Count active expert parameters only fractionally:
-    #         active_expert_params = expert_params * (layer.ffn.n_activated_experts / layer.ffn.n_routed_experts)
-            
-    #         # Then add the always-active parts in full:
-    #         active_params += gate_params + shared_params + active_expert_params
-            
-    #         # Also add the rest of the block parameters such as attn and norms:
-    #         rest_block_params = (sum(p.numel() for name, p in layer.named_parameters() 
-    #                                  if not name.startswith("ffn")))
-    #         active_params += rest_block_params
-    #     else:
-    #         # For dense layers, count all parameters
-    #         active_params += sum(p.numel() for p in layer.parameters())
-    
-    # # Add embedding and other non-MoE parameters
-    # active_params += sum(p.numel() for p in model.embed.parameters())
-    # active_params += sum(p.numel() for p in model.norm.parameters()) 
-    # active_params += sum(p.numel() for p in model.head.parameters())
-    
-    # print(f"Number of active parameters: {int(active_params):,}")
+        and updates the bias as: b_i = b_i + u * sign(e_i)
+        
+        Args:
+            u (float): The bias update rate.
+        """
+        for module in self.modules():
+            # Check if the module has a gate with bias and token counts
+            if hasattr(module, 'gate') and hasattr(module.gate, 'bias') and hasattr(module.gate, 'token_counts'):
+                counts = module.gate.token_counts  # assumed to be a tensor of shape [num_experts]
+                # Make sure counts are in float for the arithmetic
+                counts = counts.float()
+                avg = counts.mean()
+                error = avg - counts # avg - counts
+                with torch.no_grad():
+                    # Update: b = b + u * sign(error)
+                    module.gate.bias += u * torch.sign(error)
+
+    def count_expert_parameters(self):
+        """
+        Count the total number of parameters in the expert modules and the subset
+        of parameters that belong to activated experts (i.e., those that received at least one token).
+
+        If the gating module has not been run yet (i.e. token_counts is None), we use the
+        hyperparameter for the number of activated experts (gate.topk) to estimate the number
+        of active parameters, assuming that all experts are homogeneous.
+
+        Returns:
+            dict: A dictionary containing:
+                'total_expert_parameters': Total number of parameters in all experts.
+                'activated_expert_parameters': Estimated activated parameters, based on gating.
+        """
+        total_params = 0
+        activated_params = 0
+        for module in self.modules():
+            # Check if the module has a gate and a list of experts
+            if hasattr(module, 'gate') and hasattr(module, 'experts'):
+                # collect experts that are not None
+                experts_list = [expert for expert in module.experts if expert is not None]
+                # Calculate total parameters for this module's experts
+                total_expert_module_params = sum(sum(p.numel() for p in expert.parameters()) for expert in experts_list)
+                total_params += total_expert_module_params
+                token_counts = getattr(module.gate, "token_counts", None)
+                if token_counts is None:
+                    # No forward pass has been executed.
+                    # Assume that exactly gate.topk experts are activated.
+                    if experts_list:
+                        avg_params = total_expert_module_params / len(experts_list)
+                        activated_params += module.gate.topk * avg_params
+                else:
+                    # If token_counts exists, follow the original logic.
+                    for i, expert in enumerate(module.experts):
+                        if expert is not None:
+                            expert_params = sum(p.numel() for p in expert.parameters())
+                            if token_counts[i] > 0:
+                                activated_params += expert_params
+        return {"total_expert_parameters": total_params, "activated_expert_parameters": activated_params}
+
 if __name__ == "__main__":
     # Test configuration
     config = {
@@ -1196,28 +1271,68 @@ if __name__ == "__main__":
         },
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'history_len': 10,
-        'temporal_agg': False,
+        'temporal_agg': False,  # Set to False for simplicity in this test
     }
 
-    # Initialize model
-    policy = moe_policy(**config).to(config['device'])
-    policy.eval()
+    # Initialize the model
+    model = moe_policy(**config).to(config['device'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    # Create dummy input data
-    batch_size = 1
-    time_steps = 10
-    dummy_data = {
-        'pixels': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
-        'pixels_egocentric': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
-        'proprioceptive': torch.randn(batch_size, time_steps, 9).to(config['device']),
-        'task_emb': torch.randn(batch_size, 768).to(config['device']),
-        'step': 0
-    }
+    def create_dummy_data():
+        batch_size = 2
+        time_steps = 10
+        
+        return {
+            'pixels': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
+            'pixels_egocentric': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
+            'proprioceptive': torch.randn(batch_size, time_steps, 9).to(config['device']),
+            'task_emb': torch.randn(batch_size, 768).to(config['device']),
+            'actions': torch.randn(batch_size, time_steps, 7).to(config['device'])
+        }
 
-    # Test inference
-    try:
-        action = policy.get_action(dummy_data)
-        print(f"Predicted action shape: {action.shape}")
-        print(f"Predicted action: {action}")
-    except Exception as e:
-        print(f"Error during inference: {e}")
+    print("\nExpert parameter statistics:")
+    stats = model.count_expert_parameters()
+    print(f"Total expert parameters: {stats['total_expert_parameters']:,}")
+    print(f"Activated expert parameters: {stats['activated_expert_parameters']:,}")
+    # # First training step
+    # dummy_data = create_dummy_data()
+    
+    # # Capture the bias of gating modules before training
+    # print("Bias values in gating modules BEFORE training:")
+    # for module in model.modules():
+    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+    #         print(module.gate.bias)
+    #         print(module.gate.token_counts)
+
+    # # Run first training step
+    # loss = model.train_step(dummy_data, optimizer, bias_update_rate=0.001)
+    # print(f"First train step loss: {loss.item()}")
+
+    # # Check the gating bias values after the first update
+    # print("\nBias values in gating modules AFTER first training step:")
+    # for module in model.modules():
+    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+    #         print(module.gate.bias)
+    #         print(module.gate.token_counts)
+
+    # # Create new dummy data for second training step
+    # dummy_data_2 = create_dummy_data()
+    
+    # # Run second training step with new data
+    # loss = model.train_step(dummy_data_2, optimizer, bias_update_rate=0.001)
+    # print(f"\nSecond train step loss: {loss.item()}")
+
+    # # Check the gating bias values after the second update
+    # print("\nBias values in gating modules AFTER second training step:")
+    # for module in model.modules():
+    #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+    #         print(module.gate.bias)
+    #         print(module.gate.token_counts)
+
+    # # Test inference
+    # model.eval()  # Set to evaluation mode
+    # with torch.no_grad():
+    #     test_data = create_dummy_data()
+    #     action = model.get_action(test_data)
+    #     print(f"\nPredicted action shape: {action.shape}")
+    #     print(f"Predicted action: {action}")
