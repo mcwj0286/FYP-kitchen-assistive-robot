@@ -99,10 +99,35 @@ class KinovaArmInterface:
     MAX_KINOVA_DEVICE = 20
 
     def __init__(self, lib_name='/opt/JACO-SDK/API/Kinova.API.USBCommandLayerUbuntu.so'):
+        self.lib = None
         try:
-            self.lib = ctypes.cdll.LoadLibrary(lib_name)
-        except OSError as e:
-            print(f"Failed to load Kinova API library: {e}")
+            # Try multiple possible library paths
+            possible_paths = [
+                lib_name,
+                'Kinova.API.USBCommandLayerUbuntu.so',
+                '/usr/lib/Kinova.API.USBCommandLayerUbuntu.so',
+                '/usr/local/lib/Kinova.API.USBCommandLayerUbuntu.so',
+                os.path.expanduser('~/Kinova.API.USBCommandLayerUbuntu.so')
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    print(f"Found Kinova API at: {path}")
+                    try:
+                        self.lib = ctypes.CDLL(path)
+                        if not hasattr(self.lib, 'InitAPI'):
+                            raise Exception("InitAPI function not found in library")
+                        break
+                    except Exception as e:
+                        print(f"Failed to load {path}: {e}")
+                        continue
+            
+            if self.lib is None:
+                raise Exception("Could not find valid Kinova API library")
+                
+            print("Successfully loaded Kinova API")
+        except Exception as e:
+            print(f"Failed to load Kinova API: {e}")
             sys.exit(1)
 
         # Setup function prototypes
@@ -238,35 +263,44 @@ class KinovaArmInterface:
 
     def close(self):
         try:
-            if hasattr(self.lib, "CloseAPI"):
+            if self.lib:
+                # Stop control API first
+                if hasattr(self.lib, "StopControlAPI"):
+                    self.lib.StopControlAPI()
+                
+                # Then close the API
                 ret = self.lib.CloseAPI()
                 if ret != self.NO_ERROR:
                     print(f"Warning: Close API returned {ret}")
                 else:
                     print("API closed successfully")
-                # Give some time for the API to clean up
-                time.sleep(0.5)
+                
                 # Clear the library reference
                 self.lib = None
         except Exception as e:
             print(f"Error closing API: {e}")
 
 def main():
-    arm = KinovaArmInterface()
+    arm = None
     try:
+        arm = KinovaArmInterface()
         arm.connect()
         arm.move_home()
         arm.set_angular_control()
         # For example, send a trajectory where actuator1 is 15 degrees and others are 0
-        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], hand_mode=1, fingers=(30.0, 30.0, 30.0))
+        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], hand_mode=1, fingers=(5000.0, 5000.0, 5000.0))
         time.sleep(2)  # Sleep for 2 s 
         arm.print_angular_info()
         arm.print_finger_info()
     finally:
         # Ensure we close the API even if an error occurs
-        arm.close()
-        # Give some time for the system to clean up before exiting
-        time.sleep(0.5)
+        if arm is not None:
+            arm.close()
+            # Give some time for the system to clean up before exiting
+            time.sleep(0.1)
+    
+    # Exit cleanly
+    sys.exit(0)
 
 if __name__ == '__main__':
     main()
