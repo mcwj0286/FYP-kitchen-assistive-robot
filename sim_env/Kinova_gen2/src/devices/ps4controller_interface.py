@@ -2,14 +2,18 @@
 
 from pyPS4Controller.controller import Controller
 # check connection for 'ls /dev/input/js*' , it should be something like 'js0'
+
+
 class PS4Interface(Controller):
-    def __init__(self, **kwargs):
+    def __init__(self, debug_mode=False, **kwargs):
         Controller.__init__(self, **kwargs)
         # Initialize controller state values
         self.reset_values()
         # Increase deadzone value (default was 2000)
         self.deadzone = 8000  # Increased to ~25% of max range (32767)
-        print("PS4 Controller initialized")
+        self.debug_mode = debug_mode
+        if self.debug_mode:
+            print("PS4 Controller initialized")
 
     def reset_values(self):
         """Reset all controller values to default"""
@@ -43,128 +47,149 @@ class PS4Interface(Controller):
         if abs(value) < self.deadzone:
             return 0.0
         # Add this debug print to see raw values
-        print(f"Raw value: {value}, Deadzone: {self.deadzone}")
+        if self.debug_mode:
+            print(f"Raw value: {value}, Deadzone: {self.deadzone}")
         return value / 32767.0
 
     # Stick Callbacks with deadzone
     def on_L3_up(self, value):
         self.left_stick_y = self.apply_deadzone(value)
-        if abs(self.left_stick_y) > 0:  # Only print if outside deadzone
+        if abs(self.left_stick_y) > 0 and self.debug_mode:  # Only print if outside deadzone and debug mode is on
             print(f"Left stick Y: {self.left_stick_y:.2f}")
     
     def on_L3_down(self, value):
         self.left_stick_y = self.apply_deadzone(value)
-        if abs(self.left_stick_y) > 0:
+        if abs(self.left_stick_y) > 0 and self.debug_mode:
             print(f"Left stick Y: {self.left_stick_y:.2f}")
     
     def on_L3_left(self, value):
         self.left_stick_x = self.apply_deadzone(value)
-        if abs(self.left_stick_x) > 0:
+        if abs(self.left_stick_x) > 0 and self.debug_mode:
             print(f"Left stick X: {self.left_stick_x:.2f}")
     
     def on_L3_right(self, value):
         self.left_stick_x = self.apply_deadzone(value)
-        if abs(self.left_stick_x) > 0:
+        if abs(self.left_stick_x) > 0 and self.debug_mode:
             print(f"Left stick X: {self.left_stick_x:.2f}")
     
     def on_R3_up(self, value):
         self.right_stick_y = self.apply_deadzone(value)
-        if abs(self.right_stick_y) > 0:
+        if abs(self.right_stick_y) > 0 and self.debug_mode:
             print(f"Right stick Y: {self.right_stick_y:.2f}")
     
     def on_R3_down(self, value):
         self.right_stick_y = self.apply_deadzone(value)
-        if abs(self.right_stick_y) > 0:
+        if abs(self.right_stick_y) > 0 and self.debug_mode:
             print(f"Right stick Y: {self.right_stick_y:.2f}")
     
     def on_R3_left(self, value):
         self.right_stick_x = self.apply_deadzone(value)
-        if abs(self.right_stick_x) > 0:
+        if abs(self.right_stick_x) > 0 and self.debug_mode:
             print(f"Right stick X: {self.right_stick_x:.2f}")
     
     def on_R3_right(self, value):
         self.right_stick_x = self.apply_deadzone(value)
-        if abs(self.right_stick_x) > 0:
+        if abs(self.right_stick_x) > 0 and self.debug_mode:
             print(f"Right stick X: {self.right_stick_x:.2f}")
 
     # Button Callbacks
     def on_L1_press(self):
         self.l1_pressed = True
-        print("L1 button pressed")
+        if self.debug_mode:
+            print("L1 button pressed")
     
     def on_L1_release(self):
         self.l1_pressed = False
-        print("L1 button released")
+        if self.debug_mode:
+            print("L1 button released")
     
     def on_L2_press(self, value):
         self.l2_trigger = value / 32767.0
-        print(f"L2 trigger: {self.l2_trigger:.2f}")
+        if self.debug_mode:
+            print(f"L2 trigger: {self.l2_trigger:.2f}")
     
     def on_L2_release(self):
         self.l2_trigger = 0.0
-        print("L2 trigger released")
+        if self.debug_mode:
+            print("L2 trigger released")
     
     def on_R1_press(self):
         self.r1_pressed = True
-        print("R1 button pressed")
+        if self.debug_mode:
+            print("R1 button pressed")
     
     def on_R1_release(self):
         self.r1_pressed = False
-        print("R1 button released")
+        if self.debug_mode:
+            print("R1 button released")
     
     def on_R2_press(self, value):
         self.r2_trigger = value / 32767.0
-        print(f"R2 trigger: {self.r2_trigger:.2f}")
+        if self.debug_mode:
+            print(f"R2 trigger: {self.r2_trigger:.2f}")
     
     def on_R2_release(self):
         self.r2_trigger = 0.0
-        print("R2 trigger released")
+        if self.debug_mode:
+            print("R2 trigger released")
 
     # Face Buttons
     def on_x_press(self):
         self.x_pressed = True
-        print("X button pressed")
+        if self.debug_mode:
+            print("X button pressed")
     
     def on_x_release(self):
         self.x_pressed = False
-        print("X button released")
+        if self.debug_mode:
+            print("X button released")
     
     def on_triangle_press(self):
         self.triangle_pressed = True
-        print("Triangle button pressed")
+        if self.debug_mode:
+            print("Triangle button pressed")
     
     def on_triangle_release(self):
         self.triangle_pressed = False
-        print("Triangle button released")
+        if self.debug_mode:
+            print("Triangle button released")
     
     def on_square_press(self):
         self.square_pressed = True
-        print("Square button pressed")
+        if self.debug_mode:
+            print("Square button pressed")
     
     def on_square_release(self):
         self.square_pressed = False
-        print("Square button released")
+        if self.debug_mode:
+            print("Square button released")
     
     def on_circle_press(self):
         self.circle_pressed = True
-        print("Circle button pressed")
+        if self.debug_mode:
+            print("Circle button pressed")
     
     def on_circle_release(self):
         self.circle_pressed = False
-        print("Circle button released")
+        if self.debug_mode:
+            print("Circle button released")
 
     # Special Buttons
     def on_options_press(self):
-        print("Options button pressed")
+        if self.debug_mode:
+            print("Options button pressed")
     
     def on_options_release(self):
-        print("Options button released")
+        if self.debug_mode:
+            print("Options button released")
     
     def on_share_press(self):
-        print("Share button pressed (Emergency Stop)")
+        if self.debug_mode:
+            print("Share button pressed (Emergency Stop)")
     
     def on_share_release(self):
-        print("Share button released")
+        if self.debug_mode:
+            print("Share button released")
 
 
 def main():
@@ -176,7 +201,7 @@ def main():
     # You can check available devices using: ls /dev/input/js*
     
     try:
-        controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False)
+        controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False, debug_mode=True)
         print("PS4 Controller initialized. Press buttons to see output.")
         print("Press Ctrl+C to exit.")
         

@@ -1,74 +1,113 @@
-#!/usr/bin/env python3
-
+#!/usr/bin/env python
 import ctypes
-from ctypes import *
 import sys
 import os
 import time
 
-# Define the position types as in KinovaTypes.h
+# Add angular control type constants
 ANGULAR_POSITION = 2
-ANGULAR_VELOCITY = 3
+ANGULAR_VELOCITY = 8
 
-class KinovaDevice(Structure):
+# Define the KinovaDevice structure
+class KinovaDevice(ctypes.Structure):
     _fields_ = [
-        ("SerialNumber", c_char * 20),
-        ("Model", c_char * 20),
-        ("VersionMajor", c_int),
-        ("VersionMinor", c_int),
-        ("VersionRelease", c_int),
-        ("DeviceType", c_int),
-        ("DeviceID", c_int)
+        ("SerialNumber", ctypes.c_char * 20),
+        ("Model", ctypes.c_char * 20),
+        ("VersionMajor", ctypes.c_int),
+        ("VersionMinor", ctypes.c_int),
+        ("VersionRelease", ctypes.c_int),
+        ("DeviceType", ctypes.c_int),
+        ("DeviceID", ctypes.c_int)
     ]
 
-class AngularInfo(Structure):
+# Define AngularInfo structure (7 actuators)
+class AngularInfo(ctypes.Structure):
     _fields_ = [
-        ("Actuator1", c_float),
-        ("Actuator2", c_float),
-        ("Actuator3", c_float),
-        ("Actuator4", c_float),
-        ("Actuator5", c_float),
-        ("Actuator6", c_float),
-        ("Actuator7", c_float),
+        ("Actuator1", ctypes.c_float),
+        ("Actuator2", ctypes.c_float),
+        ("Actuator3", ctypes.c_float),
+        ("Actuator4", ctypes.c_float),
+        ("Actuator5", ctypes.c_float),
+        ("Actuator6", ctypes.c_float),
+        ("Actuator7", ctypes.c_float)
     ]
 
-class FingersPosition(Structure):
+# Define FingersPosition structure (3 fingers)
+class FingersPosition(ctypes.Structure):
     _fields_ = [
-        ("Finger1", c_float),
-        ("Finger2", c_float),
-        ("Finger3", c_float),
+        ("Finger1", ctypes.c_float),
+        ("Finger2", ctypes.c_float),
+        ("Finger3", ctypes.c_float)
     ]
 
-class TrajectoryPoint(Structure):
+# Define AngularPosition structure that combines actuators and fingers
+class AngularPosition(ctypes.Structure):
     _fields_ = [
-        ("Position", c_int),  # Type of position
-        ("Actuators", AngularInfo),  # Actuator position or velocity
-        ("Fingers", FingersPosition),  # Finger position
-        ("HandMode", c_int),
-        ("Limitations", c_int),
-        ("SynchroType", c_int),
-        ("Time", c_float),
+        ("Actuators", AngularInfo),
+        ("Fingers", FingersPosition)
     ]
-    
-    def InitStruct(self):
-        self.Position = 0
-        self.HandMode = 0
-        self.Limitations = 0
-        self.SynchroType = 0
-        self.Time = 0
 
-class KinovaInterface:
-    def __init__(self):
-        self.api = None
-        self.load_kinova_api()
-        self.initialize_functions()
-        self.initialize_arm()
+# Define CartesianInfo structure (6 floats)
+class CartesianInfo(ctypes.Structure):
+    _fields_ = [
+        ("X", ctypes.c_float),
+        ("Y", ctypes.c_float),
+        ("Z", ctypes.c_float),
+        ("ThetaX", ctypes.c_float),
+        ("ThetaY", ctypes.c_float),
+        ("ThetaZ", ctypes.c_float)
+    ]
 
-    def load_kinova_api(self):
-        """Load the Kinova API library"""
+# Define Limitation structure
+class Limitation(ctypes.Structure):
+    _fields_ = [
+        ("speedParameter1", ctypes.c_float),
+        ("speedParameter2", ctypes.c_float),
+        ("speedParameter3", ctypes.c_float),
+        ("forceParameter1", ctypes.c_float),
+        ("forceParameter2", ctypes.c_float),
+        ("forceParameter3", ctypes.c_float),
+        ("accelerationParameter1", ctypes.c_float),
+        ("accelerationParameter2", ctypes.c_float),
+        ("accelerationParameter3", ctypes.c_float)
+    ]
+
+# Define UserPosition structure
+class UserPosition(ctypes.Structure):
+    pass
+
+# Define TrajectoryPoint structure
+class TrajectoryPoint(ctypes.Structure):
+    pass
+
+# Complete the UserPosition structure with proper references
+UserPosition._fields_ = [
+    ("Type", ctypes.c_int),
+    ("Delay", ctypes.c_float),
+    ("CartesianPosition", CartesianInfo),
+    ("Actuators", AngularInfo),
+    ("HandMode", ctypes.c_int),
+    ("Fingers", FingersPosition)
+]
+
+# Complete the TrajectoryPoint structure with proper references
+TrajectoryPoint._fields_ = [
+    ("Position", UserPosition),
+    ("LimitationsActive", ctypes.c_int),
+    ("SynchroType", ctypes.c_int),
+    ("Limitations", Limitation)
+]
+
+class KinovaArmInterface:
+    NO_ERROR = 1
+    MAX_KINOVA_DEVICE = 20
+
+    def __init__(self, lib_name='/opt/JACO-SDK/API/Kinova.API.USBCommandLayerUbuntu.so'):
+        self.lib = None
         try:
             # Try multiple possible library paths
             possible_paths = [
+                lib_name,
                 'Kinova.API.USBCommandLayerUbuntu.so',
                 '/usr/lib/Kinova.API.USBCommandLayerUbuntu.so',
                 '/usr/local/lib/Kinova.API.USBCommandLayerUbuntu.so',
@@ -79,15 +118,15 @@ class KinovaInterface:
                 if os.path.exists(path):
                     print(f"Found Kinova API at: {path}")
                     try:
-                        self.api = CDLL(path)
-                        if not hasattr(self.api, 'InitAPI'):
+                        self.lib = ctypes.CDLL(path)
+                        if not hasattr(self.lib, 'InitAPI'):
                             raise Exception("InitAPI function not found in library")
                         break
                     except Exception as e:
                         print(f"Failed to load {path}: {e}")
                         continue
             
-            if self.api is None:
+            if self.lib is None:
                 raise Exception("Could not find valid Kinova API library")
                 
             print("Successfully loaded Kinova API")
@@ -95,158 +134,240 @@ class KinovaInterface:
             print(f"Failed to load Kinova API: {e}")
             sys.exit(1)
 
-    def initialize_functions(self):
-        """Initialize all required function pointers from the API"""
-        try:
-            # Basic API functions
-            self.init_api = self.api.InitAPI
-            self.init_api.restype = c_int
-            
-            self.close_api = self.api.CloseAPI
-            self.close_api.restype = c_int
-            
-            # Device functions
-            self.get_devices = self.api.GetDevices
-            self.get_devices.argtypes = [POINTER(KinovaDevice), POINTER(c_int)]
-            self.get_devices.restype = c_int
-            
-            self.set_active_device = self.api.SetActiveDevice
-            self.set_active_device.argtypes = [KinovaDevice]
-            self.set_active_device.restype = c_int
-            
-            # Movement and position functions
-            self.move_home = self.api.MoveHome
-            self.move_home.restype = c_int
-            
-            self.init_fingers = self.api.InitFingers
-            self.init_fingers.restype = c_int
-            
-            self.get_angular_command = self.api.GetAngularCommand
-            self.get_angular_command.argtypes = [POINTER(AngularInfo)]
-            self.get_angular_command.restype = c_int
-            
-            # Trajectory functions
-            self.send_basic_trajectory = self.api.SendBasicTrajectory
-            self.send_basic_trajectory.argtypes = [TrajectoryPoint]
-            self.send_basic_trajectory.restype = c_int
-            
-            print("Successfully initialized API functions")
-        except Exception as e:
-            print(f"Failed to initialize API functions: {e}")
+        # Setup function prototypes
+        self.lib.InitAPI.restype = ctypes.c_int
+        self.lib.GetDevices.argtypes = [ctypes.POINTER(KinovaDevice), ctypes.POINTER(ctypes.c_int)]
+        self.lib.GetDevices.restype = ctypes.c_int
+        self.lib.SetActiveDevice.argtypes = [KinovaDevice]
+        self.lib.SetActiveDevice.restype = ctypes.c_int
+        self.lib.MoveHome.restype = ctypes.c_int
+        self.lib.SetAngularControl.restype = ctypes.c_int
+        self.lib.SendBasicTrajectory.argtypes = [TrajectoryPoint]
+        self.lib.SendBasicTrajectory.restype = ctypes.c_int
+
+        # For reading angular positions
+        self.POSITION_CURRENT_COUNT = 7
+        self.lib.GetPositionCurrentActuators.argtypes = [ctypes.POINTER(ctypes.c_float)]
+        self.lib.GetPositionCurrentActuators.restype = ctypes.c_int
+
+        # Setup GetAngularCommand and GetAngularPosition like in the C++ example
+        self.lib.GetAngularCommand.argtypes = [ctypes.POINTER(AngularPosition)]
+        self.lib.GetAngularCommand.restype = ctypes.c_int
+        self.lib.GetAngularPosition.argtypes = [ctypes.POINTER(AngularPosition)]
+        self.lib.GetAngularPosition.restype = ctypes.c_int
+
+        self.device = None
+
+    def connect(self):
+        # Initialize API
+        ret = self.lib.InitAPI()
+        if ret != self.NO_ERROR:
+            print(f"InitAPI failed with error code: {ret}")
             sys.exit(1)
 
-    def initialize_arm(self):
-        """Initialize the connection to the arm"""
-        try:
-            # Initialize the API
-            print("Initializing API...")
-            result = self.init_api()
-            if result != 1:
-                raise Exception(f"Failed to initialize API. Result: {result}")
-            print("API initialized successfully")
-            
-            # Wait a bit for the API to fully initialize
-            time.sleep(1)
-            
-            # Get devices
-            print("Checking for connected devices...")
-            devices = (KinovaDevice * 20)()
-            result_count = c_int()
-            result = self.get_devices(devices, byref(result_count))
-            
-            if result != 1 or result_count.value == 0:
-                raise Exception("No devices found")
-            
-            device = devices[0]
-            try:
-                serial = device.SerialNumber.decode().strip('\x00')
-                model = device.Model.decode().strip('\x00')
-                print(f"Found device: Serial={serial}, Model={model}")
-            except Exception as e:
-                print(f"Warning: Could not decode device info: {e}")
-            
-            # Set the device as active
-            print("Setting active device...")
-            result = self.set_active_device(device)
-            if result != 1:
-                raise Exception(f"Failed to set active device. Result: {result}")
-            print("Active device set successfully")
-            
-            # Initialize fingers
-            print("Initializing fingers...")
-            result = self.init_fingers()
-            if result != 1:
-                print(f"Warning: Finger initialization returned {result}")
-            else:
-                print("Initialized fingers successfully")
-            
-            print("Successfully initialized Kinova arm")
-            
-        except Exception as e:
-            print(f"Failed to initialize arm: {e}")
-            self.close()
+        # Get available devices
+        devices = (KinovaDevice * self.MAX_KINOVA_DEVICE)()
+        device_count = ctypes.c_int(0)
+        ret = self.lib.GetDevices(devices, ctypes.byref(device_count))
+        if ret != self.NO_ERROR:
+            print(f"GetDevices failed with error code: {ret}")
             sys.exit(1)
 
-    def move_to_home(self):
-        """Move the arm to home position"""
-        try:
-            print("Moving to home position...")
-            
-            # Get current position before moving
-            try:
-                current_pos = AngularInfo()
-                result = self.get_angular_command(byref(current_pos))
-                if result == 1:
-                    print("Current position:", [
-                        current_pos.Actuator1, current_pos.Actuator2,
-                        current_pos.Actuator3, current_pos.Actuator4,
-                        current_pos.Actuator5, current_pos.Actuator6
-                    ])
-            except Exception as e:
-                print(f"Warning: Could not get current position: {e}")
-            
-            # Send home command
-            print("Sending home command...")
-            result = self.move_home()
-            if result != 1:
-                print(f"Warning: Move home returned {result}")
-                return False
-            
-            print("Home command sent successfully")
-            print("The arm is moving to home position...")
-            print("Note: The arm will stop automatically when it reaches home position")
-            
-            return True
-            
-        except Exception as e:
-            print(f"Failed to move home: {e}")
-            return False
+        if device_count.value == 0:
+            print("No Kinova devices found.")
+            sys.exit(1)
+
+        # Select the first device
+        self.device = devices[0]
+        ret = self.lib.SetActiveDevice(self.device)
+        if ret != self.NO_ERROR:
+            print(f"SetActiveDevice failed with error code: {ret}")
+            sys.exit(1)
+
+        serial = self.device.SerialNumber.decode('utf-8', errors='ignore').strip('\x00')
+        model = self.device.Model.decode('utf-8', errors='ignore').strip('\x00')
+        print(f"Connected to device. Serial: {serial}, Model: {model}")
+
+    def move_home(self):
+        ret = self.lib.MoveHome()
+        if ret != self.NO_ERROR:
+            print(f"MoveHome failed with error code: {ret}")
+        else:
+            print("MoveHome command issued successfully.")
+
+    def set_angular_control(self):
+        ret = self.lib.SetAngularControl()
+        if ret != self.NO_ERROR:
+            print(f"SetAngularControl failed with error code: {ret}")
+        else:
+            print("Switched to Angular Control mode.")
+
+    def send_angular_trajectory(self, actuator_angles, hand_mode=1, fingers=(0.0, 0.0, 0.0)):
+        # actuator_angles should be a list or tuple of 7 floats
+        if len(actuator_angles) != 7:
+            print("Error: actuator_angles must contain 7 values.")
+            return
+
+        point = TrajectoryPoint()
+        
+        # Set user position type to angular (assumed value 2)
+        point.Position.Type = 2
+        point.Position.Delay = 0.0
+
+        # Set Cartesian Position to zeros (not used in angular mode)
+        point.Position.CartesianPosition = CartesianInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        # Set angular positions from the provided actuator_angles list
+        point.Position.Actuators = AngularInfo(*actuator_angles)
+        point.Position.HandMode = hand_mode
+        point.Position.Fingers = FingersPosition(*fingers)
+
+        # Disable trajectory limitations
+        point.LimitationsActive = 0
+        point.SynchroType = 0
+        point.Limitations = Limitation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        ret = self.lib.SendBasicTrajectory(point)
+        if ret != self.NO_ERROR:
+            print(f"SendBasicTrajectory failed with error code: {ret}")
+        else:
+            print("Angular trajectory command issued successfully.")
+
+    def send_angular_velocity(self, joint_velocities, hand_mode=1, fingers=(0.0, 0.0, 0.0), duration=2.0, period=0.005):
+        # joint_velocities should be a list or tuple of 7 floats representing velocity commands
+        if len(joint_velocities) != 7:
+            print("Error: joint_velocities must contain 7 values.")
+            return
+
+        point = TrajectoryPoint()
+        
+        # Set user position type to angular velocity (assumed value 8)
+        point.Position.Type = ANGULAR_VELOCITY
+        point.Position.Delay = 0.0
+
+        # Set Cartesian Position to zeros (not used in angular velocity mode)
+        point.Position.CartesianPosition = CartesianInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        # Set angular velocities from the provided joint_velocities list
+        point.Position.Actuators = AngularInfo(*joint_velocities)
+        point.Position.HandMode = hand_mode
+        point.Position.Fingers = FingersPosition(*fingers)
+
+        # Disable trajectory limitations
+        point.LimitationsActive = 0
+        point.SynchroType = 0
+        point.Limitations = Limitation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        num_cycles = int(duration / period)
+        for i in range(num_cycles):
+            ret = self.lib.SendBasicTrajectory(point)
+            if ret != self.NO_ERROR:
+                print(f"SendBasicTrajectory (velocity) failed with error code: {ret}")
+            time.sleep(period)
+        # print("Angular velocity command issued successfully.")
+
+ 
+
+    def get_current_angular_positions(self):
+        arr = (ctypes.c_float * self.POSITION_CURRENT_COUNT)()
+        ret = self.lib.GetPositionCurrentActuators(arr)
+        if ret != self.NO_ERROR:
+            print(f"GetPositionCurrentActuators failed with error code: {ret}")
+            return None
+        return [arr[i] for i in range(self.POSITION_CURRENT_COUNT)]
+
+    def print_angular_info(self):
+        positions = self.get_current_angular_positions()
+        if positions is not None:
+            print("Current Angular Positions:")
+            for i, pos in enumerate(positions, start=1):
+                print(f" Actuator {i}: {pos}")
+
+    def print_finger_info(self):
+        # Get both command and position data for fingers like in the C++ example
+        command_data = AngularPosition()
+        position_data = AngularPosition()
+        
+        ret_cmd = self.lib.GetAngularCommand(ctypes.byref(command_data))
+        ret_pos = self.lib.GetAngularPosition(ctypes.byref(position_data))
+        
+        if ret_cmd == self.NO_ERROR and ret_pos == self.NO_ERROR:
+            print("*********************************")
+            print(f"  Finger 1   command: {command_data.Fingers.Finger1}     Position: {position_data.Fingers.Finger1}")
+            print(f"  Finger 2   command: {command_data.Fingers.Finger2}     Position: {position_data.Fingers.Finger2}")
+            print(f"  Finger 3   command: {command_data.Fingers.Finger3}     Position: {position_data.Fingers.Finger3}")
+            print("*********************************")
+        else:
+            print(f"Failed to get finger information. Command error: {ret_cmd}, Position error: {ret_pos}")
 
     def close(self):
-        """Close the connection to the arm"""
-        if self.api:
-            try:
-                result = self.close_api()
-                if result != 1:
-                    print(f"Warning: Close API returned {result}")
+        try:
+            if self.lib:
+                # Stop control API first
+                if hasattr(self.lib, "StopControlAPI"):
+                    self.lib.StopControlAPI()
+                
+                # Then close the API
+                ret = self.lib.CloseAPI()
+                if ret != self.NO_ERROR:
+                    print(f"Warning: Close API returned {ret}")
                 else:
-                    print("Closed connection to Kinova arm")
-            except Exception as e:
-                print(f"Error closing API: {e}")
+                    print("API closed successfully")
+                
+                # Clear the library reference
+                self.lib = None
+        except Exception as e:
+            print(f"Error closing API: {e}")
 
 def main():
-    """Test the Kinova interface"""
+    arm = None
     try:
-        print("Initializing Kinova Interface...")
-        arm = KinovaInterface()
-        input("Press Enter to move to home position...")
-        arm.move_to_home()
-        print("\nTest completed successfully")
-    except KeyboardInterrupt:
-        print("\nTest interrupted by user")
-    finally:
-        if 'arm' in locals():
-            arm.close()
+        arm = KinovaArmInterface()
+        arm.connect()
+        arm.move_home()
+        arm.set_angular_control()
+        
+        # Example of position control
+        print("\nTesting position control...")
+        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], 
+                                  hand_mode=1, fingers=(0.0, 0.0, 0.0))
+        time.sleep(2)
+        arm.print_finger_info()
 
-if __name__ == "__main__":
+        # Test simulated velocity control
+        print("\nTesting simulated velocity control (closing fingers)...")
+        # Move joint 6 at 20 deg/s while closing fingers
+        arm.send_angular_velocity(
+            [0.0, 0.0, 0.0, 0.0, 0.0, -40.0, 0.0],  # Joint velocities
+            hand_mode=1,
+            fingers=(1000.0, 1000.0, 1000.0),  # Close fingers
+            duration=2.0,
+            period=0.005  # 50Hz update rate
+        )
+        # time.sleep(2)
+        arm.print_finger_info()
+
+        print("\nTesting simulated velocity control (opening fingers)...")
+        # Move joint 6 at -20 deg/s while opening fingers
+        arm.send_angular_velocity(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 50.0, 0.0],  # Joint velocities
+            hand_mode=1,
+            fingers=(-1000.0, -1000.0, -1000.0),  # Open fingers
+            duration=2.0,
+            period=0.005  # 50Hz update rate
+        )
+        time.sleep(2)
+        arm.print_finger_info()
+
+    finally:
+        # Ensure we close the API even if an error occurs
+        if arm is not None:
+            arm.close()
+            # Give some time for the system to clean up before exiting
+            time.sleep(0.1)
+    
+    # Exit cleanly
+    sys.exit(0)
+
+if __name__ == '__main__':
     main()

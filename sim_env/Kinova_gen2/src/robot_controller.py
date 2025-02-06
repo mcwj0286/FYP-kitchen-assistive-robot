@@ -1,138 +1,177 @@
 #!/usr/bin/env python3
 
+from devices.kinova_arm_interface import KinovaArmInterface
 from devices.ps4controller_interface import PS4Interface
-from devices.kinova_arm_interface import KinovaInterface
-import numpy as np
 import time
+import threading
 
 class RobotController:
-    def __init__(self):
-        """Initialize robot controller with PS4 controller and Kinova arm"""
+    def __init__(self, debug_mode=False):
+        self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
+        self.gripper_scale = 3000
+        0  # Scale factor for gripper control
+        self.running = False
+        self.emergency_stop = False
         self.controller = None
         self.arm = None
-        self.running = True
-        
-        # Control parameters
-        self.joint_velocity_scale = 30.0  # Maximum joint velocity in degrees/second
-        self.gripper_speed = 0.5      # Gripper movement speed
-        
-        # Initialize devices
-        self.initialize_devices()
-        
+        self.control_thread = None
+        self.debug_mode = debug_mode
+
     def initialize_devices(self):
         """Initialize PS4 controller and Kinova arm"""
         try:
+            # Initialize Kinova arm first
+            print("Initializing Kinova arm...")
+            self.arm = KinovaArmInterface()
+            self.arm.connect()
+            print("Kinova arm initialized successfully")
+            
+            # Move to home position first and wait for completion
+            print("\nMoving to home position before starting control...")
+            self.arm.move_home()
+                
+            # Wait for movement to complete (5 seconds should be enough)
+            print("Waiting for home position movement to complete...")
+            time.sleep(5)
+            
             # Initialize PS4 controller
-            self.controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False)
-            print("PS4 Controller initialized")
+            try:
+                print("Initializing PS4 controller...")
+                self.controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False, debug_mode=self.debug_mode)
+                print("PS4 Controller initialized")
+                
+                # Start controller in a separate thread
+                self.controller_thread = threading.Thread(target=self.controller.listen)
+                self.controller_thread.daemon = True
+                self.controller_thread.start()
+            except Exception as e:
+                print(f"PS4 controller not available: {e}")
+                return False
             
-            # Initialize Kinova arm
-            self.arm = KinovaInterface()
-            print("Kinova arm initialized")
-            
+            print("\nInitialization complete - ready for velocity control")
+            return True
         except Exception as e:
             print(f"Error initializing devices: {e}")
-            raise
-            
-    def map_controller_to_joint_velocities(self):
-        """Map controller inputs to joint velocities
-        
-        Mapping:
-        - Left stick X: Joint 1 (base rotation)
-        - Left stick Y: Joint 2 (shoulder)
-        - Right stick X: Joint 3 (elbow)
-        - Right stick Y: Joint 4 (wrist)
-        - L2/R2: Joint 5 (wrist rotation)
-        - L1/R1: Joint 6 (end effector rotation)
-        
-        Returns:
-            list: Joint velocities [j1, j2, j3, j4, j5, j6]
-        """
-        # Get controller values
-        j1_vel = self.controller.left_stick_x * self.joint_velocity_scale
-        j2_vel = self.controller.left_stick_y * self.joint_velocity_scale
-        j3_vel = self.controller.right_stick_x * self.joint_velocity_scale
-        j4_vel = self.controller.right_stick_y * self.joint_velocity_scale
-        
-        # Calculate joint 5 velocity from triggers
-        j5_vel = (self.controller.r2_trigger - self.controller.l2_trigger) * self.joint_velocity_scale
-        
-        # Calculate joint 6 velocity from L1/R1 buttons
-        j6_vel = 0.0
-        if self.controller.r1_pressed:
-            j6_vel = self.joint_velocity_scale
-        elif self.controller.l1_pressed:
-            j6_vel = -self.joint_velocity_scale
-            
-        return [j1_vel, j2_vel, j3_vel, j4_vel, j5_vel, j6_vel]
-        
-    def map_controller_to_gripper(self):
-        """Map controller face buttons to gripper commands
-        
-        Mapping:
-        - Circle: Close gripper
-        - X: Open gripper
-        
-        Returns:
-            float: Gripper velocity (-1 to 1, negative for open, positive for close)
-        """
-        if self.controller.circle_pressed:
-            return self.gripper_speed  # Close
-        elif self.controller.x_pressed:
-            return -self.gripper_speed  # Open
-        return 0.0  # No movement
-        
+            return False
+
     def control_loop(self):
-        """Main control loop for robot operation"""
-        print("\nStarting robot control loop...")
-        print("Control mapping:")
-        print("- Left stick (X,Y): Joints 1 & 2")
-        print("- Right stick (X,Y): Joints 3 & 4")
-        print("- L2/R2 triggers: Joint 5")
-        print("- L1/R1 buttons: Joint 6")
-        print("- Circle/X: Close/Open gripper")
-        print("- Options: Move to home position")
-        print("- Share: Emergency stop")
-        print("\nPress Ctrl+C to exit")
+        """Main control loop for the robot using velocity control"""
+        print("\nPS4 Controller Mapping:")
+        print("Left Stick X/Y: Joint 1 & 2")
+        print("Right Stick X/Y: Joint 3 & 4")
+        print("L2/R2 Triggers: Joint 5")
+        print("L1/R1 Buttons: Joint 6")
+        print("Square/Circle: Gripper Open/Close")
+        print("Triangle: Move to Home Position")
+        print("Share: Emergency Stop")
+        print("Options: Exit")
         
-        try:
-            while self.running:
-                # Get joint velocities from controller
-                joint_velocities = self.map_controller_to_joint_velocities()
+        print("\nStarting velocity control loop...")
+        print("Note: The arm should now be in home position and ready for velocity control")
+        
+        while self.running and not self.emergency_stop:
+            try:
+                if not self.controller:
+                    print("No controller connected")
+                    break
                 
-                # Get gripper command
-                gripper_command = self.map_controller_to_gripper()
+                # Create joint velocity array
+                joint_velocities = [0.0] * 7  # 7 joints including gripper
                 
-                # Send commands to robot
-                if any(abs(v) > 0 for v in joint_velocities):
-                    self.arm.set_joint_velocities(joint_velocities)
-                    
-                if abs(gripper_command) > 0:
-                    self.arm.control_gripper(gripper_command)
-                    
-                # Small delay to prevent CPU overuse
-                time.sleep(0.01)  # 100Hz control loop
+                # Map controller inputs to joint velocities
+                # Joint 1 & 2 - Left Stick
+                joint_velocities[0] = self.controller.left_stick_x * self.velocity_scale
+                joint_velocities[1] = self.controller.left_stick_y * self.velocity_scale
                 
-        except KeyboardInterrupt:
-            print("\nStopping robot control...")
-        finally:
-            # Stop all motion
-            self.arm.set_joint_velocities([0.0] * 6)
-            self.running = False
-            
-    def cleanup(self):
-        """Clean shutdown of controller and arm"""
-        if self.arm:
+                # Joint 3 & 4 - Right Stick
+                joint_velocities[2] = -self.controller.right_stick_y * self.velocity_scale
+                joint_velocities[3] = -self.controller.right_stick_x * self.velocity_scale
+                
+                # Joint 5 - L2/R2 Triggers
+                joint5_velocity = (self.controller.l2_trigger - self.controller.r2_trigger) * self.velocity_scale
+                joint_velocities[4] = joint5_velocity
+                
+                # Joint 6 - L1/R1 Buttons
+                joint6_velocity = 0.0
+                if self.controller.r1_pressed:
+                    joint6_velocity = -self.velocity_scale
+                elif self.controller.l1_pressed:
+                    joint6_velocity = self.velocity_scale
+                joint_velocities[5] = joint6_velocity
+                
+                # Gripper control - Squ
+                # are/Circle buttons
+                gripper_velocity = 0.0
+                if self.controller.circle_pressed:
+                    gripper_velocity = -self.gripper_scale  # Open
+                elif self.controller.square_pressed:
+                    gripper_velocity = self.gripper_scale   # Close
+                joint_velocities[6] = gripper_velocity
+                
+                # Check for home position request
+                if self.controller.triangle_pressed:
+                    print("Moving to home position...")
+                    self.arm.move_home()
+                    # Wait for movement to complete
+                    print("Waiting for home position movement to complete...")
+                    time.sleep(5)
+                    print("Ready for velocity control again")
+                    continue
+                
+                # Send velocity commands to the arm
+                self.arm.send_angular_velocity(
+                    joint_velocities,  # Joint velocities array
+                    hand_mode=1,
+                    fingers=(gripper_velocity, gripper_velocity, gripper_velocity),
+                    duration=0.005,  # Short duration for continuous control
+                    period=0.005  # 200Hz update rate
+                )
+                
+                # Print velocities for debugging if any joint is moving
+                if any(abs(v) > 0.1 for v in joint_velocities):
+                    print(f"Joint Velocities: {[f'{v:.1f}' for v in joint_velocities]}")
+                
+                # Sleep for exactly 5ms for the next control cycle
+                time.sleep(0.005)
+                
+            except Exception as e:
+                print(f"Error in control loop: {e}")
+                break
+
+    def start(self):
+        """Start the robot controller"""
+        if not self.initialize_devices():
+            return False
+        
+        self.running = True
+        self.emergency_stop = False
+        
+        # Start control loop in a separate thread
+        self.control_thread = threading.Thread(target=self.control_loop)
+        self.control_thread.start()
+        
+        return True
+
+    def stop(self):
+        """Stop the robot controller"""
+        self.running = False
+        if self.control_thread:
+            self.control_thread.join()
+        if hasattr(self, 'arm'):
             self.arm.close()
-        if self.controller:
-            self.controller.close()
+        print("Robot controller stopped")
 
 def main():
-    controller = RobotController()
+    controller = RobotController(debug_mode=False)  # Set debug_mode=True to enable debug prints
     try:
-        controller.control_loop()
+        if controller.start():
+            # Wait for the control thread to finish
+            while controller.running:
+                time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\nController interrupted by user")
     finally:
-        controller.cleanup()
+        controller.stop()
 
 if __name__ == "__main__":
     main() 
