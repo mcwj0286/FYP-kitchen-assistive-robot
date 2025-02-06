@@ -216,6 +216,7 @@ class KinovaArmInterface:
         # Set angular positions from the provided actuator_angles list
         point.Position.Actuators = AngularInfo(*actuator_angles)
         point.Position.HandMode = hand_mode
+        #finger range : finger1 (6684), finger2 (6696), finger3 (7344)
         point.Position.Fingers = FingersPosition(*fingers)
 
         # Disable trajectory limitations
@@ -288,7 +289,7 @@ def main():
         arm.move_home()
         arm.set_angular_control()
         # For example, send a trajectory where actuator1 is 15 degrees and others are 0
-        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], hand_mode=1, fingers=(5000.0, 5000.0, 5000.0))
+        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], hand_mode=1, fingers=(8000.0, 8000.0, 8000.0))
         time.sleep(2)  # Sleep for 2 s 
         arm.print_angular_info()
         arm.print_finger_info()
