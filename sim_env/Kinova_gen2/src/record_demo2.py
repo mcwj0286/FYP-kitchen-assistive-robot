@@ -5,7 +5,118 @@ from devices.ps4controller_interface import PS4Interface
 import time
 import threading
 import cv2
+import h5py
+import numpy as np
+import os
 
+class DataRecorder:
+    def __init__(self, task_name):
+        self.task_name = task_name
+        self.file_path = f"{task_name}.hdf5"
+        self.current_demo = None
+        self.demo_idx = 0
+        self.frame_idx = 0
+        self.h5_file = None
+        
+        # Initialize or open the HDF5 file
+        self._initialize_hdf5()
+    
+    def _initialize_hdf5(self):
+        """Initialize HDF5 file and determine next demo index"""
+        # Check if file exists
+        file_exists = os.path.exists(self.file_path)
+        
+        # Open file in append mode if it exists, create it if it doesn't
+        self.h5_file = h5py.File(self.file_path, 'a')
+        
+        # If file exists, find the next demo index
+        if file_exists:
+            existing_demos = [k for k in self.h5_file.keys() if k.startswith('demo_')]
+            if existing_demos:
+                last_demo = max(existing_demos)
+                self.demo_idx = int(last_demo.split('_')[1]) + 1
+            print(f"Appending to existing file. Next demo index: {self.demo_idx}")
+        else:
+            print(f"Created new HDF5 file: {self.file_path}")
+    
+    def start_new_demo(self):
+        """Start recording a new demonstration"""
+        demo_name = f'demo_{self.demo_idx:02d}'
+        print(f"Starting new demo: {demo_name}")
+        
+        # Create a new group for this demo
+        self.current_demo = self.h5_file.create_group(demo_name)
+        
+        # Create images subgroup
+        images_group = self.current_demo.create_group('images')
+        
+        # Create resizable datasets for joint angles and actions
+        # Joint angles: 6 joints + 3 fingers = 9 values
+        self.current_demo.create_dataset('joint_angles', 
+                                       shape=(0, 9),
+                                       maxshape=(None, 9),
+                                       dtype='float32')
+        
+        # Actions: 7 values (6 joint velocities + 1 gripper)
+        self.current_demo.create_dataset('actions',
+                                       shape=(0, 7),
+                                       maxshape=(None, 7),
+                                       dtype='float32')
+        
+        self.frame_idx = 0
+        return demo_name
+    
+    def add_frame(self, frames_dict, joint_angles, action):
+        """Add a new frame of data to the current demo
+        
+        Args:
+            frames_dict: Dictionary of camera frames {cam_id: frame}
+            joint_angles: Array of current joint angles (9 values)
+            action: Array of joint velocities (7 values)
+        """
+        if self.current_demo is None:
+            raise RuntimeError("No active demo. Call start_new_demo() first.")
+        
+        # Add frames for each camera
+        for cam_id, frame in frames_dict.items():
+            dataset_name = f'images/cam_{cam_id}'
+            if dataset_name not in self.current_demo['images']:
+                # Create new dataset for this camera
+                self.current_demo['images'].create_dataset(
+                    f'cam_{cam_id}',
+                    shape=(0, *frame.shape),
+                    maxshape=(None, *frame.shape),
+                    dtype=frame.dtype)
+            
+            # Resize dataset and add new frame
+            dataset = self.current_demo['images'][f'cam_{cam_id}']
+            dataset.resize(self.frame_idx + 1, axis=0)
+            dataset[self.frame_idx] = frame
+        
+        # Add joint angles
+        joint_angles_dataset = self.current_demo['joint_angles']
+        joint_angles_dataset.resize(self.frame_idx + 1, axis=0)
+        joint_angles_dataset[self.frame_idx] = joint_angles
+        
+        # Add action
+        actions_dataset = self.current_demo['actions']
+        actions_dataset.resize(self.frame_idx + 1, axis=0)
+        actions_dataset[self.frame_idx] = action
+        
+        self.frame_idx += 1
+    
+    def end_demo(self):
+        """End the current demo and prepare for the next one"""
+        if self.current_demo is not None:
+            self.h5_file.flush()  # Ensure all data is written
+            self.demo_idx += 1
+            self.current_demo = None
+            self.frame_idx = 0
+    
+    def close(self):
+        """Close the HDF5 file"""
+        if self.h5_file is not None:
+            self.h5_file.close()
 
 class record_demo:
     def __init__(self, debug_mode=False):
@@ -19,9 +130,10 @@ class record_demo:
         self.control_thread = None
         self.debug_mode = debug_mode
         self.cameras = None
+        self.data_recorder = None
+        self.recording = False
         # Removed asynchronous camera thread and shared frame storage as we'll capture synchronously
 
-        #TODO: add camera interface
     def initialize_devices(self):
         """Initialize PS4 controller and Kinova arm"""
         try:
@@ -81,6 +193,7 @@ class record_demo:
         print("Square/Circle: Gripper Open/Close")
         print("Triangle: Move to Home Position")
         print("Share: Emergency Stop")
+        print("Options: Start/Stop Recording")
         print("Options: Exit")
         
         print("\nStarting velocity control loop...")
@@ -88,12 +201,15 @@ class record_demo:
         
         while self.running and not self.emergency_stop:
             try:
+                frames_dict = {}
                 # Synchronously capture frames from all cameras at the start of each iteration
                 if self.cameras is not None and self.cameras.cameras:
                     frames = self.cameras.capture_frames()
                     for cam_id, (success, frame) in frames.items():
                         if success and frame is not None:
                             cv2.imshow(f"Camera {cam_id}", frame)
+                            if self.recording:
+                                frames_dict[cam_id] = frame
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         print("Camera feed windows closed by user")
                         self.running = False
@@ -134,6 +250,18 @@ class record_demo:
                 elif self.controller.square_pressed:
                     gripper_velocity = self.gripper_scale   # Close
                 joint_velocities[6] = gripper_velocity
+
+                # Check for recording control (Options button)
+                if self.controller.options_pressed:
+                    if not self.recording:
+                        print("\nStarting new demo recording...")
+                        self.data_recorder.start_new_demo()
+                        self.recording = True
+                    else:
+                        print("\nEnding demo recording...")
+                        self.data_recorder.end_demo()
+                        self.recording = False
+                    time.sleep(0.5)  # Debounce
                 
                 # Check for home position request
                 if self.controller.triangle_pressed:
@@ -144,6 +272,13 @@ class record_demo:
                     time.sleep(5)
                     print("Ready for velocity control again")
                     continue
+
+                # Get current joint angles if recording
+                if self.recording:
+                    # Assuming get_joint_angles returns a 9-element array (6 joints + 3 fingers)
+                    joint_angles = self.arm.get_joint_angles()
+                    # Record the frame
+                    self.data_recorder.add_frame(frames_dict, joint_angles, joint_velocities)
 
                 # Send velocity commands to the arm
                 self.arm.send_angular_velocity(
@@ -167,6 +302,10 @@ class record_demo:
 
     def start(self):
         """Start the robot controller and initiate synchronous camera capture in the control loop"""
+        # Get task name from user
+        task_name = input("Enter task name for recording: ")
+        self.data_recorder = DataRecorder(task_name)
+        
         if not self.initialize_devices():
             return False
         
@@ -188,6 +327,8 @@ class record_demo:
             self.arm.close()
         if self.cameras:
             self.cameras.close()
+        if self.data_recorder:
+            self.data_recorder.close()
         cv2.destroyAllWindows()
         print("Robot controller stopped")
 
@@ -204,4 +345,4 @@ def main():
         controller.stop()
 
 if __name__ == "__main__":
-    main() 
+    main()
