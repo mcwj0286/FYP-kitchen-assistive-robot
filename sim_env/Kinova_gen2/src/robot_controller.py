@@ -5,6 +5,7 @@ from devices.ps4controller_interface import PS4Interface
 import time
 import threading
 
+
 class RobotController:
     def __init__(self, debug_mode=False):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
@@ -99,8 +100,7 @@ class RobotController:
                     joint6_velocity = self.velocity_scale
                 joint_velocities[5] = joint6_velocity
                 
-                # Gripper control - Squ
-                # are/Circle buttons
+                # Gripper control - Square/Circle buttons
                 gripper_velocity = 0.0
                 if self.controller.circle_pressed:
                     gripper_velocity = -self.gripper_scale  # Open
@@ -123,16 +123,16 @@ class RobotController:
                     joint_velocities,  # Joint velocities array
                     hand_mode=1,
                     fingers=(gripper_velocity, gripper_velocity, gripper_velocity),
-                    duration=0.005,  # Short duration for continuous control
-                    period=0.005  # 200Hz update rate
+                    duration=0.03333,  # Duration updated for 30Hz control loop
+                    period=0.005   # 30Hz update rate
                 )
-                
+
                 # Print velocities for debugging if any joint is moving
                 if any(abs(v) > 0.1 for v in joint_velocities):
                     print(f"Joint Velocities: {[f'{v:.1f}' for v in joint_velocities]}")
                 
                 # Sleep for exactly 5ms for the next control cycle
-                time.sleep(0.005)
+                time.sleep(0.03333)
                 
             except Exception as e:
                 print(f"Error in control loop: {e}")
