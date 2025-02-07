@@ -165,7 +165,6 @@ class bc_act_policy(nn.Module):
                  num_queries=10,
                  max_episode_len=200,
                  use_proprio=True,
-                 num_feat_per_step=3,
                  learnable_tokens=False):
         super().__init__()  # Call parent class constructor
         
@@ -181,7 +180,6 @@ class bc_act_policy(nn.Module):
         self.use_proprio = use_proprio
         self.observation_buffer = {}
         self.act_dim = act_dim
-        self.num_prompt_feats = num_feat_per_step
         self.step = 0
 
         self.num_queries = num_queries
@@ -214,7 +212,7 @@ class bc_act_policy(nn.Module):
         # Action head for final prediction
         if policy_head == "deterministic":
             self.action_head = DeterministicHead(
-                self.repr_dim, self.action_dim, num_layers=2 
+                self.repr_dim, self.act_dim, num_layers=2 
             )
 
         # initialize the vision encoder
@@ -339,31 +337,18 @@ class bc_act_policy(nn.Module):
         x: (B, T, num_modalities, E)
         """
         B,T,num_modalities,E = x.shape
-        outputs = []
-        for i in range(T):
-            input = x[:,i,:,:] # (B, num_modalities, E)
-            output = self.transformer(input) # (B, num_queries, E)
+        
+        x = x.reshape(B*T, num_modalities, E)
+        output = self.transformer(x) # (B*T, num_queries, E)
+        output = output.reshape(B, T, -1, -1)
+        
 
-            # Unsqueeze output to [B,1,num_queries,E] and store
-            output = output.unsqueeze(1)  # [B,1,num_queries,E]
-            
-            
-            outputs.append(output)
         
-        # Stack all outputs along time dimension
-        x = torch.cat(outputs, dim=1)  # [B,T,num_queries,E]
-        
-        
-        return x
+        return output
 
     def reset(self):
-        """Reset history buffers"""
- 
-        self.latent_queue = []
+        """Reset episode state"""
         self.step = 0
-        
-        
-        # Initialize with batch dimension of 1, will be resized as needed
         self.all_time_actions = torch.zeros(
             1,  # initial batch size
             self.max_episode_len,
@@ -402,10 +387,7 @@ class bc_act_policy(nn.Module):
 
         # Get action predictions from action head
         pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
-        # reshape pred_actions to [B,T,num_queries,act_dim]
-        pred_actions = pred_actions.reshape(B, T, num_queries, self.act_dim)
-        # reshape pred_actions to [B,T,act_dim] for training loss
-        pred_actions = pred_actions.reshape(B, T, self.action_dim)
+ 
 
         return pred_actions
 
@@ -469,7 +451,7 @@ class bc_act_policy(nn.Module):
             
 
     # NEW: train_step method for bc_act_policy
-    def train_step(self, data):
+    def train_step(self, data, optimizer=None):
         """
         Performs a training step for BC-ACT.
         Expects data to contain ground truth actions under the key "actions".
@@ -477,11 +459,18 @@ class bc_act_policy(nn.Module):
             loss (torch.Tensor): the negative log likelihood loss.
         """
         gt_actions = data.get("actions", None)
+        B,T,D = gt_actions.shape
+        gt_actions = gt_actions.reshape(B, T, self.num_queries, self.act_dim)
+        gt_actions = gt_actions.view(B, T*self.num_queries, self.act_dim)
         if gt_actions is None:
             raise ValueError("Ground truth actions missing in training batch")
         # Forward pass returns an output distribution.
         pred_dist = self.forward(data)
         # Compute the negative log likelihood loss from the output distribution.
         loss = -pred_dist.log_prob(gt_actions).mean()
+        if optimizer is not None:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         return loss
 
