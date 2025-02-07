@@ -180,7 +180,6 @@ class bc_act_policy(nn.Module):
         self._policy_head = policy_head
         self.history = history
         self.history_len = history_len if history else 1
-        self.temporal_agg = temporal_agg
         self.max_episode_len = max_episode_len
         self.use_proprio = use_proprio
         self.observation_buffer = {}
@@ -189,10 +188,7 @@ class bc_act_policy(nn.Module):
         self.num_prompt_feats = num_feat_per_step
         self.step = 0
 
-        if self.temporal_agg:
-            self.num_queries = num_queries
-        else: 
-            self.num_queries = 1
+        self.num_queries = num_queries
  
         self.action_dim = (
             self.act_dim * self.num_queries
@@ -222,7 +218,7 @@ class bc_act_policy(nn.Module):
         # Action head for final prediction
         if policy_head == "deterministic":
             self.action_head = DeterministicHead(
-                self.repr_dim, self.action_dim, num_layers=2
+                self.repr_dim, self.action_dim, num_layers=2 
             )
 
         # initialize the vision encoder
@@ -344,24 +340,25 @@ class bc_act_policy(nn.Module):
     def temporal_encode(self, x):
         """
         Apply temporal encoding and transformer processing
+        x: (B, T, num_modalities, E)
         """
-        # Add positional encoding
-        pos_emb = self.temporal_position_encoding(x)  # (T, E)
-        x = x + pos_emb.unsqueeze(1)  # (B, T, num_modality, E)
+        B,T,num_modalities,E = x.shape
+        outputs = []
+        for i in range(T):
+            input = x[:,i,:,:] # (B, num_modalities, E)
+            output = self.transformer(input) # (B, num_queries, E)
+
+            # Unsqueeze output to [B,1,num_queries,E] and store
+            output = output.unsqueeze(1)  # [B,1,num_queries,E]
+            
+            
+            outputs.append(output)
         
-        # Compute mask for transformer
-        self.transformer.compute_mask(x.shape)
+        # Stack all outputs along time dimension
+        x = torch.cat(outputs, dim=1)  # [B,T,num_queries,E]
         
-        # Reshape for transformer: (B, T, num_modalities, E) -> (B, T*num_modalities, E)
-        sh = x.shape
-        x = TensorUtils.join_dimensions(x, 1, 2)  # (B, T*num_modality, E)
         
-        # Apply transformer
-        x = self.transformer(x)
-        
-        # Reshape back
-        x = x.reshape(*sh)
-        return x[:, :, -1]  # Return last modality features (B, T, E)
+        return x
 
     def reset(self):
         """Reset history buffers"""
@@ -369,15 +366,14 @@ class bc_act_policy(nn.Module):
         self.latent_queue = []
         self.step = 0
         
-        # temporal aggregation
-        if self.temporal_agg:
-            # Initialize with batch dimension of 1, will be resized as needed
-            self.all_time_actions = torch.zeros(
-                1,  # initial batch size
-                self.max_episode_len,
-                self.max_episode_len + self.num_queries,
-                self.act_dim
-            ).to(self.device)
+        
+        # Initialize with batch dimension of 1, will be resized as needed
+        self.all_time_actions = torch.zeros(
+            1,  # initial batch size
+            self.max_episode_len,
+            self.max_episode_len + self.num_queries,
+            self.act_dim
+        ).to(self.device)
 
     def forward(self, data, action=None):
         """
@@ -404,9 +400,16 @@ class bc_act_policy(nn.Module):
         
         # Apply temporal encoding
         x = self.temporal_encode(x)
-        
+        B,T,num_queries,E = x.shape
+        # reshape x to [B,T*num_queries,E]
+        x = x.reshape(B, -1, E)
+
         # Get action predictions from action head
-        pred_actions = self.action_head(x)
+        pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
+        # reshape pred_actions to [B,T,num_queries,act_dim]
+        pred_actions = pred_actions.reshape(B, T, num_queries, self.act_dim)
+        # reshape pred_actions to [B,T,act_dim] for training loss
+        pred_actions = pred_actions.reshape(B, T, self.action_dim)
 
         return pred_actions
 
@@ -425,53 +428,48 @@ class bc_act_policy(nn.Module):
             data = self.preprocess_input(data, train_mode=False)
             
             # Encode spatial features
-            x = self.spatial_encode(data)
-            
-            # Manage latent queue for temporal history
-            self.latent_queue.append(x)
-            if len(self.latent_queue) > self.history_len:
-                self.latent_queue.pop(0)
-            x = torch.cat(self.latent_queue, dim=1)
+            x = self.spatial_encode(data) # (B, 1, num_modalities, E)
             
             # Apply temporal encoding
-            x = self.temporal_encode(x)
+            x = self.temporal_encode(x) # (B, 1, num_queries, E)
             
+            x = x.squeeze(1) # (B, num_queries, E)
+
             # Get action prediction
-            pred_actions = self.action_head(x[:, -1])
-            pred_actions = pred_actions.mean
+            pred_actions = self.action_head(x) # (B, num_queries, act_dim)
             
-            # Process for temporal aggregation if needed
-            if self.temporal_agg:
-                B = pred_actions.shape[0]
-                pred_actions = pred_actions.view(-1, self.num_queries, self.act_dim)
-                
-                # Resize all_time_actions if batch size changes
-                if self.all_time_actions.shape[0] != B:
-                    self.all_time_actions = torch.zeros(
-                        B,
-                        self.max_episode_len,
-                        self.max_episode_len + self.num_queries,
-                        self.act_dim
-                    ).to(self.device)
-                
-                actions = []
-                for i in range(B):
-                    action = pred_actions[i]
-                    self.all_time_actions[i, self.step, self.step : self.step + self.num_queries] = action
-                    actions_for_curr_step = self.all_time_actions[i,:, self.step]
-                    actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                    actions_for_curr_step = actions_for_curr_step[actions_populated]
-                    k = 0.01
-                    exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                    exp_weights = exp_weights / exp_weights.sum()
-                    exp_weights = torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1)
-                    action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                    actions.append(action)
-                action = torch.cat(actions, dim=0)
-                self.step += 1
-                return action.detach().cpu().numpy()
             
-            return pred_actions.detach().cpu().numpy()
+            
+            B = pred_actions.shape[0]
+            
+            
+            # Resize all_time_actions if batch size changes
+            if self.all_time_actions.shape[0] != B:
+                self.all_time_actions = torch.zeros(
+                    B,
+                    self.max_episode_len,
+                    self.max_episode_len + self.num_queries,
+                    self.act_dim
+                ).to(self.device)
+            
+            actions = []
+            for i in range(B):
+                action = pred_actions[i]
+                self.all_time_actions[i, self.step, self.step : self.step + self.num_queries] = action
+                actions_for_curr_step = self.all_time_actions[i,:, self.step]
+                actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                actions_for_curr_step = actions_for_curr_step[actions_populated]
+                k = 0.01
+                exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                exp_weights = exp_weights / exp_weights.sum()
+                exp_weights = torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1)
+                action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                actions.append(action)
+            action = torch.cat(actions, dim=0)
+            self.step += 1
+            return action.detach().cpu().numpy()
+            
+            
 
     # NEW: train_step method for bc_act_policy
     def train_step(self, data):
@@ -495,7 +493,7 @@ if __name__ == "__main__":
     print("Testing CustomTransformerDecoder...")
     
     # Initialize decoder
-    decoder = CustomTransformerDecoder(
+    decoder = ACT_TransformerDecoder(
         input_size=512,
         num_layers=8,
         num_heads=4,
