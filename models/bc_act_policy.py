@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot')
+sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic')
 # from models.networks.gpt import GPT, GPTConfig
 from models.networks.mlp import MLP
 
@@ -162,12 +162,11 @@ class bc_act_policy(nn.Module):
                 }
                 , language_dim=768, lang_repr_dim=512, language_fusion="film",
                  pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
-                 history=True, history_len=10, num_queries=10,
-                 temporal_agg=True,
+                 num_queries=10,
                  max_episode_len=200,
                  use_proprio=True,
                  num_feat_per_step=3,
-                 learnable_tokens=True):
+                 learnable_tokens=False):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -178,12 +177,9 @@ class bc_act_policy(nn.Module):
         self.proprio_key = proprio_key
         self.repr_dim = repr_dim
         self._policy_head = policy_head
-        self.history = history
-        self.history_len = history_len if history else 1
         self.max_episode_len = max_episode_len
         self.use_proprio = use_proprio
         self.observation_buffer = {}
-        # self.num_queries = num_queries
         self.act_dim = act_dim
         self.num_prompt_feats = num_feat_per_step
         self.step = 0
@@ -206,7 +202,7 @@ class bc_act_policy(nn.Module):
             mlp_hidden_size=hidden_dim,
             dropout=0.1,
             num_queries=self.num_queries,
-            learnable_tokens=False
+            learnable_tokens=learnable_tokens
         )
         
         # Initialize temporal position encoding
@@ -438,6 +434,7 @@ class bc_act_policy(nn.Module):
             # Get action prediction
             pred_actions = self.action_head(x) # (B, num_queries, act_dim)
             
+            pred_actions= pred_actions.mean
             
             
             B = pred_actions.shape[0]
@@ -488,98 +485,3 @@ class bc_act_policy(nn.Module):
         loss = -pred_dist.log_prob(gt_actions).mean()
         return loss
 
-if __name__ == "__main__":
-    # Test CustomTransformerDecoder
-    print("Testing CustomTransformerDecoder...")
-    
-    # Initialize decoder
-    decoder = ACT_TransformerDecoder(
-        input_size=512,
-        num_layers=8,
-        num_heads=4,
-        head_output_size=64,
-        mlp_hidden_size=256,
-        dropout=0.1,
-        num_queries=10,
-        learnable_tokens=True
-    ).cuda()
-    
-    # Create random input tensor
-    batch_size = 32
-    num_features = 15  # Number of input features/tokens
-    input_dim = 512
-    
-    x = torch.randn(batch_size, num_features, input_dim).cuda()
-    
-    print(f"\nInput shape: {x.shape}")
-    
-    # Forward pass
-    try:
-        with torch.no_grad():
-            output = decoder(x)
-            print(f"Output shape: {output.shape}")
-            
-            # Get attention weights
-            attention_weights = decoder.get_attention_weights()
-            
-            # Print attention weights shapes
-            print("\nAttention Weights Shapes:")
-            print("Cross Attention:")
-            for layer_idx, weights in enumerate(attention_weights['cross_attention']):
-                print(f"Layer {layer_idx}: {weights.shape}")
-            
-            print("\nSelf Attention:")
-            for layer_idx, weights in enumerate(attention_weights['self_attention']):
-                print(f"Layer {layer_idx}: {weights.shape}")
-                
-            # Verify causal masking
-            print("\nVerifying causal masking in self attention...")
-            last_layer_self_attn = attention_weights['self_attention'][-1]
-            upper_triangle = last_layer_self_attn[:, :, torch.triu_indices(10, 10, offset=1)[0], torch.triu_indices(10, 10, offset=1)[1]]
-            is_masked = torch.all(upper_triangle == 0)
-            print(f"Causal masking verified: {is_masked}")
-            
-            print("\nTest completed successfully!")
-            
-    except Exception as e:
-        print(f"Error during test: {e}")
-
-    # Test bc_act_policy
-    print("\nTesting bc_act_policy...")
-    
-    config = {
-        'repr_dim': 512,
-        'act_dim': 7,
-        'hidden_dim': 256,
-        'policy_head': 'deterministic',
-        'obs_type': 'pixels',
-        'obs_shape': {
-            'pixels': (3, 128, 128),
-            'pixels_egocentric': (3, 128, 128),
-            'proprioceptive': (9,),
-        },
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-    }
-
-    # Initialize model
-    policy = bc_act_policy(**config).to(config['device'])
-    policy.eval()
-
-    # Create dummy input data
-    batch_size = 1
-    time_steps = 10
-    dummy_data = {
-        'pixels': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
-        'pixels_egocentric': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
-        'proprioceptive': torch.randn(batch_size, time_steps, 9).to(config['device']),
-        'task_emb': torch.randn(batch_size, 768).to(config['device']),
-    }
-
-    try:
-        action = policy.get_action(dummy_data)
-        print(f"Predicted action shape: {action.shape}")
-        print(f"Predicted action: {action}")
-        
-    except Exception as e:
-        print(f"Error during inference: {e}")
-    
