@@ -285,7 +285,7 @@ class LIBERODataset(Dataset):
         self.close()
 
 
-class RealDataset(Dataset):
+class Kinova_Dataset(Dataset):
     """
     Dataset for loading real-world demonstrations collected using the robotic arm.
     
