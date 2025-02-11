@@ -310,9 +310,12 @@ class RealDataset(Dataset):
     
     The following modalities are returned (as torch.Tensors):
       - For each camera defined in camera_mapping, images are loaded, normalized to [0,1],
-        resized to `resize_shape`, and permuted to (T, C, H, W).
-      - "proprioceptive": loaded from "joint_angles" (T, 9)
-      - "actions": processed actions with future concatenation if requested (T, 7*num_queries)
+        resized to `image_shape`, and permuted to (T, C, H, W).
+      - "proprioceptive": loaded from "joint_angles" (T, 9) and normalized using linear normalization:
+             (angle - 180)/180, mapping the original range [0, 360] to [-1, 1].
+      - "actions": processed actions with future concatenation if requested (T, 7*num_queries),
+             where the first 6 elements (joint velocities, originally in [-30, 30]) are normalized by dividing by 30,
+             and the 7th element (gripper velocity, originally in [-3000, 3000]) is normalized by dividing by 3000.
       - "pad_mask": (optional) binary mask of valid timesteps (T, 1)
       - "action_padding_mask": (optional) binary mask for padded future actions.
     """
@@ -328,7 +331,9 @@ class RealDataset(Dataset):
         get_action_padding: bool = False,
         num_queries: int = 10,
         camera_mapping: Optional[Dict[str, str]] = None,  # mapping output key -> camera dataset key in HDF5 group
-        image_shape: Tuple[int, int] = (128, 128)   # NEW: desired output image size (height, width)
+        image_shape: Tuple[int, int] = (128, 128),  # NEW: desired output image size (height, width)
+        action_velocity_scale: float = 30.0,       # NEW: scale for joint velocities normalization
+        gripper_scale: float = 3000.0              # NEW: scale for gripper velocity normalization
     ):
         """
         Args:
@@ -344,6 +349,8 @@ class RealDataset(Dataset):
             camera_mapping (dict): Mapping of output image key to dataset key within the "images" group.
                                    Default is {"pixels": "cam_0", "pixels_egocentric": "cam_1"}.
             image_shape (tuple): NEW: The target image size (height, width). Default is (128, 128).
+            action_velocity_scale (float): Scale for joint velocities normalization.
+            gripper_scale (float): Scale for gripper velocity normalization.
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -356,6 +363,8 @@ class RealDataset(Dataset):
         self.num_queries = num_queries
         self.device = "cpu"  # Force CPU
         self.image_shape = image_shape   # NEW: set the resize target
+        self.action_velocity_scale = action_velocity_scale
+        self.gripper_scale = gripper_scale
         
         # Define which cameras to load.
         if camera_mapping is None:
@@ -497,6 +506,12 @@ class RealDataset(Dataset):
             frame_stack_pad = self.frame_stack - 1 - start_idx
             for i in range(frame_stack_pad):
                 ja_array[i] = ja_array[frame_stack_pad]
+        
+        # NEW: Normalize proprioceptive joint angles
+        # Apply linear normalization: (angle - 180)/180. This maps 0-360 to [-1, 1].
+        ja_array = ja_array.astype(np.float32)
+        ja_array = (ja_array - 180.0) / 180.0
+        
         data["proprioceptive"] = torch.from_numpy(ja_array)
         
         # Process actions.
@@ -506,6 +521,14 @@ class RealDataset(Dataset):
         T_act, act_dim = act_ds.shape
         act_array = np.zeros((self.seq_length, act_dim), dtype=act_ds.dtype)
         act_array[:actual_length] = act_ds[start_idx:start_idx + actual_length]
+        
+        # NEW: Normalize actions
+        # For the first 6 elements (joint velocities in [-30, 30]), divide by action_velocity_scale.
+        # For the 7th element (gripper velocity in [-3000, 3000]), divide by gripper_scale.
+        act_array = act_array.astype(np.float32)
+        norm_factors = np.array([self.action_velocity_scale]*6 + [self.gripper_scale], dtype=np.float32)
+        act_array = act_array / norm_factors
+        
         if self.get_action_padding:
             proc_actions, action_padding_mask = self._process_actions(act_array)
         else:
@@ -545,65 +568,68 @@ if __name__ == "__main__":
         get_pad_mask=True,
         get_action_padding=True,
         num_queries=10,
-        image_shape=(128, 128)  # Target image size: 128x128
+        image_shape=(128, 128),  # Target image size: 128x128
+        action_velocity_scale=30.0,
+        gripper_scale=3000.0
     )
     print(f"RealDataset loaded {len(real_dataset)} segments from {len(real_dataset.task_files)} tasks.")
     
-    try:
-        sample = real_dataset[0]
-    except Exception as e:
-        print("Failed to retrieve a segment:", e)
-        real_dataset.close()
-        exit(1)
+    print(real_dataset[0])
+    # try:
+    #     sample = real_dataset[0]
+    # except Exception as e:
+    #     print("Failed to retrieve a segment:", e)
+    #     real_dataset.close()
+    #     exit(1)
     
     # Print shapes in the sample for verification.
-    print("\n--- Sample Segment Details ---")
-    for key, value in sample.items():
-        if isinstance(value, torch.Tensor):
-            print(f"{key} shape:", value.shape)
-        elif isinstance(value, dict):
-            print(f"{key}:")
-            for sub_key, sub_value in value.items():
-                if isinstance(sub_value, torch.Tensor):
-                    print(f"  {sub_key} shape:", sub_value.shape)
+    # print("\n--- Sample Segment Details ---")
+    # for key, value in sample.items():
+    #     if isinstance(value, torch.Tensor):
+    #         print(f"{key} shape:", value.shape)
+    #     elif isinstance(value, dict):
+    #         print(f"{key}:")
+    #         for sub_key, sub_value in value.items():
+    #             if isinstance(sub_value, torch.Tensor):
+    #                 print(f"  {sub_key} shape:", sub_value.shape)
     
-    # Visualize the first image using matplotlib
-    try:
-        import matplotlib.pyplot as plt
-        if "images" in sample and "pixels" in sample["images"]:
-            img_tensor = sample["images"]["pixels"][0]
-            img_np = img_tensor.permute(1, 2, 0).numpy()
-            plt.figure(figsize=(4, 4))
-            plt.imshow(img_np)
-            plt.title("Resized Image from RealDataset (128x128)")
-            plt.axis("off")
-            plt.show()
-    except ImportError:
-        print("matplotlib not installed; skipping static image visualization.")
+    # # Visualize the first image using matplotlib
+    # try:
+    #     import matplotlib.pyplot as plt
+    #     if "images" in sample and "pixels" in sample["images"]:
+    #         img_tensor = sample["images"]["pixels"][0]
+    #         img_np = img_tensor.permute(1, 2, 0).numpy()
+    #         plt.figure(figsize=(4, 4))
+    #         plt.imshow(img_np)
+    #         plt.title("Resized Image from RealDataset (128x128)")
+    #         plt.axis("off")
+    #         plt.show()
+    # except ImportError:
+    #     print("matplotlib not installed; skipping static image visualization.")
     
-    # -------------------------------
-    # New: Visualize the entire sequence as a video using OpenCV.
-    try:
-        video_window = "RealDataset Video Playback"
-        cv2.namedWindow(video_window, cv2.WINDOW_NORMAL)
-        num_frames = sample["images"]["pixels"].shape[0]
-        print(f"\nDisplaying video: {num_frames} frames (press 'q' to quit)")
-        for i in range(num_frames):
-            # Each frame tensor has shape: (C, H, W)
-            frame_tensor = sample["images"]["pixels_egocentric"][i]
-            # Convert tensor to numpy array (H, W, C)
-            frame_np = frame_tensor.permute(1, 2, 0).numpy()
-            # Scale back to [0,255] for display
-            frame_disp = (frame_np * 255).astype(np.uint8)
-            cv2.imshow(video_window, frame_disp)
-            # Wait 300ms between frames; press 'q' to exit early.
-            if cv2.waitKey(300) & 0xFF == ord('q'):
-                break
-        cv2.destroyWindow(video_window)
-    except Exception as e:
-        print("Error during video playback:", e)
+    # # -------------------------------
+    # # New: Visualize the entire sequence as a video using OpenCV.
+    # try:
+    #     video_window = "RealDataset Video Playback"
+    #     cv2.namedWindow(video_window, cv2.WINDOW_NORMAL)
+    #     num_frames = sample["images"]["pixels"].shape[0]
+    #     print(f"\nDisplaying video: {num_frames} frames (press 'q' to quit)")
+    #     for i in range(num_frames):
+    #         # Each frame tensor has shape: (C, H, W)
+    #         frame_tensor = sample["images"]["pixels_egocentric"][i]
+    #         # Convert tensor to numpy array (H, W, C)
+    #         frame_np = frame_tensor.permute(1, 2, 0).numpy()
+    #         # Scale back to [0,255] for display
+    #         frame_disp = (frame_np * 255).astype(np.uint8)
+    #         cv2.imshow(video_window, frame_disp)
+    #         # Wait 300ms between frames; press 'q' to exit early.
+    #         if cv2.waitKey(300) & 0xFF == ord('q'):
+    #             break
+    #     cv2.destroyWindow(video_window)
+    # except Exception as e:
+    #     print("Error during video playback:", e)
     
-    # Clean up by closing open HDF5 files
-    real_dataset.close()
-    print("\nRealDataset closed successfully")
+    # # Clean up by closing open HDF5 files
+    # real_dataset.close()
+    # print("\nRealDataset closed successfully")
     
