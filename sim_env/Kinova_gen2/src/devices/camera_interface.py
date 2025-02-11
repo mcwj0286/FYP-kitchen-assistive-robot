@@ -104,7 +104,7 @@ class CameraInterface:
             print(f"Camera {self.camera_id} released")
 
 class MultiCameraInterface:
-    def __init__(self, camera_ids=None, width=128, height=128, fps=30):
+    def __init__(self, camera_ids=None, width=320, height=240, fps=30):
         """Initialize multiple cameras
         
         Args:

@@ -1,86 +1,122 @@
-#%% NEW: Capture image from camera and upload to Cloudinary
-import cv2
-from sim_env.Kinova_gen2.src/devices/camera_interface import CameraInterface  # Import the camera control script
+#%% NEW: Capture images from multiple cameras, upload to Cloudinary, and send to LLM
 
-# Initialize camera and capture a single frame
-camera = CameraInterface(camera_id=0, width=640, height=480, fps=30)
-ret, frame = camera.capture_frame()
-camera.close()
-
-if not ret:
-    print("Error: Failed to capture image from camera")
-    exit(1)
-
-# Save the captured frame as a JPG file (ensures the Cloudinary URL will be jpg)
-captured_image_path = "captured_image.jpg"
-cv2.imwrite(captured_image_path, frame)
-
-import cloudinary
-import cloudinary.uploader
-from cloudinary.utils import cloudinary_url
 from dotenv import load_dotenv
-import os
 
 load_dotenv()  # Load .env variables
 
-# Configure Cloudinary       
-cloudinary.config( 
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"), 
-    api_key = os.getenv("CLOUDINARY_API_KEY"), 
-    api_secret = os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True
-)
+import os
+workspace_path = os.getenv("WORKSPACE_PATH")
+model_name = os.getenv("MODEL_NAME")
+system_prompt = os.getenv("SYSTEM_PROMPT")
+import sys
+sys.path.append(workspace_path)  # Add workspace path to Python path
 
-# Upload the captured image to Cloudinary, forcing JPG format
-upload_result = cloudinary.uploader.upload(captured_image_path, public_id="my_image", format="jpg")
-image_url = upload_result["secure_url"]
-print("Uploaded image URL:", image_url)
+import cv2
+import time
+# Import the MultiCameraInterface from your camera interface module.
+from sim_env.Kinova_gen2.src.devices.camera_interface import MultiCameraInterface
+def upload_images_to_cloudinary(captured_paths):
+    import cloudinary
+    import cloudinary.uploader
+    from cloudinary.utils import cloudinary_url
+    cloudinary.config( 
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"), 
+        api_key=os.getenv("CLOUDINARY_API_KEY"), 
+        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        secure=True
+    )
+    uploaded_urls = {}
+    for cam_id, file_path in captured_paths.items():
+        upload_result = cloudinary.uploader.upload(file_path, public_id=f"my_image_cam_{cam_id}", format="jpg")
+        url = upload_result["secure_url"]
+        uploaded_urls[cam_id] = url
+        print(f"Uploaded image URL for camera {cam_id}:", url)
+    return uploaded_urls
 
-# # Optional: Generate transformed URLs (if needed)
-# optimize_url, _ = cloudinary_url("my_image", fetch_format="auto", quality="auto")
-# print("Optimized URL:", optimize_url)
-# auto_crop_url, _ = cloudinary_url("my_image", width=500, height=500, crop="auto", gravity="auto")
-# print("Auto-cropped URL:", auto_crop_url)
-
-from openai import OpenAI
-
-# Initialize OpenRouter API client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-)
-
-# Get prompt from the user
-user_prompt = input("Enter your prompt: ")
-
-response = client.chat.completions.create(
-    extra_headers={
-        "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Replace with your site URL.
-        "X-Title": "<YOUR_SITE_NAME>",      # Optional. Replace with your site name.
-    },
-    extra_body={},
-    model="google/gemini-2.0-flash-lite-preview-02-05:free",
-    messages=[
-        {
-            "role": "system",
-            "content": "You are an assistant that responds extremely concisely. Limit your output to no more than 100 tokens and do not include any extra commentary."
+def call_llm_with_images(user_prompt, uploaded_urls, model_name , system_prompt):
+    from openai import OpenAI
+    # Prepare list of image objects for the API call.
+    image_objects = []
+    for cam_id, url in uploaded_urls.items():
+        image_objects.append({"type": "image_url", "image_url": {"url": url}})
+        
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+    )
+ 
+    response = client.chat.completions.create(
+        extra_headers={
+            "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Replace with your site URL.
+            "X-Title": "<YOUR_SITE_NAME>",      # Optional. Replace with your site name.
         },
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": image_url}}  # Use the dynamically uploaded JPG URL
-            ]
-        }
-    ]
-)
+        extra_body={},
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user_prompt}] + image_objects
+            }
+        ]
+    )
+ 
+    if response is not None and getattr(response, "choices", None):
+        output = response.choices[0].message.content.strip()
+        token_usage = response.usage.total_tokens if getattr(response, "usage", None) else "n/a"
+        print("LLM Output:", output)
+        print("Total tokens used:", token_usage)
+    else:
+        print("Error: No valid response received from the API. Please check your API key, model, or network connectivity.")
 
-print("API Response:", response)
+def get_prompt(user_prompt: str):
+    """
+    Capture images from multiple cameras, upload them to Cloudinary,
+    and call the LLM API using the provided user_prompt.
+    
+    Args:
+        user_prompt (str): The prompt that will be sent to the LLM.
+    """
+    # Initialize the multi-camera interface (uses all available cameras).
+    multi_camera = MultiCameraInterface(height=240, width=320)
+    time.sleep(3)
+    frames = multi_camera.capture_frames()  # returns a dict: {camera_id: (success, frame)}
+    multi_camera.close()  # Release cameras after capturing
 
-# Safely display the returned message content
-if response is not None and getattr(response, "choices", None):
-    print(response.choices[0].message.content)
-else:
-    print("Error: No valid response received from the API. Please check your API key, model, or network connectivity.")
+    # Save captured images for each camera.
+    captured_image_paths = {}
+    for cam_id, (success, frame) in frames.items():
+        if not success or frame is None:
+            print(f"Error: Failed to capture image from camera {cam_id}")
+            continue
+        # Optionally display the captured image for a short time.
+        cv2.imshow(f"Captured Image from Cam {cam_id}", frame)
+        cv2.waitKey(2000)  # Display for 2 seconds.
+        cv2.destroyWindow(f"Captured Image from Cam {cam_id}")
+        # Save the captured frame as a JPG file.
+        file_path = f"workflow/captured_image_cam_{cam_id}.jpg"
+        cv2.imwrite(file_path, frame)
+        captured_image_paths[cam_id] = file_path
+
+    if not captured_image_paths:
+        print("Error: No images were captured successfully.")
+        exit(1)
+
+    # Use modular functions to upload images and perform the API call.
+    uploaded_image_urls = upload_images_to_cloudinary(captured_image_paths)
+    call_llm_with_images(user_prompt, uploaded_image_urls, model_name=model_name, system_prompt=system_prompt)
+
+if __name__ == "__main__":
+    # Get prompt from the user and call get_prompt.
+    user_prompt = input("Enter your prompt: ")
+    get_prompt(user_prompt)
+
+#####################
+# New helper functions
+#####################
+
 
 # %%
