@@ -4,6 +4,7 @@ import cv2
 import time
 import signal
 import sys
+import threading
 
 class CameraInterface:
     def __init__(self, camera_id=0, width=640, height=480, fps=30):
@@ -155,9 +156,11 @@ def main():
         cv2.destroyAllWindows()
         sys.exit(0)
 
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTSTP, signal_handler)  # Ctrl+Z
+    # Only set up signal handlers if we're in the main thread
+    if threading.current_thread() is threading.main_thread():
+        # Register signal handlers
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTSTP, signal_handler)  # Ctrl+Z
 
     try:
         # List available cameras
