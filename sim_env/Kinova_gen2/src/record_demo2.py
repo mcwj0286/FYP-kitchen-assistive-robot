@@ -12,7 +12,7 @@ import os
 class DataRecorder:
     def __init__(self, task_name):
         self.task_name = task_name
-        self.file_path = f"{task_name}.hdf5"
+        self.file_path = f"data/{task_name}.hdf5"
         self.current_demo = None
         self.demo_idx = 0
         self.frame_idx = 0
@@ -79,17 +79,17 @@ class DataRecorder:
         
         # Add frames for each camera
         for cam_id, frame in frames_dict.items():
-            dataset_name = f'images/cam_{cam_id}'
-            if dataset_name not in self.current_demo['images']:
+            ds_name = f'cam_{cam_id}'
+            if ds_name not in self.current_demo['images']:
                 # Create new dataset for this camera
                 self.current_demo['images'].create_dataset(
-                    f'cam_{cam_id}',
+                    ds_name,
                     shape=(0, *frame.shape),
                     maxshape=(None, *frame.shape),
                     dtype=frame.dtype)
             
             # Resize dataset and add new frame
-            dataset = self.current_demo['images'][f'cam_{cam_id}']
+            dataset = self.current_demo['images'][ds_name]
             dataset.resize(self.frame_idx + 1, axis=0)
             dataset[self.frame_idx] = frame
         
@@ -121,8 +121,7 @@ class DataRecorder:
 class record_demo:
     def __init__(self, debug_mode=False):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
-        self.gripper_scale = 3000
-        0  # Scale factor for gripper control
+        self.gripper_scale = 3000  # Scale factor for gripper control
         self.running = False
         self.emergency_stop = False
         self.controller = None
@@ -228,8 +227,8 @@ class record_demo:
                 joint_velocities[1] = self.controller.left_stick_y * self.velocity_scale
                 
                 # Joint 3 & 4 - Right Stick
-                joint_velocities[2] = -self.controller.right_stick_y * self.velocity_scale
-                joint_velocities[3] = -self.controller.right_stick_x * self.velocity_scale
+                joint_velocities[2] = -self.controller.right_stick_y * self.velocity_scale if self.controller.right_stick_y != 0 else 0
+                joint_velocities[3] = -self.controller.right_stick_x * self.velocity_scale if self.controller.right_stick_x != 0 else 0
                 
                 # Joint 5 - L2/R2 Triggers
                 joint5_velocity = (self.controller.l2_trigger - self.controller.r2_trigger) * self.velocity_scale
