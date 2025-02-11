@@ -328,7 +328,7 @@ class RealDataset(Dataset):
         get_action_padding: bool = False,
         num_queries: int = 10,
         camera_mapping: Optional[Dict[str, str]] = None,  # mapping output key -> camera dataset key in HDF5 group
-        resize_shape: Tuple[int, int] = (128, 128)   # NEW: desired output image size (height, width)
+        image_shape: Tuple[int, int] = (128, 128)   # NEW: desired output image size (height, width)
     ):
         """
         Args:
@@ -343,7 +343,7 @@ class RealDataset(Dataset):
             num_queries (int): Number of future actions to concatenate.
             camera_mapping (dict): Mapping of output image key to dataset key within the "images" group.
                                    Default is {"pixels": "cam_0", "pixels_egocentric": "cam_1"}.
-            resize_shape (tuple): NEW: The target image size (height, width). Default is (128, 128).
+            image_shape (tuple): NEW: The target image size (height, width). Default is (128, 128).
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -355,7 +355,7 @@ class RealDataset(Dataset):
         self.get_action_padding = get_action_padding
         self.num_queries = num_queries
         self.device = "cpu"  # Force CPU
-        self.resize_shape = resize_shape   # NEW: set the resize target
+        self.image_shape = image_shape   # NEW: set the resize target
         
         # Define which cameras to load.
         if camera_mapping is None:
@@ -469,8 +469,8 @@ class RealDataset(Dataset):
                     img_array[i] = img_array[frame_stack_pad]
             
             # NEW: Resize each frame to the desired resize_shape (e.g., 128x128)
-            if self.resize_shape is not None:
-                H_target, W_target = self.resize_shape
+            if self.image_shape is not None:
+                H_target, W_target = self.image_shape
                 # Create an empty container for resized images.
                 resized_array = np.empty((self.seq_length, H_target, W_target, C), dtype=img_array.dtype)
                 for i in range(self.seq_length):
@@ -534,7 +534,7 @@ class RealDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # Test RealDataset
+    # Test RealDataset and visualize a resized image sequence as a video
     real_dataset = RealDataset(
         data_path="/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
         seq_length=10,
@@ -544,12 +544,20 @@ if __name__ == "__main__":
         pad_seq_length=True,
         get_pad_mask=True,
         get_action_padding=True,
-        num_queries=10
+        num_queries=10,
+        image_shape=(128, 128)  # Target image size: 128x128
     )
     print(f"RealDataset loaded {len(real_dataset)} segments from {len(real_dataset.task_files)} tasks.")
-    sample = real_dataset[0]
-    print(sample)
-    # Print shapes of all keys in the sample
+    
+    try:
+        sample = real_dataset[0]
+    except Exception as e:
+        print("Failed to retrieve a segment:", e)
+        real_dataset.close()
+        exit(1)
+    
+    # Print shapes in the sample for verification.
+    print("\n--- Sample Segment Details ---")
     for key, value in sample.items():
         if isinstance(value, torch.Tensor):
             print(f"{key} shape:", value.shape)
@@ -558,3 +566,44 @@ if __name__ == "__main__":
             for sub_key, sub_value in value.items():
                 if isinstance(sub_value, torch.Tensor):
                     print(f"  {sub_key} shape:", sub_value.shape)
+    
+    # Visualize the first image using matplotlib
+    try:
+        import matplotlib.pyplot as plt
+        if "images" in sample and "pixels" in sample["images"]:
+            img_tensor = sample["images"]["pixels"][0]
+            img_np = img_tensor.permute(1, 2, 0).numpy()
+            plt.figure(figsize=(4, 4))
+            plt.imshow(img_np)
+            plt.title("Resized Image from RealDataset (128x128)")
+            plt.axis("off")
+            plt.show()
+    except ImportError:
+        print("matplotlib not installed; skipping static image visualization.")
+    
+    # -------------------------------
+    # New: Visualize the entire sequence as a video using OpenCV.
+    try:
+        video_window = "RealDataset Video Playback"
+        cv2.namedWindow(video_window, cv2.WINDOW_NORMAL)
+        num_frames = sample["images"]["pixels"].shape[0]
+        print(f"\nDisplaying video: {num_frames} frames (press 'q' to quit)")
+        for i in range(num_frames):
+            # Each frame tensor has shape: (C, H, W)
+            frame_tensor = sample["images"]["pixels_egocentric"][i]
+            # Convert tensor to numpy array (H, W, C)
+            frame_np = frame_tensor.permute(1, 2, 0).numpy()
+            # Scale back to [0,255] for display
+            frame_disp = (frame_np * 255).astype(np.uint8)
+            cv2.imshow(video_window, frame_disp)
+            # Wait 300ms between frames; press 'q' to exit early.
+            if cv2.waitKey(300) & 0xFF == ord('q'):
+                break
+        cv2.destroyWindow(video_window)
+    except Exception as e:
+        print("Error during video playback:", e)
+    
+    # Clean up by closing open HDF5 files
+    real_dataset.close()
+    print("\nRealDataset closed successfully")
+    
