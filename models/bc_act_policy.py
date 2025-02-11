@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic')
+sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot')
 # from models.networks.gpt import GPT, GPTConfig
 from models.networks.mlp import MLP
 
@@ -162,10 +162,12 @@ class bc_act_policy(nn.Module):
                 }
                 , language_dim=768, lang_repr_dim=512, language_fusion="film",
                  pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
-                 num_queries=10,
+                 history=True, history_len=10, num_queries=10,
+                 temporal_agg=True,
                  max_episode_len=200,
                  use_proprio=True,
-                 learnable_tokens=False):
+                 num_feat_per_step=3,
+                 learnable_tokens=True):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -176,13 +178,21 @@ class bc_act_policy(nn.Module):
         self.proprio_key = proprio_key
         self.repr_dim = repr_dim
         self._policy_head = policy_head
+        self.history = history
+        self.history_len = history_len if history else 1
+        self.temporal_agg = temporal_agg
         self.max_episode_len = max_episode_len
         self.use_proprio = use_proprio
         self.observation_buffer = {}
+        # self.num_queries = num_queries
         self.act_dim = act_dim
+        self.num_prompt_feats = num_feat_per_step
         self.step = 0
 
-        self.num_queries = num_queries
+        if self.temporal_agg:
+            self.num_queries = num_queries
+        else: 
+            self.num_queries = 1
  
         self.action_dim = (
             self.act_dim * self.num_queries
@@ -200,7 +210,7 @@ class bc_act_policy(nn.Module):
             mlp_hidden_size=hidden_dim,
             dropout=0.1,
             num_queries=self.num_queries,
-            learnable_tokens=learnable_tokens
+            learnable_tokens=False
         )
         
         # Initialize temporal position encoding
@@ -212,7 +222,7 @@ class bc_act_policy(nn.Module):
         # Action head for final prediction
         if policy_head == "deterministic":
             self.action_head = DeterministicHead(
-                self.repr_dim, self.act_dim, num_layers=2 
+                self.repr_dim, self.action_dim, num_layers=2
             )
 
         # initialize the vision encoder
@@ -334,27 +344,40 @@ class bc_act_policy(nn.Module):
     def temporal_encode(self, x):
         """
         Apply temporal encoding and transformer processing
-        x: (B, T, num_modalities, E)
         """
-        B,T,num_modalities,E = x.shape
+        # Add positional encoding
+        pos_emb = self.temporal_position_encoding(x)  # (T, E)
+        x = x + pos_emb.unsqueeze(1)  # (B, T, num_modality, E)
         
-        x = x.reshape(B*T, num_modalities, E)
-        output = self.transformer(x) # (B*T, num_queries, E)
-        output = output.reshape(B, T, -1, -1)
+        # Compute mask for transformer
+        self.transformer.compute_mask(x.shape)
         
-
+        # Reshape for transformer: (B, T, num_modalities, E) -> (B, T*num_modalities, E)
+        sh = x.shape
+        x = TensorUtils.join_dimensions(x, 1, 2)  # (B, T*num_modality, E)
         
-        return output
+        # Apply transformer
+        x = self.transformer(x)
+        
+        # Reshape back
+        x = x.reshape(*sh)
+        return x[:, :, -1]  # Return last modality features (B, T, E)
 
     def reset(self):
-        """Reset episode state"""
+        """Reset history buffers"""
+ 
+        self.latent_queue = []
         self.step = 0
-        self.all_time_actions = torch.zeros(
-            1,  # initial batch size
-            self.max_episode_len,
-            self.max_episode_len + self.num_queries,
-            self.act_dim
-        ).to(self.device)
+        
+        # temporal aggregation
+        if self.temporal_agg:
+            # Initialize with batch dimension of 1, will be resized as needed
+            self.all_time_actions = torch.zeros(
+                1,  # initial batch size
+                self.max_episode_len,
+                self.max_episode_len + self.num_queries,
+                self.act_dim
+            ).to(self.device)
 
     def forward(self, data, action=None):
         """
@@ -381,13 +404,9 @@ class bc_act_policy(nn.Module):
         
         # Apply temporal encoding
         x = self.temporal_encode(x)
-        B,T,num_queries,E = x.shape
-        # reshape x to [B,T*num_queries,E]
-        x = x.reshape(B, -1, E)
-
+        
         # Get action predictions from action head
-        pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
- 
+        pred_actions = self.action_head(x)
 
         return pred_actions
 
@@ -406,52 +425,56 @@ class bc_act_policy(nn.Module):
             data = self.preprocess_input(data, train_mode=False)
             
             # Encode spatial features
-            x = self.spatial_encode(data) # (B, 1, num_modalities, E)
+            x = self.spatial_encode(data)
+            
+            # Manage latent queue for temporal history
+            self.latent_queue.append(x)
+            if len(self.latent_queue) > self.history_len:
+                self.latent_queue.pop(0)
+            x = torch.cat(self.latent_queue, dim=1)
             
             # Apply temporal encoding
-            x = self.temporal_encode(x) # (B, 1, num_queries, E)
+            x = self.temporal_encode(x)
             
-            x = x.squeeze(1) # (B, num_queries, E)
-
             # Get action prediction
-            pred_actions = self.action_head(x) # (B, num_queries, act_dim)
+            pred_actions = self.action_head(x[:, -1])
+            pred_actions = pred_actions.mean
             
-            pred_actions= pred_actions.mean
+            # Process for temporal aggregation if needed
+            if self.temporal_agg:
+                B = pred_actions.shape[0]
+                pred_actions = pred_actions.view(-1, self.num_queries, self.act_dim)
+                
+                # Resize all_time_actions if batch size changes
+                if self.all_time_actions.shape[0] != B:
+                    self.all_time_actions = torch.zeros(
+                        B,
+                        self.max_episode_len,
+                        self.max_episode_len + self.num_queries,
+                        self.act_dim
+                    ).to(self.device)
+                
+                actions = []
+                for i in range(B):
+                    action = pred_actions[i]
+                    self.all_time_actions[i, self.step, self.step : self.step + self.num_queries] = action
+                    actions_for_curr_step = self.all_time_actions[i,:, self.step]
+                    actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                    actions_for_curr_step = actions_for_curr_step[actions_populated]
+                    k = 0.01
+                    exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                    exp_weights = exp_weights / exp_weights.sum()
+                    exp_weights = torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1)
+                    action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                    actions.append(action)
+                action = torch.cat(actions, dim=0)
+                self.step += 1
+                return action.detach().cpu().numpy()
             
-            
-            B = pred_actions.shape[0]
-            
-            
-            # Resize all_time_actions if batch size changes
-            if self.all_time_actions.shape[0] != B:
-                self.all_time_actions = torch.zeros(
-                    B,
-                    self.max_episode_len,
-                    self.max_episode_len + self.num_queries,
-                    self.act_dim
-                ).to(self.device)
-            
-            actions = []
-            for i in range(B):
-                action = pred_actions[i]
-                self.all_time_actions[i, self.step, self.step : self.step + self.num_queries] = action
-                actions_for_curr_step = self.all_time_actions[i,:, self.step]
-                actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                actions_for_curr_step = actions_for_curr_step[actions_populated]
-                k = 0.01
-                exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                exp_weights = exp_weights / exp_weights.sum()
-                exp_weights = torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1)
-                action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                actions.append(action)
-            action = torch.cat(actions, dim=0)
-            self.step += 1
-            return action.detach().cpu().numpy()
-            
-            
+            return pred_actions.detach().cpu().numpy()
 
     # NEW: train_step method for bc_act_policy
-    def train_step(self, data, optimizer=None):
+    def train_step(self, data):
         """
         Performs a training step for BC-ACT.
         Expects data to contain ground truth actions under the key "actions".
@@ -459,18 +482,106 @@ class bc_act_policy(nn.Module):
             loss (torch.Tensor): the negative log likelihood loss.
         """
         gt_actions = data.get("actions", None)
-        B,T,D = gt_actions.shape
-        gt_actions = gt_actions.reshape(B, T, self.num_queries, self.act_dim)
-        gt_actions = gt_actions.view(B, T*self.num_queries, self.act_dim)
         if gt_actions is None:
             raise ValueError("Ground truth actions missing in training batch")
         # Forward pass returns an output distribution.
         pred_dist = self.forward(data)
         # Compute the negative log likelihood loss from the output distribution.
         loss = -pred_dist.log_prob(gt_actions).mean()
-        if optimizer is not None:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
         return loss
 
+if __name__ == "__main__":
+    # Test CustomTransformerDecoder
+    print("Testing CustomTransformerDecoder...")
+    
+    # Initialize decoder
+    decoder = CustomTransformerDecoder(
+        input_size=512,
+        num_layers=8,
+        num_heads=4,
+        head_output_size=64,
+        mlp_hidden_size=256,
+        dropout=0.1,
+        num_queries=10,
+        learnable_tokens=True
+    ).cuda()
+    
+    # Create random input tensor
+    batch_size = 32
+    num_features = 15  # Number of input features/tokens
+    input_dim = 512
+    
+    x = torch.randn(batch_size, num_features, input_dim).cuda()
+    
+    print(f"\nInput shape: {x.shape}")
+    
+    # Forward pass
+    try:
+        with torch.no_grad():
+            output = decoder(x)
+            print(f"Output shape: {output.shape}")
+            
+            # Get attention weights
+            attention_weights = decoder.get_attention_weights()
+            
+            # Print attention weights shapes
+            print("\nAttention Weights Shapes:")
+            print("Cross Attention:")
+            for layer_idx, weights in enumerate(attention_weights['cross_attention']):
+                print(f"Layer {layer_idx}: {weights.shape}")
+            
+            print("\nSelf Attention:")
+            for layer_idx, weights in enumerate(attention_weights['self_attention']):
+                print(f"Layer {layer_idx}: {weights.shape}")
+                
+            # Verify causal masking
+            print("\nVerifying causal masking in self attention...")
+            last_layer_self_attn = attention_weights['self_attention'][-1]
+            upper_triangle = last_layer_self_attn[:, :, torch.triu_indices(10, 10, offset=1)[0], torch.triu_indices(10, 10, offset=1)[1]]
+            is_masked = torch.all(upper_triangle == 0)
+            print(f"Causal masking verified: {is_masked}")
+            
+            print("\nTest completed successfully!")
+            
+    except Exception as e:
+        print(f"Error during test: {e}")
+
+    # Test bc_act_policy
+    print("\nTesting bc_act_policy...")
+    
+    config = {
+        'repr_dim': 512,
+        'act_dim': 7,
+        'hidden_dim': 256,
+        'policy_head': 'deterministic',
+        'obs_type': 'pixels',
+        'obs_shape': {
+            'pixels': (3, 128, 128),
+            'pixels_egocentric': (3, 128, 128),
+            'proprioceptive': (9,),
+        },
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    }
+
+    # Initialize model
+    policy = bc_act_policy(**config).to(config['device'])
+    policy.eval()
+
+    # Create dummy input data
+    batch_size = 1
+    time_steps = 10
+    dummy_data = {
+        'pixels': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
+        'pixels_egocentric': torch.randn(batch_size, time_steps, 3, 128, 128).to(config['device']),
+        'proprioceptive': torch.randn(batch_size, time_steps, 9).to(config['device']),
+        'task_emb': torch.randn(batch_size, 768).to(config['device']),
+    }
+
+    try:
+        action = policy.get_action(dummy_data)
+        print(f"Predicted action shape: {action.shape}")
+        print(f"Predicted action: {action}")
+        
+    except Exception as e:
+        print(f"Error during inference: {e}")
+    
