@@ -21,7 +21,7 @@ class CameraInterface:
         self.height = height
         self.fps = fps
         self.cap = None
-        
+    
         # Initialize camera
         self.initialize_camera()
 
@@ -70,8 +70,10 @@ class CameraInterface:
             if not ret:
                 raise Exception(f"Failed to read from camera {self.camera_id}")
                 
-            print(f"Camera {self.camera_id} initialized successfully:")
-            print(f"- Resolution: {int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+            # Print the actual resolution
+            actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            print(f"Camera {self.camera_id} initialized successfully with resolution {actual_width}x{actual_height}")
             print(f"- FPS: {int(self.cap.get(cv2.CAP_PROP_FPS))}")
             
         except Exception as e:

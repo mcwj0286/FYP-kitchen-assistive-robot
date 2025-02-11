@@ -119,7 +119,7 @@ class DataRecorder:
             self.h5_file.close()
 
 class record_demo:
-    def __init__(self, debug_mode=False):
+    def __init__(self, debug_mode=False, camera_width=224, camera_height=224):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
         self.gripper_scale = 3000  # Scale factor for gripper control
         self.running = False
@@ -131,7 +131,9 @@ class record_demo:
         self.cameras = None
         self.data_recorder = None
         self.recording = False
-        # Removed asynchronous camera thread and shared frame storage as we'll capture synchronously
+        # Set desired camera resolution
+        self.camera_width = camera_width
+        self.camera_height = camera_height
 
     def initialize_devices(self):
         """Initialize PS4 controller and Kinova arm"""
@@ -168,11 +170,11 @@ class record_demo:
             try:
                 print("Initializing Multi-Camera interface...")
                 from devices.camera_interface import MultiCameraInterface
-                self.cameras = MultiCameraInterface()
+                self.cameras = MultiCameraInterface(width=self.camera_width, height=self.camera_height)
                 if not self.cameras.cameras:
                     print("No cameras found!")
-                else:
-                    print(f"Successfully initialized {len(self.cameras.cameras)} cameras")
+                # else:
+                #     print(f"Successfully initialized {len(self.cameras.cameras)} cameras with resolution {self.camera_width}x{self.camera_height}")
             except Exception as e:
                 print(f"Camera initialization failed: {e}")
             
@@ -332,7 +334,9 @@ class record_demo:
         print("Robot controller stopped")
 
 def main():
-    controller = record_demo(debug_mode=False)  # Set debug_mode=True to enable debug prints
+    # Optionally, you can set desired camera resolution by modifying the parameters below.
+    # For example, to use 224x224 resolution:
+    controller = record_demo(debug_mode=False, camera_width=320, camera_height=240)  # Set debug_mode=True to enable debug prints
     try:
         if controller.start():
             # Wait for the control thread to finish
