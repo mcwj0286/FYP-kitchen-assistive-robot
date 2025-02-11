@@ -331,9 +331,11 @@ class Kinova_Dataset(Dataset):
         get_action_padding: bool = False,
         num_queries: int = 10,
         camera_mapping: Optional[Dict[str, str]] = None,  # mapping output key -> camera dataset key in HDF5 group
-        image_shape: Tuple[int, int] = (128, 128),  # NEW: desired output image size (height, width)
-        action_velocity_scale: float = 30.0,       # NEW: scale for joint velocities normalization
-        gripper_scale: float = 3000.0              # NEW: scale for gripper velocity normalization
+        image_shape: Tuple[int, int] = (128, 128),  # desired output image size (height, width)
+        action_velocity_scale: float = 30.0,       # scale for joint velocities normalization
+        gripper_scale: float = 3000.0,             # scale for gripper velocity normalization
+        load_task_emb: bool = True,                # NEW: whether to encode task embedding from HDF5 filename
+        max_word_len: int = 25                     # NEW: maximum word length for task encoding
     ):
         """
         Args:
@@ -351,6 +353,8 @@ class Kinova_Dataset(Dataset):
             image_shape (tuple): NEW: The target image size (height, width). Default is (128, 128).
             action_velocity_scale (float): Scale for joint velocities normalization.
             gripper_scale (float): Scale for gripper velocity normalization.
+            load_task_emb (bool): Whether to encode task embedding from HDF5 filename.
+            max_word_len (int): Maximum word length for task encoding.
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -362,9 +366,13 @@ class Kinova_Dataset(Dataset):
         self.get_action_padding = get_action_padding
         self.num_queries = num_queries
         self.device = "cpu"  # Force CPU
-        self.image_shape = image_shape   # NEW: set the resize target
+        self.image_shape = image_shape
         self.action_velocity_scale = action_velocity_scale
         self.gripper_scale = gripper_scale
+        self.load_task_emb = load_task_emb
+        self.max_word_len = max_word_len
+        if self.load_task_emb:
+            self.task_embeddings = {}
         
         # Define which cameras to load.
         if camera_mapping is None:
@@ -385,6 +393,8 @@ class Kinova_Dataset(Dataset):
                 # Use the filename (without extension) as the task name.
                 task_name = os.path.splitext(file)[0]
                 self.task_files[task_name] = file_path
+                if self.load_task_emb and task_name not in self.task_embeddings:
+                    self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
                 
                 # Open file to gather segments from each demo.
                 with h5py.File(file_path, 'r') as f:
@@ -544,6 +554,10 @@ class Kinova_Dataset(Dataset):
             pad_mask[valid_start:actual_length] = True
             data["pad_mask"] = pad_mask
         
+        # Add task embedding to the returned data if enabled.
+        if self.load_task_emb:
+            data["task_emb"] = self.task_embeddings[task_name]
+        
         return data
 
     def close(self):
@@ -558,7 +572,7 @@ class Kinova_Dataset(Dataset):
 
 if __name__ == "__main__":
     # Test RealDataset and visualize a resized image sequence as a video
-    real_dataset = RealDataset(
+    kinova_dataset = Kinova_Dataset(
         data_path="/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
         seq_length=10,
         frame_stack=4,
@@ -572,9 +586,9 @@ if __name__ == "__main__":
         action_velocity_scale=30.0,
         gripper_scale=3000.0
     )
-    print(f"RealDataset loaded {len(real_dataset)} segments from {len(real_dataset.task_files)} tasks.")
-    
-    print(real_dataset[0])
+    print(f"Kinova_Dataset loaded {len(kinova_dataset)} segments from {len(kinova_dataset.task_files)} tasks.")
+    sample = kinova_dataset[0]
+    # print(kinova_dataset[0])
     # try:
     #     sample = real_dataset[0]
     # except Exception as e:
@@ -584,14 +598,14 @@ if __name__ == "__main__":
     
     # Print shapes in the sample for verification.
     # print("\n--- Sample Segment Details ---")
-    # for key, value in sample.items():
-    #     if isinstance(value, torch.Tensor):
-    #         print(f"{key} shape:", value.shape)
-    #     elif isinstance(value, dict):
-    #         print(f"{key}:")
-    #         for sub_key, sub_value in value.items():
-    #             if isinstance(sub_value, torch.Tensor):
-    #                 print(f"  {sub_key} shape:", sub_value.shape)
+    for key, value in sample.items():
+        if isinstance(value, torch.Tensor):
+            print(f"{key} shape:", value.shape)
+        elif isinstance(value, dict):
+            print(f"{key}:")
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, torch.Tensor):
+                    print(f"  {sub_key} shape:", sub_value.shape)
     
     # # Visualize the first image using matplotlib
     # try:
