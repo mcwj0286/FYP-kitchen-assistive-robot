@@ -34,6 +34,7 @@ class PS4Interface(Controller):
         self.circle_pressed = False
         self.triangle_pressed = False
         self.x_pressed = False
+        self.options_pressed = False
 
     def apply_deadzone(self, value):
         """Apply deadzone to analog inputs
@@ -176,10 +177,12 @@ class PS4Interface(Controller):
 
     # Special Buttons
     def on_options_press(self):
+        self.options_pressed = True
         if self.debug_mode:
             print("Options button pressed")
     
     def on_options_release(self):
+        self.options_pressed = False
         if self.debug_mode:
             print("Options button released")
     

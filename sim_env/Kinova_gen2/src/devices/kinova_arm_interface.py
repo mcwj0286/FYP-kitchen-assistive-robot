@@ -300,6 +300,30 @@ class KinovaArmInterface:
         else:
             print(f"Failed to get finger information. Command error: {ret_cmd}, Position error: {ret_pos}")
 
+    def get_joint_angles(self):
+        # Create an AngularPosition instance
+        angular_pos = AngularPosition()
+        ret = self.lib.GetAngularPosition(ctypes.byref(angular_pos))
+        if ret != self.NO_ERROR:
+            print(f"GetAngularPosition failed with error code: {ret}")
+            return None
+        
+        # Extract the joint angles: take first 6 actuators (assumed joints) and then 3 finger positions
+        joint_angles = [
+            angular_pos.Actuators.Actuator1,
+            angular_pos.Actuators.Actuator2,
+            angular_pos.Actuators.Actuator3,
+            angular_pos.Actuators.Actuator4,
+            angular_pos.Actuators.Actuator5,
+            angular_pos.Actuators.Actuator6
+        ]
+        finger_angles = [
+            angular_pos.Fingers.Finger1,
+            angular_pos.Fingers.Finger2,
+            angular_pos.Fingers.Finger3
+        ]
+        return joint_angles + finger_angles
+
     def close(self):
         try:
             if self.lib:
@@ -340,7 +364,7 @@ def main():
         arm.send_angular_velocity(
             [0.0, 0.0, 0.0, 0.0, 0.0, -40.0, 0.0],  # Joint velocities
             hand_mode=1,
-            fingers=(1000.0, 1000.0, 1000.0),  # Close fingers
+            fingers=(2000.0, 0.0, 2000.0),  # Close fingers
             duration=2.0,
             period=0.005  # 50Hz update rate
         )
