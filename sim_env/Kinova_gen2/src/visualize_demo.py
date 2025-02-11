@@ -29,6 +29,7 @@ def visualize_demo(h5file_path, demo_group_name, delay_ms=33, print_data=False):
 
         images_group = demo_group["images"]
         camera_keys = sorted(list(images_group.keys()))
+        print(camera_keys)
         if not camera_keys:
             print("No camera datasets found in the images group!")
             return
@@ -100,7 +101,7 @@ def main():
             print(f" - {demo}")
     
     demo_group_name = input("Enter demo group name to visualize (e.g., demo_0): ").strip()
-    visualize_demo(h5file_path, demo_group_name,print_data=True)
+    visualize_demo(h5file_path, demo_group_name,print_data=False)
 
 if __name__ == "__main__":
     main() 
