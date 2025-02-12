@@ -59,29 +59,29 @@ class DeterministicHead(nn.Module):
 
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x, stddev=1, **kwargs):
+    def forward(self, x, stddev, **kwargs):
         mu = self.net(x)
         std = stddev if stddev is not None else 0.1
         std = torch.ones_like(mu) * std
         dist = utils.TruncatedNormal(mu, std)
         return dist
 
-#     def loss_fn(self, dist, target, reduction="mean", **kwargs):
-#         log_probs = dist.log_prob(target)
-#         loss = -log_probs
+    # def loss_fn(self, dist, target, reduction="mean", **kwargs):
+    #     log_probs = dist.log_prob(target)
+    #     loss = -log_probs
 
-#         if reduction == "mean":
-#             loss = loss.mean() * self.loss_coef
-#         elif reduction == "none":
-#             loss = loss * self.loss_coef
-#         elif reduction == "sum":
-#             loss = loss.sum() * self.loss_coef
-#         else:
-#             raise NotImplementedError
+    #     if reduction == "mean":
+    #         loss = loss.mean() * self.loss_coef
+    #     elif reduction == "none":
+    #         loss = loss * self.loss_coef
+    #     elif reduction == "sum":
+    #         loss = loss.sum() * self.loss_coef
+    #     else:
+    #         raise NotImplementedError
 
-#         return {
-#             "actor_loss": loss,
-#         }
+    #     return {
+    #         "actor_loss": loss,
+    #     }
 
 
 ######################################### Gaussian Mixture Model Head #########################################
