@@ -59,7 +59,7 @@ class DeterministicHead(nn.Module):
 
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x, stddev, **kwargs):
+    def forward(self, x, stddev=None, **kwargs):
         mu = self.net(x)
         std = stddev if stddev is not None else 0.1
         std = torch.ones_like(mu) * std
