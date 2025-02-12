@@ -172,23 +172,31 @@ class Gate(nn.Module):
         self.topk_groups = n_limited_groups
         self.score_func = score_func
         self.route_scale = route_scale
-        self.weight = nn.Parameter(torch.empty(n_experts, dim))
-        self.bias = None
-        
-        # Initialize weights
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        # Use gate_score instead of direct weight parameter
+        self.gate_score = nn.Linear(dim, n_experts, bias=False)
+        self.n_routed_experts = n_experts
+        self.bias = nn.Parameter(torch.empty(n_experts))
+        self.token_counts = None
 
     def forward(self, x):
-        scores = F.linear(x, self.weight)
+        """Forward pass for the gating mechanism."""
+        scores = self.gate_score(x)
+        
         if self.score_func == "softmax":
             scores = scores.softmax(dim=-1, dtype=torch.float32)
         else:
             scores = scores.sigmoid()
         original_scores = scores
         
+        if self.bias is not None:
+            scores = scores + self.bias
+            
         if self.n_groups > 1:
             scores = scores.view(x.size(0), self.n_groups, -1)
-            group_scores = scores.amax(dim=-1)
+            if self.bias is None:
+                group_scores = scores.amax(dim=-1)
+            else:
+                group_scores = scores.topk(2, dim=-1)[0].sum(dim=-1)
             indices = group_scores.topk(self.topk_groups, dim=-1)[1]
             mask = torch.zeros_like(scores[..., 0]).scatter_(1, indices, True)
             scores = (scores * mask.unsqueeze(-1)).flatten(1)
@@ -199,35 +207,36 @@ class Gate(nn.Module):
         if self.score_func == "sigmoid":
             weights /= weights.sum(dim=-1, keepdim=True)
         weights *= self.route_scale
+
+        # Store token counts for load balancing
+        self.token_counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
         
         return weights.type_as(x), indices
 
 
 class Expert(nn.Module):
-    """
-    Expert layer for Mixture-of-Experts (MoE) models.
-    """
-    def __init__(self, input_size, mlp_hidden_size, dropout=0.0):
+    """Expert layer for MoE models."""
+    def __init__(self, dim, inter_dim):
         super().__init__()
-        self.w1 = nn.Linear(input_size, mlp_hidden_size)
-        self.w2 = nn.Linear(mlp_hidden_size, input_size)
-        self.w3 = nn.Linear(input_size, mlp_hidden_size)
-        self.dropout = nn.Dropout(dropout)
+        self.w1 = nn.Linear(dim, inter_dim)
+        self.w2 = nn.Linear(inter_dim, dim)
+        self.w3 = nn.Linear(dim, inter_dim)
 
     def forward(self, x):
-        return self.w2(self.dropout(F.silu(self.w1(x)) * self.w3(x)))
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 class MoE(nn.Module):
-    """
-    Mixture-of-Experts (MoE) module.
-    """
+    """Mixture-of-Experts (MoE) module."""
     def __init__(self, input_size, mlp_hidden_size, n_experts=8, n_expert_groups=1, 
-                 n_limited_groups=1, n_activated_experts=2, dropout=0.0):
+                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0):
         super().__init__()
         self.input_size = input_size
-        self.n_experts = n_experts
+        self.n_routed_experts = n_experts
+        self.n_local_experts = n_experts
         self.n_activated_experts = n_activated_experts
+        self.experts_start_idx = 0
+        self.experts_end_idx = self.n_local_experts
         
         self.gate = Gate(
             input_size, 
@@ -237,10 +246,20 @@ class MoE(nn.Module):
             n_activated_experts=n_activated_experts
         )
         
+        # Initialize routed experts
         self.experts = nn.ModuleList([
-            Expert(input_size, mlp_hidden_size, dropout) 
-            for _ in range(n_experts)
+            Expert(input_size, mlp_hidden_size) 
+            if self.experts_start_idx <= i < self.experts_end_idx else None
+            for i in range(n_experts)
         ])
+        
+        # Add multiple shared experts using MLP
+        shared_hidden_size = n_shared_experts * mlp_hidden_size
+        self.shared_experts = nn.Sequential(
+            nn.Linear(input_size, shared_hidden_size),
+            nn.SiLU(),
+            nn.Linear(shared_hidden_size, input_size)
+        )
 
     def forward(self, x):
         original_shape = x.size()
@@ -250,16 +269,23 @@ class MoE(nn.Module):
         weights, indices = self.gate(x)
         
         # Initialize output tensor
-        output = torch.zeros_like(x)
+        y = torch.zeros_like(x)
+        
+        # Count tokens per expert
+        counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
         
         # Route inputs to experts
-        for expert_idx in range(self.n_experts):
-            idx, top = torch.where(indices == expert_idx)
-            if len(idx) > 0:
-                expert_output = self.experts[expert_idx](x[idx])
-                output[idx] += expert_output * weights[idx, top, None]
+        for i in range(self.experts_start_idx, self.experts_end_idx):
+            if counts[i] == 0:
+                continue
+            expert = self.experts[i]
+            idx, top = torch.where(indices == i)
+            y[idx] += expert(x[idx]) * weights[idx, top, None]
         
-        return output.view(original_shape)
+        # Add shared experts computation
+        z = self.shared_experts(x)
+            
+        return (y + z).view(original_shape)
 
 
 class MoE_TransformerDecoder(nn.Module):
@@ -276,6 +302,7 @@ class MoE_TransformerDecoder(nn.Module):
         n_expert_groups=1,
         n_limited_groups=1,
         n_activated_experts=2,
+        n_shared_experts=1,
         **kwargs
     ):
         super().__init__()
@@ -314,7 +341,8 @@ class MoE_TransformerDecoder(nn.Module):
                         n_expert_groups=n_expert_groups,
                         n_limited_groups=n_limited_groups,
                         n_activated_experts=n_activated_experts,
-                        dropout=dropout
+                        dropout=dropout,
+                        n_shared_experts=n_shared_experts
                     )
                 )
             
