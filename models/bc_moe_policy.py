@@ -34,6 +34,7 @@ class bc_moe_policy(nn.Module):
                  temporal_agg=True,
                  max_episode_len=200,
                  use_proprio=True,
+                 n_shared_experts=1
                  ):
         super().__init__()  # Call parent class constructor
         
@@ -53,6 +54,7 @@ class bc_moe_policy(nn.Module):
         self.observation_buffer = {}
         # self.num_queries = num_queries
         self.act_dim = act_dim
+        self.n_shared_experts = n_shared_experts
 
         self.step = 0
 
@@ -116,7 +118,7 @@ class bc_moe_policy(nn.Module):
             proprio_shape[0], hidden_channels=[self.repr_dim, self.repr_dim]
         )
         
-        self.action_token=nn.Parameter(torch.randn(1,1,self.repr_dim))
+        self.action_token=nn.Parameter(torch.randn(1,1,1,self.repr_dim))
         
         # augmentations
         # MEAN = torch.tensor([0.485, 0.456, 0.406])
@@ -190,7 +192,7 @@ class bc_moe_policy(nn.Module):
             encoded.append(proprio)
             
         encoded.append(lang_token)
-        action_token = self.action_token.expand(B, T, -1)
+        action_token = self.action_token.expand(B, T, -1,-1)
         encoded.append(action_token)
         # Combine all features
         encoded = torch.cat(encoded, dim=2)  # (B, T, num_modalities, E)

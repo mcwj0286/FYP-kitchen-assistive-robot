@@ -340,7 +340,7 @@ class bc_act_policy(nn.Module):
         
         x = x.reshape(B*T, num_modalities, E)
         output = self.transformer(x) # (B*T, num_queries, E)
-        output = output.reshape(B, T, -1, -1)
+        output = output.reshape(B, T, -1, E)
         
 
         

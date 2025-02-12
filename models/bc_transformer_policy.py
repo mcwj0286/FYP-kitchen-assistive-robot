@@ -1,7 +1,7 @@
 import sys
 
 sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot')
-# from models.networks.gpt import GPT, GPTConfig
+# from models/networks/gpt import GPT, GPTConfig
 from models.networks.mlp import MLP
 
 from models.networks.rgb_modules import BaseEncoder, ResnetEncoder
@@ -16,6 +16,51 @@ from models.networks.policy_head import DeterministicHead, MultiTokenDeterminist
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
 
+
+# New: MPIVisionEncoder definition
+class MPIVisionEncoder(nn.Module):
+    def __init__(self, mpi_root_dir, device, output_dim=512):
+        super().__init__()
+        import sys
+        sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/models/networks/vison_encoder/MPI')
+        from models.networks.vison_encoder.MPI.mpi import load_mpi
+        # Load the MPI model; freeze=True ensures weights are fixed
+        self.mpi_model = load_mpi(mpi_root_dir, device, freeze=True)
+        # Projection layer: assume MPI output dimension is 384 (from example), project to output_dim
+        self.proj = nn.Linear(384, output_dim)
+        self.device = device
+
+    def forward(self, x, lang=None):
+        # x is expected to be (N, C, H, W)
+        # Duplicate the input along a new dimension to match expected shape: (N, 2, C, H, W)
+        # Create transform to resize input to 224x224
+        transform = T.Compose([
+            T.Resize(256),
+            T.CenterCrop(224)
+        ])
+        
+        # x is (N, C, 128, 128)
+        N, C, H, W = x.shape
+        
+        # Reshape to (N*C, H, W) for transform
+        x= x.reshape(-1, H, W)
+        
+        # Apply transform and reshape back
+        x = transform(x.unsqueeze(1))  # Add channel dim for transform
+        x = x.reshape(N, C, 224, 224)  # Back to (N, C, 224, 224)
+        x_dual = torch.stack((x, x), dim=1)
+        with torch.no_grad():
+            # Get visual representations without language tokens
+            x = self.mpi_model.get_representations(x_dual, None, with_lang_tokens=False) # (1, 197, 384)
+        # repr shape assumed to be (N, T, 384), aggregate over token dimension
+        # x = torch.mean(x, dim=1).unsqueeze(1) # (N, 1, 384)
+
+        # take aggregated token
+        x = x[:,-1,:].unsqueeze(1) # (N, 1, 384)
+        out = self.proj(x)  # (N, 1, output_dim)
+        return out
+
+
 class bc_transformer_policy(nn.Module):
     def __init__(self, repr_dim=512, act_dim=7, hidden_dim=256,
                  policy_head="deterministic", obs_type='pixels',
@@ -24,14 +69,17 @@ class bc_transformer_policy(nn.Module):
                     'pixels_egocentric': (3, 128, 128),
                     'proprioceptive': (9,),
                     # 'features': (123,)
-                }
-                , language_dim=768, lang_repr_dim=512, language_fusion="film",
-                 pixel_keys=['pixels', 'pixels_egocentric'],proprio_key='proprioceptive', device="cuda",
+                },
+                language_dim=768, lang_repr_dim=512, language_fusion="film",
+                 pixel_keys=['pixels', 'pixels_egocentric'], proprio_key='proprioceptive', device="cuda",
                  history=True, history_len=10, num_queries=10,
                  temporal_agg=True,
                  max_episode_len=200,
                  use_proprio=True,
-                 num_feat_per_step=3):
+                 num_feat_per_step=3,
+                 use_mpi_pixels_egocentric=True,  # New flag
+                 mpi_root_dir="/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/models/networks/vison_encoder/MPI/mpi/checkpoints"
+                 ):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -57,7 +105,7 @@ class bc_transformer_policy(nn.Module):
             self.num_queries = num_queries
         else: 
             self.num_queries = 1
- 
+     
         self.action_dim = (
             self.act_dim * self.num_queries
         )
@@ -65,6 +113,7 @@ class bc_transformer_policy(nn.Module):
             if use_proprio:
                 proprio_shape = obs_shape[self.proprio_key]
             obs_shape = obs_shape[self.pixel_keys[0]]
+        
         # Initialize transformer decoder
         self.transformer = TransformerDecoder(
             input_size=repr_dim,
@@ -88,7 +137,7 @@ class bc_transformer_policy(nn.Module):
             )
         elif policy_head == "mtdh":
             self.action_head = MultiTokenDeterministicHead(
-                self.repr_dim, self.act_dim, num_tokens=self.num_queries, num_layers=2 , hidden_size=256
+                self.repr_dim, self.act_dim, num_tokens=self.num_queries, num_layers=2 , hidden_size=1024
             )
         else:
             raise ValueError(f"Invalid policy head: {policy_head}")
@@ -96,12 +145,15 @@ class bc_transformer_policy(nn.Module):
         # initialize the vision encoder
         self.vision_encoder = nn.ModuleDict()
         for key in self.pixel_keys:
-            self.vision_encoder[key] = ResnetEncoder(
-                obs_shape,
-                512,
-                language_dim=self.lang_repr_dim,
-                language_fusion=self.language_fusion,
-            )
+            if key == "pixels_egocentric" and use_mpi_pixels_egocentric:
+                self.vision_encoder[key] = MPIVisionEncoder(mpi_root_dir, device, output_dim=repr_dim)
+            else:
+                self.vision_encoder[key] = ResnetEncoder(
+                    obs_shape,
+                    512,
+                    language_dim=self.lang_repr_dim,
+                    language_fusion=self.language_fusion,
+                )
 
         # Initialize language encoder with proper configuration
         self.language_projector = MLP(
@@ -170,7 +222,7 @@ class bc_transformer_policy(nn.Module):
         
         # Expand language features
         lang_token = lang_features.view(B, 1, 1, -1).expand(-1, T, -1, -1)  # (B, T, 1, E)
-        encoded.append(lang_token)
+        
         
         # 2. Process vision features
         for key in self.pixel_keys:
@@ -179,15 +231,22 @@ class bc_transformer_policy(nn.Module):
             
             # Process each timestep
             pixel = pixel.reshape(B * T, C, H, W)
-            lang = lang_features.repeat_interleave(T, dim=0) if self.language_fusion == "film" else None
-
-            pixel = self.vision_encoder[key](
-                pixel,
-                lang=lang  # Reshape [B,E] -> [B*T,E]
-            )
-            pixel = pixel.view(B, T, 1, -1)
+            if key == "pixels_egocentric" and isinstance(self.vision_encoder[key], MPIVisionEncoder):
+                # For MPI encoder, handle its output shape (B*T, 197, repr_dim)
+                pixel = self.vision_encoder[key](pixel, lang=None)
+                
+                _,tk,_ = pixel.shape
+                pixel = pixel.reshape(B,T,tk,-1)
+                
+                
+            else:
+                # For ResNet encoder, process as before
+                lang = lang_features.repeat_interleave(T, dim=0) if self.language_fusion == "film" else None
+                pixel = self.vision_encoder[key](pixel, lang=lang)
+                pixel = pixel.view(B, T, 1, -1)
             encoded.append(pixel)
-            
+        
+        encoded.append(lang_token)
         # 3. Process proprioceptive features if used
         if self.use_proprio:
             proprio = data["obs"][self.proprio_key].float()
@@ -197,6 +256,7 @@ class bc_transformer_policy(nn.Module):
             
         # Combine all features
         encoded = torch.cat(encoded, dim=2)  # (B, T, num_modalities, E)
+
         return encoded
 
     def temporal_encode(self, x):
@@ -338,8 +398,7 @@ class bc_transformer_policy(nn.Module):
                 return action.detach().cpu().numpy()
             
             return pred_actions.detach().cpu().numpy()
-
-    # NEW: train_step method for bc_transformer_policy
+        
     def train_step(self, data, optimizer, scheduler=None):
         """
         Performs a training step for BC Transformer Policy.
@@ -360,8 +419,10 @@ class bc_transformer_policy(nn.Module):
             
         if self._policy_head == "deterministic":
             pred_dist = self.forward(data)
-            loss = -pred_dist.log_prob(gt_actions).mean()
-            
+            # loss = -pred_dist.log_prob(gt_actions).mean()
+            log_probs = pred_dist.log_prob(gt_actions)
+            loss = -log_probs
+            loss = loss.mean()
             loss.backward()
             optimizer.step()
         elif self._policy_head == "mtdh":
@@ -381,6 +442,7 @@ class bc_transformer_policy(nn.Module):
             
         return loss
 
+
 if __name__ == "__main__":
 
     config = {
@@ -398,7 +460,7 @@ if __name__ == "__main__":
     }
 
     # Initialize model
-    policy = bc_transformer_policy(**config).to(config['device'])
+    policy = bc_transformer_policy(**config, use_mpi_pixels_egocentric=True).to(config['device'])
     policy.eval()  # Set to evaluation mode
 
     # Create dummy input data

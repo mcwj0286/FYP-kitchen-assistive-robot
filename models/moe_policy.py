@@ -583,7 +583,8 @@ class Gate(nn.Module):
         self.score_func = args.score_func
         self.route_scale = args.route_scale
         # self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
-        self.gate_score = nn.Linear(args.dim, args.n_routed_experts)
+        self.gate_score = nn.Linear(args.dim, args.n_routed_experts, bias=False)
+        self.n_routed_experts = args.n_routed_experts
         self.bias = nn.Parameter(torch.empty(args.n_routed_experts)) 
         self.token_counts = None
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -596,11 +597,12 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Routing weights and selected expert indices.
         """
+        #original moe gate function
+        # scores = linear(x, self.weight)
         scores = self.gate_score(x)
-        # Get top 10 scores for debugging/monitoring
-        top_scores, _ = torch.topk(scores, k=min(10, scores.size(-1)), dim=-1)
-        print("Top 10 scores:", top_scores[0].detach().cpu().numpy())  # Print first batch item's scores
-
+        
+        
+        
         if self.score_func == "softmax":
             scores = scores.softmax(dim=-1, dtype=torch.float32)
         else:
@@ -624,7 +626,7 @@ class Gate(nn.Module):
         weights *= self.route_scale
 
         # NEW: Store token counts for load balancing.
-        self.token_counts = torch.bincount(indices.flatten(), minlength=self.weight.size(0))
+        self.token_counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
         
         return weights.type_as(x), indices
 
@@ -913,7 +915,7 @@ class moe_policy(nn.Module):
         self.action_dim = (
             self.act_dim * self.num_queries if self.temporal_agg else self.act_dim
         )
-
+        
         if obs_type == "pixels":
             if use_proprio:
                 proprio_shape = obs_shape[self.proprio_key]
@@ -1073,7 +1075,7 @@ class moe_policy(nn.Module):
         
         # Get action predictions
         pred_actions = self.action_head(x)
-
+        
         return pred_actions
     
     def get_action(self, data):
@@ -1175,10 +1177,10 @@ class moe_policy(nn.Module):
 
         # Update expert bias
         self.update_expert_bias(bias_update_rate)
-        for module in self.modules():
-            if hasattr(module, "gate") and hasattr(module.gate, "bias"):
-                print(module.gate.bias)
-                print(module.gate.token_counts)
+        # for module in self.modules():
+        #     if hasattr(module, "gate") and hasattr(module.gate, "bias"):
+        #         # print(module.gate.bias)
+        #         print(module.gate.token_counts)
                 
         
         return loss

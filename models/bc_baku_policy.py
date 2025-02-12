@@ -5,10 +5,7 @@ from models.networks.gpt import GPT, GPTConfig
 from models.networks.mlp import MLP
 from models.networks.policy_head import (
     DeterministicHead,
-    GMMHead,
-    BeTHead,
-    VQBeTHead,
-    DiffusionHead,
+
 )
 from models.networks.rgb_modules import BaseEncoder, ResnetEncoder
 import torch
