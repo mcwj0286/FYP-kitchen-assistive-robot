@@ -8,20 +8,22 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
-
+from dotenv import load_dotenv
+load_dotenv()
 # Import the real-world demonstration dataset
 from dataset import Kinova_Dataset
 
 # Import models for behavior cloning.
 # Here we support two options: "bc_act" and "bc_transformer".
-from models.bc_act_policy import bc_act_policy
+# from models.bc_act_policy import bc_act_policy
+# from models.bc_transformer_policy import bc_transformer_policy
 # bc_transformer_policy is imported later if needed.
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a robot manipulation model on real-world demonstration (Kinova) data")
-    parser.add_argument("--data_path", type=str, required=True,
-                        help="Directory containing the real demonstration HDF5 files")
-    parser.add_argument("--model_type", type=str, default="bc_act", choices=["bc_act", "bc_transformer"],
+    # parser.add_argument("--data_path", type=str, required=True,
+    #                     help="Directory containing the real demonstration HDF5 files")
+    parser.add_argument("--model_type", type=str, default="bc_transformer", choices=["bc_act", "bc_transformer"],
                         help="Type of model to train")
     parser.add_argument("--epochs", type=int, default=100,
                         help="Number of training epochs")
@@ -31,7 +33,7 @@ def parse_args():
                         help="Learning rate")
     parser.add_argument("--output_dir", type=str, default="kinova_experiments",
                         help="Directory to save training checkpoints")
-    parser.add_argument("--num_workers", type=int, default=4,
+    parser.add_argument("--num_workers", type=int, default=0,
                         help="Number of dataloader worker processes")
     return parser.parse_args()
 
@@ -51,9 +53,9 @@ def main():
 
     # Initialize the Kinova dataset.
     dataset = Kinova_Dataset(
-        data_path=args.data_path,
+        data_path=os.getenv('KINOVA_DATASET'),
         seq_length=10,
-        frame_stack=4,
+        frame_stack=1,
         overlap=2,
         pad_frame_stack=True,
         pad_seq_length=True,
@@ -100,24 +102,14 @@ def main():
         model = bc_act_policy(**config).to(device)
     elif args.model_type == "bc_transformer":
         from models.bc_transformer_policy import bc_transformer_policy
-        config = {  
-            "obs_shape": {
-                "pixels": (3, 128, 128),
-                "pixels_egocentric": (3, 128, 128),
-                "proprioceptive": (9,)
-            },
-            "action_dim": 7,
-            "policy_head": "mtdh",
-            "hidden_dim": 256,
-            "device": device,
-            "history": False,
-            "history_len": 10,
-            "num_queries": 10,
-            "temporal_agg": True,
-            "max_episode_len": 650,
-            "use_proprio": True,
-        }
-        model = bc_transformer_policy(**config).to(device)
+        
+        model = bc_transformer_policy(
+            history=False,
+            max_episode_len=1000,
+            use_mpi_pixels_egocentric=False,
+            device= device,
+
+        ).to(device)
     else:
         raise ValueError("Unknown model type: {}".format(args.model_type))
     
@@ -142,12 +134,18 @@ def main():
             for key in batch:
                 if torch.is_tensor(batch[key]):
                     batch[key] = batch[key].to(device)
+            # Print batch keys and shapes
+            print("\nBatch contents:")
+            for key, value in batch.items():
+                if torch.is_tensor(value):
+                    print(f"{key}: {value.shape}")
+                else:
+                    print(f"{key}: {type(value)}")
 
             optimizer.zero_grad()
             # Assumes the model has a train_step(batch, optimizer=...) method that returns a loss tensor.
             loss = model.train_step(batch, optimizer=optimizer)
-            loss.backward()
-            optimizer.step()
+            
             total_loss += loss.item()
 
             # if (batch_idx + 1) % 10 == 0:
