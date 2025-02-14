@@ -137,7 +137,8 @@ class RobotController:
             except Exception as e:
                 print(f"Error in control loop: {e}")
                 break
-
+    def send_action(self, joint_velocities, gripper_velocity):
+        self.arm.send_angular_velocity(joint_velocities, hand_mode=1, fingers=(gripper_velocity, gripper_velocity, gripper_velocity), duration=0.03333, period=0.005)
     def start(self):
         """Start the robot controller"""
         if not self.initialize_devices():
