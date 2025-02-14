@@ -377,7 +377,7 @@ class Kinova_Dataset(Dataset):
         # Define which cameras to load.
         if camera_mapping is None:
             # By default, return two camera feeds if available.
-            self.camera_mapping = {"pixels": "cam_0", "pixels_egocentric": "cam_1"}
+            self.camera_mapping = {"pixels": "cam_0", "pixels_egocentric": "cam_2"}
         else:
             self.camera_mapping = camera_mapping
         
@@ -521,7 +521,6 @@ class Kinova_Dataset(Dataset):
         # Apply linear normalization: (angle - 180)/180. This maps 0-360 to [-1, 1].
         ja_array = ja_array.astype(np.float32)
         ja_array = (ja_array - 180.0) / 180.0
-        
         data["proprioceptive"] = torch.from_numpy(ja_array)
         
         # Process actions.
@@ -557,6 +556,20 @@ class Kinova_Dataset(Dataset):
         # Add task embedding to the returned data if enabled.
         if self.load_task_emb:
             data["task_emb"] = self.task_embeddings[task_name]
+        
+        # --- NEW ADJUSTMENT: Nest observations under the "obs" key ---
+        obs = {}
+        # Map the processed image tensors under "pixels" and "pixels_egocentric"
+        obs["pixels"] = data["images"].get("pixels")
+        obs["pixels_egocentric"] = data["images"].get("pixels_egocentric")
+        # Add the proprioceptive features
+        obs["proprioceptive"] = data["proprioceptive"]
+        # Remove the now-nested keys from the top level.
+        del data["images"]
+        del data["proprioceptive"]
+        # Insert the observation dict.
+        data["obs"] = obs
+        # -------------------------------------------------------------
         
         return data
 
