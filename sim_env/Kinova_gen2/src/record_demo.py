@@ -251,7 +251,7 @@ class record_demo:
                 elif self.controller.square_pressed:
                     gripper_velocity = self.gripper_scale   # Close
                 joint_velocities[6] = gripper_velocity
-
+                
                 # Check for recording control (Options button)
                 if self.controller.options_pressed:
                     if not self.recording:
@@ -260,7 +260,20 @@ class record_demo:
                         self.recording = True
                     else:
                         print("\nEnding demo recording...")
-                        self.data_recorder.end_demo()
+                        # Ask if the demo should be saved
+                        save_response = input("Do you want to save this demo? (y/n): ")
+                        if save_response.strip().lower() in ['y', 'yes']:
+                            self.data_recorder.end_demo()
+                            print("Demo saved.")
+                        else:
+                            # Discard the demo by deleting the group from the HDF5 file
+                            demo_name = self.data_recorder.current_demo.name.split('/')[-1]
+                            print(f"Discarding demo {demo_name}...")
+                            if demo_name in self.data_recorder.h5_file:
+                                del self.data_recorder.h5_file[demo_name]
+                            self.data_recorder.current_demo = None
+                            self.data_recorder.frame_idx = 0
+                            print("Demo discarded.")
                         self.recording = False
                     time.sleep(0.5)  # Debounce
                 
@@ -273,14 +286,14 @@ class record_demo:
                     time.sleep(5)
                     print("Ready for velocity control again")
                     continue
-
+                
                 # Get current joint angles if recording
                 if self.recording:
                     # Assuming get_joint_angles returns a 9-element array (6 joints + 3 fingers)
                     joint_angles = self.arm.get_joint_angles()
                     # Record the frame
                     self.data_recorder.add_frame(frames_dict, joint_angles, joint_velocities)
-
+                
                 # Send velocity commands to the arm
                 self.arm.send_angular_velocity(
                     joint_velocities,  # Joint velocities array
@@ -289,7 +302,7 @@ class record_demo:
                     duration=0.03333,  # Duration updated for 30Hz control loop
                     period=0.005   # 30Hz update rate
                 )
-
+                
                 # Print velocities for debugging if any joint is moving
                 if any(abs(v) > 0.1 for v in joint_velocities):
                     print(f"Joint Velocities: {[f'{v:.1f}' for v in joint_velocities]}")
