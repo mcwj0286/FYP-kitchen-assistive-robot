@@ -17,6 +17,7 @@ from models.networks.transformer_modules import TransformerDecoder, SinusoidalPo
 import robomimic.utils.tensor_utils as TensorUtils
 import torch.nn.functional as F
 n_task = 10
+language_token_dim = 768
 ### ACT MOE Transformer Decoder
 class Gate(nn.Module):
     """
@@ -31,10 +32,9 @@ class Gate(nn.Module):
         self.topk_groups = n_limited_groups
         self.score_func = score_func
         self.route_scale = route_scale
-        # Use gate_score instead of direct weight parameter
-        self.gate_score = nn.Linear(dim, n_experts, bias=False)
+        self.gate_score = nn.Linear(language_token_dim, n_experts, bias=False)
         self.n_routed_experts = n_experts
-        self.bias = nn.Parameter(torch.empty(n_experts))
+        self.bias = nn.Parameter(torch.zeros(n_experts))
         self.token_counts = None
 
     def forward(self, x):
@@ -47,8 +47,8 @@ class Gate(nn.Module):
             scores = scores.sigmoid()
         original_scores = scores
         
-        if self.bias is not None:
-            scores = scores + self.bias
+        
+        scores = scores + self.bias
             
         if self.n_groups > 1:
             scores = scores.view(x.size(0), self.n_groups, -1)
@@ -243,17 +243,17 @@ class ACT_TransformerDecoder(nn.Module):
                 )
             self.layers.append(nn.ModuleDict(layer))
             
-    def forward(self, x):
+    def forward(self, x,language_token):
         """
         Args:
-            x: Input embeddings (B, num_features, input_size)
-            
+            x: Input embeddings (B*T, num_features, input_size)
+            language_token: Task embedding (B, 1, E)
         Returns:
             output: Processed action tokens (B, num_queries, input_size)
         """
         batch_size = x.shape[0]
 
-        language_token = x[:,0,:] # (B, E)
+        # language_token = 
         
         # Expand action tokens to batch size and add positional encoding
         queries = self.action_tokens.expand(batch_size, -1, -1)
@@ -494,7 +494,7 @@ class bc_act_policy(nn.Module):
         encoded = torch.cat(encoded, dim=2)  # (B, T, num_modalities, E)
         return encoded
 
-    def temporal_encode(self, x):
+    def temporal_encode(self, x,language_token):
         """
         Apply temporal encoding and transformer processing
         x: (B, T, num_modalities, E)
@@ -502,7 +502,10 @@ class bc_act_policy(nn.Module):
         B,T,num_modalities,E = x.shape
         
         x = x.reshape(B*T, num_modalities, E)
-        output = self.transformer(x) # (B*T, num_queries, E)
+        if self.use_moe:
+            output = self.transformer(x,language_token) # (B*T, num_queries, E)
+        else:
+            output = self.transformer(x) # (B*T, num_queries, E)
         output = output.reshape(B, T, -1, E)
         
 
@@ -538,12 +541,18 @@ class bc_act_policy(nn.Module):
         """
         # Preprocess input data
         data = self.preprocess_input(data)
+        language_token = data["task_emb"] # (B, 1, E)
         
         # Encode spatial features
         x = self.spatial_encode(data)
-        
+        B,T,_,_ = x.shape
+        # Expand language token to match temporal dimension
+        # language_token is currently [B, 1, E]
+        # Need to repeat T times to get [B, T, E]
+        language_token = language_token.repeat(1, T, 1)  # [B, T, E]
+        language_token = language_token.view(B*T, -1)
         # Apply temporal encoding
-        x = self.temporal_encode(x)
+        x = self.temporal_encode(x,language_token)
         B,T,num_queries,E = x.shape
         # reshape x to [B,T*num_queries,E]
         x = x.reshape(B, -1, E)
@@ -567,12 +576,15 @@ class bc_act_policy(nn.Module):
         with torch.no_grad():
             # Preprocess input
             data = self.preprocess_input(data, train_mode=False)
+            language_token = data["task_emb"]
             
             # Encode spatial features
             x = self.spatial_encode(data) # (B, 1, num_modalities, E)
-            
+            B,T,_,_ = x.shape
+            language_token = language_token.repeat(1, T, 1)  # [B, T, E]
+            language_token = language_token.view(B*T, -1)
             # Apply temporal encoding
-            x = self.temporal_encode(x) # (B, 1, num_queries, E)
+            x = self.temporal_encode(x,language_token) # (B, 1, num_queries, E)
             
             x = x.squeeze(1) # (B, num_queries, E)
 
@@ -657,7 +669,7 @@ class bc_act_policy(nn.Module):
             
         return loss
     
-    def update_expert_bias(self, u=0.01):
+    def update_expert_bias(self, u=0.001, threshold=0.4):
         """
         Update the per-expert bias based on the token assignment counts from the gating modules.
         
@@ -671,6 +683,7 @@ class bc_act_policy(nn.Module):
         
         Args:
             u (float): The bias update rate.
+            threshold (float): Maximum absolute value for bias before stopping updates.
         """
         for module in self.modules():
             # Check if the module has a gate with bias and token counts
@@ -682,7 +695,8 @@ class bc_act_policy(nn.Module):
                 avg = counts.mean()
                 error = avg - counts # avg - counts
                 with torch.no_grad():
-                    # Update: b = b + u * sign(error)
-                    module.gate.bias += u * torch.sign(error)
+                    # Only update bias if below threshold
+                    mask = (module.gate.bias.abs() < threshold)
+                    # Update: b = b + u * sign(error) where mask is True
+                    module.gate.bias += u * torch.sign(error) * mask
                     print(f"bias updated: {module.gate.bias}")
-
