@@ -50,42 +50,39 @@ class ACT_TransformerDecoder(nn.Module):
         mask = torch.triu(torch.ones(num_queries, num_queries), diagonal=1).bool()
         self.register_buffer('causal_mask', mask)
         
-        # Layer components
+        # Layer components modified to have:
+        # 1. Cross attention with one norm layer
+        # 2. Self attention with one norm layer
+        # 3. MLP with one norm layer
         self.layers = nn.ModuleList([
             nn.ModuleDict({
-                # Cross attention
+                # Step 1: Cross attention and its norm.
                 'cross_attention': nn.MultiheadAttention(
                     embed_dim=input_size,
                     num_heads=num_heads,
                     dropout=dropout,
                     batch_first=True
                 ),
-                'cross_norm1': nn.LayerNorm(input_size),
-                'cross_norm2': nn.LayerNorm(input_size),
-                'cross_mlp': nn.Sequential(
-                    nn.Linear(input_size, mlp_hidden_size),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                    nn.Linear(mlp_hidden_size, input_size),
-                    nn.Dropout(dropout)
-                ),
+                'cross_norm': nn.LayerNorm(input_size),
                 
-                # Self attention
+                # Step 2: Self attention and its norm.
                 'self_attention': nn.MultiheadAttention(
                     embed_dim=input_size,
                     num_heads=num_heads,
                     dropout=dropout,
                     batch_first=True
                 ),
-                'self_norm1': nn.LayerNorm(input_size),
-                'self_norm2': nn.LayerNorm(input_size),
-                'self_mlp': nn.Sequential(
+                'self_norm': nn.LayerNorm(input_size),
+                
+                # Step 3: MLP and its norm.
+                'mlp': nn.Sequential(
                     nn.Linear(input_size, mlp_hidden_size),
                     nn.ReLU(),
                     nn.Dropout(dropout),
                     nn.Linear(mlp_hidden_size, input_size),
                     nn.Dropout(dropout)
-                )
+                ),
+                'mlp_norm': nn.LayerNorm(input_size)
             }) for _ in range(num_layers)
         ])
         
@@ -104,43 +101,42 @@ class ACT_TransformerDecoder(nn.Module):
         pos_enc = self.pos_encoding(queries)
         queries = queries + pos_enc
         
-        # Store attention weights for visualization if needed
+        # For storing attention weights for visualization if desired
         self.cross_attention_weights = []
         self.self_attention_weights = []
         
-        # Process through layers
+        # Process through layers in three clear steps per layer:
+        # 1. Cross attention with residual
+        # 2. Multi-head self attention (with causal mask) with residual
+        # 3. MLP with residual
         for layer in self.layers:
-            # Cross attention
-            attended_queries = layer['cross_norm1'](queries)
+            # Step 1: Cross Attention + Residual connection
+            q_norm = layer['cross_norm'](queries)
             cross_out, cross_weights = layer['cross_attention'](
-                query=attended_queries,
+                query=q_norm,
                 key=x,
-                value=x
+                value=x,
+                need_weights=True
             )
             self.cross_attention_weights.append(cross_weights)
             queries = queries + cross_out
             
-            # Cross attention FFN
-            cross_ff = layer['cross_norm2'](queries)
-            cross_ff = layer['cross_mlp'](cross_ff)
-            queries = queries + cross_ff
-            
-            # Self attention with causal mask
-            attended_queries = layer['self_norm1'](queries)
+            # Step 2: Multi-head Self Attention (with causal mask) + Residual connection
+            s_norm = layer['self_norm'](queries)
             self_out, self_weights = layer['self_attention'](
-                query=attended_queries,
-                key=attended_queries,
-                value=attended_queries,
+                query=s_norm,
+                key=s_norm,
+                value=s_norm,
                 attn_mask=self.causal_mask,
                 need_weights=True
             )
             self.self_attention_weights.append(self_weights)
             queries = queries + self_out
             
-            # Self attention FFN
-            self_ff = layer['self_norm2'](queries)
-            self_ff = layer['self_mlp'](self_ff)
-            queries = queries + self_ff
+            # Step 3: MLP + Residual connection
+            mlp_norm = layer['mlp_norm'](queries)
+            mlp_out = layer['mlp'](mlp_norm)
+            queries = queries + mlp_out
             
         return queries
     
