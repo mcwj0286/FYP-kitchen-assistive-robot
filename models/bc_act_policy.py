@@ -15,7 +15,146 @@ import numpy as np
 from models.networks.policy_head import DeterministicHead
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
+import torch.nn.functional as F
+n_task = 10
+### ACT MOE Transformer Decoder
+class Gate(nn.Module):
+    """
+    Gating mechanism for routing inputs in a mixture-of-experts (MoE) model.
+    """
+    def __init__(self, dim, n_experts=8, n_expert_groups=1, n_limited_groups=1, 
+                 n_activated_experts=2, score_func="softmax", route_scale=1.0):
+        super().__init__()
+        self.dim = dim
+        self.topk = n_activated_experts
+        self.n_groups = n_expert_groups
+        self.topk_groups = n_limited_groups
+        self.score_func = score_func
+        self.route_scale = route_scale
+        # Use gate_score instead of direct weight parameter
+        self.gate_score = nn.Linear(dim, n_experts, bias=False)
+        self.n_routed_experts = n_experts
+        self.bias = nn.Parameter(torch.empty(n_experts))
+        self.token_counts = None
 
+    def forward(self, x):
+        """Forward pass for the gating mechanism."""
+        scores = self.gate_score(x)
+        
+        if self.score_func == "softmax":
+            scores = scores.softmax(dim=-1, dtype=torch.float32)
+        else:
+            scores = scores.sigmoid()
+        original_scores = scores
+        
+        if self.bias is not None:
+            scores = scores + self.bias
+            
+        if self.n_groups > 1:
+            scores = scores.view(x.size(0), self.n_groups, -1)
+            if self.bias is None:
+                group_scores = scores.amax(dim=-1)
+            else:
+                group_scores = scores.topk(2, dim=-1)[0].sum(dim=-1)
+            indices = group_scores.topk(self.topk_groups, dim=-1)[1]
+            mask = torch.zeros_like(scores[..., 0]).scatter_(1, indices, True)
+            scores = (scores * mask.unsqueeze(-1)).flatten(1)
+            
+        indices = torch.topk(scores, self.topk, dim=-1)[1]
+        weights = original_scores.gather(1, indices)
+        
+        if self.score_func == "sigmoid":
+            weights /= weights.sum(dim=-1, keepdim=True)
+        weights *= self.route_scale
+
+        # Store token counts for load balancing
+        self.token_counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
+        
+        return weights.type_as(x), indices
+
+
+class Expert(nn.Module):
+    """Expert layer for MoE models."""
+    def __init__(self, dim, inter_dim):
+        super().__init__()
+        self.w1 = nn.Linear(dim, inter_dim)
+        self.w2 = nn.Linear(inter_dim, dim)
+        self.w3 = nn.Linear(dim, inter_dim)
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class MoE(nn.Module):
+    """Mixture-of-Experts (MoE) module."""
+    def __init__(self, input_size, mlp_hidden_size, n_experts=8, n_expert_groups=1, 
+                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0):
+        super().__init__()
+        self.input_size = input_size
+        self.n_routed_experts = n_experts
+        self.n_local_experts = n_experts
+        self.n_activated_experts = n_activated_experts
+        self.experts_start_idx = 0
+        self.experts_end_idx = self.n_local_experts
+        
+        self.gate = Gate(
+            input_size, 
+            n_experts=n_experts,
+            n_expert_groups=n_expert_groups,
+            n_limited_groups=n_limited_groups,
+            n_activated_experts=n_activated_experts
+        )
+        
+        # Initialize routed experts
+        self.experts = nn.ModuleList([
+            Expert(input_size, mlp_hidden_size) 
+            if self.experts_start_idx <= i < self.experts_end_idx else None
+            for i in range(n_experts)
+        ])
+        
+        # Add multiple shared experts using MLP
+        shared_hidden_size = n_shared_experts * mlp_hidden_size
+        self.shared_experts = nn.Sequential(
+            nn.Linear(input_size, shared_hidden_size),
+            nn.SiLU(),
+            nn.Linear(shared_hidden_size, input_size)
+        )
+
+    def forward(self, x , language_token):
+        original_shape = x.size()
+        # x = x.view(-1, self.input_size)
+        
+        # Ensure batch sizes match
+        if x.shape[0] != language_token.shape[0]:
+            raise ValueError(f"Batch size mismatch: x has shape {x.shape[0]} but language_token has shape {language_token.shape[0]}")
+        # Get routing weights and expert indices
+        weights, indices = self.gate(language_token) # (B, 1), (B, 1)
+        
+        # Initialize output tensor
+        y = torch.zeros_like(x)
+        
+        # Count tokens per expert
+        counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
+        
+        # Route inputs to experts
+        for i in range(self.experts_start_idx, self.experts_end_idx):
+            if counts[i] == 0:
+                continue
+            expert = self.experts[i]
+            idx, top = torch.where(indices == i)
+            
+            y[idx] += expert(x[idx])
+  
+        
+        # Add shared experts computation
+        z = self.shared_experts(x)
+        
+        # TODO : Consider add a weighting to the expert output
+        return (y + z).view(original_shape)
+
+
+    
+###
 class ACT_TransformerDecoder(nn.Module):
     def __init__(
         self,
@@ -26,7 +165,9 @@ class ACT_TransformerDecoder(nn.Module):
         mlp_hidden_size=256,
         dropout=0.1,
         num_queries=10,
-        learnable_tokens=True
+        learnable_tokens=True,
+        n_dense_layers=0,  # NEW: number of dense (standard MLP) layers; layers beyond this will use MoE when use_moe is True
+        use_moe=False      # NEW: flag to use MoE for layers beyond n_dense_layers
     ):
         super().__init__()
         
@@ -36,6 +177,8 @@ class ACT_TransformerDecoder(nn.Module):
         self.head_output_size = head_output_size
         self.dropout = dropout
         self.num_queries = num_queries
+        self.n_dense_layers = n_dense_layers
+        self.use_moe = use_moe
         
         # Action token embeddings - either learnable or fixed
         if learnable_tokens:
@@ -53,39 +196,53 @@ class ACT_TransformerDecoder(nn.Module):
         # Layer components modified to have:
         # 1. Cross attention with one norm layer
         # 2. Self attention with one norm layer
-        # 3. MLP with one norm layer
-        self.layers = nn.ModuleList([
-            nn.ModuleDict({
-                # Step 1: Cross attention and its norm.
-                'cross_attention': nn.MultiheadAttention(
+        # 3. MLP (or MoE) with one norm layer
+        self.layers = nn.ModuleList([])
+        for layer_idx in range(num_layers):
+            layer = {}
+            # Step 1: Cross attention and its norm.
+            layer['cross_attention'] = nn.MultiheadAttention(
                     embed_dim=input_size,
                     num_heads=num_heads,
                     dropout=dropout,
                     batch_first=True
-                ),
-                'cross_norm': nn.LayerNorm(input_size),
-                
-                # Step 2: Self attention and its norm.
-                'self_attention': nn.MultiheadAttention(
+                )
+            layer['cross_norm'] = nn.LayerNorm(input_size)
+            
+            # Step 2: Self attention and its norm.
+            layer['self_attention'] = nn.MultiheadAttention(
                     embed_dim=input_size,
                     num_heads=num_heads,
                     dropout=dropout,
                     batch_first=True
-                ),
-                'self_norm': nn.LayerNorm(input_size),
-                
-                # Step 3: MLP and its norm.
-                'mlp': nn.Sequential(
+                )
+            layer['self_norm'] = nn.LayerNorm(input_size)
+            
+            # Step 3: MLP (or MoE) and its norm.
+            layer['mlp_norm'] = nn.LayerNorm(input_size)
+            if self.use_moe and layer_idx >= self.n_dense_layers:
+                # Use MoE module (using hard-coded parameters as in the transformer_modules example)
+                layer['mlp'] = MoE(
+                            input_size=input_size,
+                            mlp_hidden_size=mlp_hidden_size,
+                            n_experts=n_task,
+                            n_expert_groups=1,
+                            n_limited_groups=1,
+                            n_activated_experts=1,
+                            dropout=dropout,
+                            n_shared_experts=1
+                        )
+            else:
+                # Standard MLP
+                layer['mlp'] = nn.Sequential(
                     nn.Linear(input_size, mlp_hidden_size),
                     nn.ReLU(),
                     nn.Dropout(dropout),
                     nn.Linear(mlp_hidden_size, input_size),
                     nn.Dropout(dropout)
-                ),
-                'mlp_norm': nn.LayerNorm(input_size)
-            }) for _ in range(num_layers)
-        ])
-        
+                )
+            self.layers.append(nn.ModuleDict(layer))
+            
     def forward(self, x):
         """
         Args:
@@ -95,6 +252,8 @@ class ACT_TransformerDecoder(nn.Module):
             output: Processed action tokens (B, num_queries, input_size)
         """
         batch_size = x.shape[0]
+
+        language_token = x[:,0,:] # (B, E)
         
         # Expand action tokens to batch size and add positional encoding
         queries = self.action_tokens.expand(batch_size, -1, -1)
@@ -106,10 +265,10 @@ class ACT_TransformerDecoder(nn.Module):
         self.self_attention_weights = []
         
         # Process through layers in three clear steps per layer:
-        # 1. Cross attention with residual
-        # 2. Multi-head self attention (with causal mask) with residual
-        # 3. MLP with residual
-        for layer in self.layers:
+        # 1. Cross attention with residual connection
+        # 2. Multi-head self attention (with causal mask) with residual connection
+        # 3. MLP (or MoE) with residual connection
+        for layer_idx, layer in enumerate(self.layers):
             # Step 1: Cross Attention + Residual connection
             q_norm = layer['cross_norm'](queries)
             cross_out, cross_weights = layer['cross_attention'](
@@ -133,9 +292,12 @@ class ACT_TransformerDecoder(nn.Module):
             self.self_attention_weights.append(self_weights)
             queries = queries + self_out
             
-            # Step 3: MLP + Residual connection
-            mlp_norm = layer['mlp_norm'](queries)
-            mlp_out = layer['mlp'](mlp_norm)
+            # Step 3: MLP (or MoE) + Residual connection
+            mlp_norm = layer['mlp_norm'](queries)  # (B, num_queries, E)
+            if self.use_moe and layer_idx >= self.n_dense_layers:
+                mlp_out = layer['mlp'](mlp_norm, language_token)
+            else:
+                mlp_out = layer['mlp'](mlp_norm)
             queries = queries + mlp_out
             
         return queries
@@ -161,7 +323,9 @@ class bc_act_policy(nn.Module):
                  num_queries=10,
                  max_episode_len=200,
                  use_proprio=True,
-                 learnable_tokens=False):
+                 learnable_tokens=False,
+                 n_layer=8,
+                 use_moe=False):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -177,7 +341,8 @@ class bc_act_policy(nn.Module):
         self.observation_buffer = {}
         self.act_dim = act_dim
         self.step = 0
-
+        self.n_task = n_task
+        self.use_moe = use_moe
         self.num_queries = num_queries
  
         self.action_dim = (
@@ -190,13 +355,15 @@ class bc_act_policy(nn.Module):
         # Initialize transformer decoder
         self.transformer = ACT_TransformerDecoder(
             input_size=repr_dim,
-            num_layers=8,
+            num_layers=n_layer,
             num_heads=4,
             head_output_size=64,
             mlp_hidden_size=hidden_dim,
             dropout=0.1,
             num_queries=self.num_queries,
-            learnable_tokens=learnable_tokens
+            learnable_tokens=learnable_tokens,
+            n_dense_layers=1,
+            use_moe=use_moe
         )
         
         # Initialize temporal position encoding
@@ -468,5 +635,54 @@ class bc_act_policy(nn.Module):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+        if self.use_moe:
+            self.update_expert_bias()
+            # task_emb = data["task_emb"] # (B,1, E)
+            # Count occurrences of each unique task embedding
+            # task_emb_flat = task_emb.view(task_emb.size(0), -1)  # Flatten to (B, E)
+            
+            # # Count frequency of each embedding
+            # unique_counts = {}
+            # for i in range(task_emb_flat.size(0)):
+            #     # Convert tensor to tuple for hashing
+            #     emb_tuple = tuple(task_emb_flat[i].cpu().detach().numpy())
+            #     unique_counts[emb_tuple] = unique_counts.get(emb_tuple, 0) + 1
+            
+            # # Print frequency of each unique embedding
+            # print("\nTask Embedding Frequencies:")
+            # for i, (emb, count) in enumerate(unique_counts.items()):
+            #     if count > 1:  # Only print embeddings that repeat
+            #         print(f"Task Embedding {i}: appears {count} times")
+
+            
         return loss
+    
+    def update_expert_bias(self, u=0.01):
+        """
+        Update the per-expert bias based on the token assignment counts from the gating modules.
+        
+        This function iterates over all submodules in the model, and for any module that contains a gate
+        with a bias parameter and token_counts attribute, it computes:
+        
+            avg = mean(c_i)
+            e_i = avg - c_i
+            
+        and updates the bias as: b_i = b_i + u * sign(e_i)
+        
+        Args:
+            u (float): The bias update rate.
+        """
+        for module in self.modules():
+            # Check if the module has a gate with bias and token counts
+            if hasattr(module, 'gate') and hasattr(module.gate, "bias") and hasattr(module.gate, "token_counts"):
+                counts = module.gate.token_counts  # assumed to be a tensor of shape [num_experts]
+                print(counts)
+                # Make sure counts are in float for the arithmetic
+                counts = counts.float()
+                avg = counts.mean()
+                error = avg - counts # avg - counts
+                with torch.no_grad():
+                    # Update: b = b + u * sign(error)
+                    module.gate.bias += u * torch.sign(error)
+                    print(f"bias updated: {module.gate.bias}")
 

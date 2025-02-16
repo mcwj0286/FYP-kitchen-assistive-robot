@@ -28,6 +28,9 @@ from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
 from models.act_policy import ACTPolicy
 from models.bc_act_policy import bc_act_policy
+from models.moe_policy import moe_policy , ModelArgs
+from models.bc_moe_policy import bc_moe_policy
+
 
 def get_model(model_type,cfg):
     """Initialize model based on type and return both model and config.
@@ -40,6 +43,15 @@ def get_model(model_type,cfg):
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.overlap = 0
+    # Set default parameters
+    cfg.get_pad_mask = False
+    cfg.get_action_padding = False
+   
+    cfg.num_queries = 1
+    # cfg.eval.num_procs = 5
+    # cfg.eval.use_mp = True
+    # cfg.eval.n_eval = 5
+    cfg.seq_length = 10
     if model_type == "bc_baku":
         # Default configuration for BCBaku
         cfg.device = device
@@ -148,15 +160,15 @@ def get_model(model_type,cfg):
     elif model_type == "bc_transformer": #custom implementation from libero transformer
         # Configuration for our bc_transformer_policy
         cfg.device = device
-        cfg.seed = 2
-        cfg.train.batch_size = 32
+        cfg.seed = 32
+        cfg.train.batch_size = 4
         cfg.train.lr = 1e-4
         cfg.train.optimizer.name = 'torch.optim.Adam'
         cfg.train.optimizer.kwargs.lr = 1e-4
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
-        cfg.policy_head = "mtdh"
+        cfg.policy_head = "deterministic"
         cfg.use_proprio = True
         cfg.temporal_agg = True
         cfg.num_queries = 10
@@ -194,7 +206,9 @@ def get_model(model_type,cfg):
             num_queries=cfg.num_queries,
             temporal_agg=cfg.temporal_agg,
             max_episode_len=cfg.max_episode_len,
-            use_proprio=cfg.use_proprio
+            use_proprio=cfg.use_proprio,
+            use_mpi_pixels_egocentric =False
+
         ).to(cfg.device)
     elif model_type == "bc_act":
         # Configuration for BC-ACT
@@ -215,14 +229,12 @@ def get_model(model_type,cfg):
         cfg.obs_type = "pixels"
         cfg.policy_head = "deterministic"
         cfg.use_proprio = True
-        cfg.temporal_agg = True
         cfg.num_queries = 10
         cfg.hidden_dim = 256
-        cfg.history = True
-        cfg.history_len = 10
+   
         cfg.film = True
         cfg.max_episode_len = 650
-        cfg.seq_length = 1
+        cfg.seq_length = 10
         cfg.get_pad_mask = True
         cfg.get_action_padding = True
         cfg.overlap = 0
@@ -245,13 +257,121 @@ def get_model(model_type,cfg):
             pixel_keys=['pixels', 'pixels_egocentric'],
             proprio_key='proprioceptive',
             device=cfg.device,
+            num_queries=cfg.num_queries,
+            max_episode_len=cfg.max_episode_len,
+            use_proprio=cfg.use_proprio,
+            learnable_tokens=False,
+            n_layer=8,
+            use_moe=True
+        ).to(cfg.device)
+    elif model_type == "moe":
+        # Configuration for MoE policy
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 16
+        cfg.train.lr = 1e-4
+        cfg.train.optimizer.name = 'torch.optim.Adam'
+        cfg.train.optimizer.kwargs.lr = 1e-4
+        cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
+        cfg.train.n_epochs = 100
+        cfg.obs_type = "pixels"
+        cfg.policy_head = "deterministic"
+        cfg.use_proprio = True
+        cfg.temporal_agg = False
+        cfg.num_queries = 1
+        cfg.hidden_dim = 256
+        cfg.history = False
+        cfg.history_len = 1
+        cfg.film = True
+        cfg.max_episode_len = 650
+        cfg.seq_length = 10
+        
+        # MoE specific configurations
+        moe_args = ModelArgs(
+            max_batch_size=cfg.train.batch_size,
+            max_seq_len=cfg.max_episode_len,
+            dim=512,  # Model dimension
+            inter_dim=cfg.hidden_dim,
+            moe_inter_dim=cfg.hidden_dim,
+            n_layers=8,
+            n_dense_layers=2,
+            n_heads=8,
+            n_routed_experts=64,
+            n_shared_experts=2,
+            n_activated_experts=6,
+            action_dim=7,
+            dtype="bf16",
+            score_func = 'softmax'
+        )
+
+        # Initialize MoE model
+        config = {
+        'repr_dim': 512,
+        'act_dim': 7,
+        'hidden_dim': 256,
+        'policy_head': 'deterministic',
+        'obs_type': 'pixels',
+        'obs_shape': {
+            'pixels': (3, 128, 128),
+            'pixels_egocentric': (3, 128, 128),
+            'proprioceptive': (9,),
+        },
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'history_len': 10,
+        'temporal_agg': cfg.temporal_agg,  # Set to False for simplicity in this test
+        'num_queries': cfg.num_queries,
+        'moe_args': moe_args
+    }
+
+        # Initialize the model
+        model = moe_policy(**config).to(config['device'])
+    elif model_type == "bc_moe":
+        # Configuration for BC-MoE policy
+        cfg.device = device
+        cfg.seed = 2
+        cfg.train.batch_size = 16
+        cfg.train.lr = 1e-4
+        cfg.train.optimizer.name = 'torch.optim.Adam'
+        cfg.train.optimizer.kwargs.lr = 1e-4
+        cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
+        cfg.train.n_epochs = 100
+        cfg.obs_type = "pixels"
+        cfg.policy_head = "deterministic"
+        cfg.use_proprio = True
+        cfg.temporal_agg = True  # Set to False to avoid dimension mismatch
+        cfg.num_queries = 10       # Set to 1 to match action dimensions
+        cfg.hidden_dim = 256
+        cfg.history = False       # Simplify training initially
+        cfg.history_len = 1
+        cfg.film = True
+        cfg.max_episode_len = 650
+        cfg.seq_length = 10
+
+        # Initialize BC-MoE model
+        model = bc_moe_policy(
+            repr_dim=512,
+            act_dim=7,
+            hidden_dim=cfg.hidden_dim,
+            policy_head=cfg.policy_head,
+            obs_type=cfg.obs_type,
+            obs_shape={
+                'pixels': (3, 128, 128),
+                'pixels_egocentric': (3, 128, 128),
+                'proprioceptive': (9,),
+            },
+            language_dim=768,
+            lang_repr_dim=512,
+            language_fusion="film" if cfg.film else None,
+            pixel_keys=['pixels', 'pixels_egocentric'],
+            proprio_key='proprioceptive',
+            device=cfg.device,
             history=cfg.history,
             history_len=cfg.history_len,
             num_queries=cfg.num_queries,
             temporal_agg=cfg.temporal_agg,
             max_episode_len=cfg.max_episode_len,
             use_proprio=cfg.use_proprio,
-            learnable_tokens=True
+            n_shared_experts=1
         ).to(cfg.device)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -316,10 +436,10 @@ def main(hydra_cfg):
     # Add model type selection
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='bc_transformer', 
-                      choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act'],
+    parser.add_argument('--model_type', type=str, default='bc_act', 
+                      choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act', 'moe', 'bc_moe'],
                       help='Type of model to train')
-    parser.add_argument('--eval_sample_size', type=int, default=None,
+    parser.add_argument('--eval_sample_size', type=int, default=10,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
@@ -339,10 +459,12 @@ def main(hydra_cfg):
     # Get model and its configuration
     model, cfg = get_model(args.model_type,cfg)
     cfg.model_type = args.model_type  # Add model type to config
-
+    # Print total number of trainable parameters
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Total trainable parameters: {num_params/1e6:.2f}M")
     # Print configs
     pp = pprint.PrettyPrinter(indent=2)
-    pp.pprint(cfg)
+    # pp.pprint(cfg)
 
     # Control seed
     control_seed(cfg.seed)
