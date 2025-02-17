@@ -63,11 +63,13 @@ def main():
     parser = argparse.ArgumentParser(description="Real-time evaluation using camera and robot controller")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to run the inference on")
+    parser.add_argument("--agent-view-cam", type=int, help="Camera ID to use for agent view")
+    parser.add_argument("--ego-view-cam", type=int, help="Camera ID to use for egocentric view")
     args = parser.parse_args()
     device = args.device
 
     # Set checkpoint path (adjust as needed)
-    args.checkpoint = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/kinova_experiments/model_epoch_5.pth'
+    args.checkpoint = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/kinova_experiments/model_epoch_20.pth'
 
     # Initialize the model with the same configuration used during training:
     model = bc_transformer_policy(
@@ -93,12 +95,21 @@ def main():
 
     # Initialize camera interface with valid camera IDs
     try:
-        available_cams = CameraInterface.list_available_cameras()
+        available_cams = sorted(CameraInterface.list_available_cameras())
         print(f"Available cameras: {available_cams}")
         if not available_cams:
             print("No cameras found!")
             return
-        cameras = MultiCameraInterface(camera_ids=available_cams, width=320, height=240)
+            
+        # Use command line args if provided, otherwise use first two cameras
+        AGENT_VIEW_CAM = args.agent_view_cam if args.agent_view_cam is not None else available_cams[0]
+        EGO_VIEW_CAM = args.ego_view_cam if args.ego_view_cam is not None else available_cams[1]
+        
+        if AGENT_VIEW_CAM not in available_cams or EGO_VIEW_CAM not in available_cams:
+            print(f"Specified cameras not available. Available cameras: {available_cams}")
+            return
+        
+        cameras = MultiCameraInterface(camera_ids=[AGENT_VIEW_CAM, EGO_VIEW_CAM], width=320, height=240)
     except Exception as e:
         print(f"Error initializing camera: {e}")
         return
@@ -144,17 +155,9 @@ def main():
                 time.sleep(0.1)
                 continue
 
-            # Determine which images to use:
-            # Use camera 0 as agent view if available, and camera 2 as egocentric view if available.
-            if 0 in image_tensor_dict:
-                agentview_tensor = image_tensor_dict[0]
-            else:
-                agentview_tensor = list(image_tensor_dict.values())[0]
-
-            if 2 in image_tensor_dict:
-                egocentric_tensor = image_tensor_dict[2]
-            else:
-                egocentric_tensor = list(image_tensor_dict.values())[0]
+            # Use mapped camera IDs for views
+            agentview_tensor = image_tensor_dict[AGENT_VIEW_CAM]
+            egocentric_tensor = image_tensor_dict[EGO_VIEW_CAM]
 
             # Get robot joint angles from the arm
             joint_angles = robot_controller.arm.get_joint_angles()
@@ -189,7 +192,7 @@ def main():
                 print(f"Error during inference: {e}")
 
             # Sleep to aim for a ~30Hz control loop
-            time.sleep(0.03333)
+            # time.sleep(0.03333)
 
     except KeyboardInterrupt:
         print("Exiting inference loop (keyboard interrupt).")
