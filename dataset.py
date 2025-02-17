@@ -518,7 +518,6 @@ class Kinova_Dataset(Dataset):
                 ja_array[i] = ja_array[frame_stack_pad]
         
         # NEW: Normalize proprioceptive joint angles
-        # Apply linear normalization: (angle - 180)/180. This maps 0-360 to [-1, 1].
         ja_array = ja_array.astype(np.float32)
         ja_array = (ja_array - 180.0) / 180.0
         data["proprioceptive"] = torch.from_numpy(ja_array)
@@ -532,8 +531,6 @@ class Kinova_Dataset(Dataset):
         act_array[:actual_length] = act_ds[start_idx:start_idx + actual_length]
         
         # NEW: Normalize actions
-        # For the first 6 elements (joint velocities in [-30, 30]), divide by action_velocity_scale.
-        # For the 7th element (gripper velocity in [-3000, 3000]), divide by gripper_scale.
         act_array = act_array.astype(np.float32)
         norm_factors = np.array([self.action_velocity_scale]*6 + [self.gripper_scale], dtype=np.float32)
         act_array = act_array / norm_factors
@@ -557,19 +554,10 @@ class Kinova_Dataset(Dataset):
         if self.load_task_emb:
             data["task_emb"] = self.task_embeddings[task_name]
         
-        # --- NEW ADJUSTMENT: Nest observations under the "obs" key ---
-        obs = {}
-        # Map the processed image tensors under "pixels" and "pixels_egocentric"
-        obs["pixels"] = data["images"].get("pixels")
-        obs["pixels_egocentric"] = data["images"].get("pixels_egocentric")
-        # Add the proprioceptive features
-        obs["proprioceptive"] = data["proprioceptive"]
-        # Remove the now-nested keys from the top level.
+        # --- Minimal change: Flatten observations to match LIBERODataset format ---
+        data["pixels"] = data["images"].get("pixels")
+        data["pixels_egocentric"] = data["images"].get("pixels_egocentric")
         del data["images"]
-        del data["proprioceptive"]
-        # Insert the observation dict.
-        data["obs"] = obs
-        # -------------------------------------------------------------
         
         return data
 

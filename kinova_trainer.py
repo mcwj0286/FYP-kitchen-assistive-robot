@@ -131,16 +131,16 @@ def main():
         total_loss = 0.0
         for batch_idx, batch in enumerate(dataloader):
             # Move batch data to device.
-            for key in batch:
-                if torch.is_tensor(batch[key]):
-                    batch[key] = batch[key].to(device)
-            # Print batch keys and shapes
-            print("\nBatch contents:")
-            for key, value in batch.items():
-                if torch.is_tensor(value):
-                    print(f"{key}: {value.shape}")
-                else:
-                    print(f"{key}: {type(value)}")
+            # for key in batch:
+            #     if torch.is_tensor(batch[key]):
+            #         batch[key] = batch[key].to(device)
+            # # Print batch keys and shapes
+            # print("\nBatch contents:")
+            # for key, value in batch.items():
+            #     if torch.is_tensor(value):
+            #         print(f"{key}: {value.shape}")
+            #     else:
+            #         print(f"{key}: {type(value)}")
 
             optimizer.zero_grad()
             # Assumes the model has a train_step(batch, optimizer=...) method that returns a loss tensor.
