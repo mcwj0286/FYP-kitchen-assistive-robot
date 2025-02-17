@@ -1,48 +1,56 @@
 import argparse
 import time
 import torch
+import cv2
+import numpy as np
 
 # Import model definition
 from models.bc_transformer_policy import bc_transformer_policy
 
 # Fixing import paths by replacing '/' with '.' for Python module import
-from sim_env.Kinova_gen2.src.devices.camera_interface import CameraInterface
+from sim_env.Kinova_gen2.src.devices.camera_interface import MultiCameraInterface, CameraInterface
 from sim_env.Kinova_gen2.src.robot_controller import RobotController
 
 import torchvision.transforms as T
 from PIL import Image
-import numpy as np
+from utils import encode_task
 
-
-def preprocess_image(frame, device):
-    # Pseudocode: Convert the captured frame (BGR from OpenCV) to RGB, resize, normalize, and convert to tensor
+def preprocess_image(frames_dict, device):
+    """Preprocess multiple camera frames for model input
+    
+    Args:
+        frames_dict: Dictionary of camera frames {cam_id: frame} (only valid frames)
+        device: PyTorch device
+        
+    Returns:
+        Dictionary mapping camera IDs to tensors of shape (B=1, T=1, C=3, H, W)
+    """
     try:
-        # Convert frame from BGR to RGB
-        frame_rgb = frame[:, :, ::-1]
-        # Convert numpy array to PIL Image
-        pil_img = Image.fromarray(frame_rgb)
-        # Define transformation: resize to (128,128) and convert to tensor
-        transform = T.Compose([
-            T.Resize((128, 128)),
-            T.ToTensor(),
-            # Optionally add normalization if required
-            # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        tensor_img = transform(pil_img).to(device)  # shape: (3, 128, 128)
-        # Add batch and time dimensions: (B, T, C, H, W) where T=1
-        tensor_img = tensor_img.unsqueeze(0).unsqueeze(0)
-        return tensor_img
+        processed_frames = {}
+        for cam_id, frame in frames_dict.items():
+            if frame is None:
+                continue
+            # Resize using cv2 (target size 128x128)
+            frame_resized = cv2.resize(frame, (128, 128))
+            # Convert to float32, normalize to [0,1] range  
+            frame_normalized = frame_resized.astype(np.float32) / 255.0
+            # Convert to tensor and rearrange dimensions to (C,H,W)
+            tensor_img = torch.from_numpy(frame_normalized).permute(2, 0, 1)
+            # Add batch and time dimensions: (B=1, T=1, C, H, W)
+            tensor_img = tensor_img.unsqueeze(0).unsqueeze(0).to(device)
+            processed_frames[cam_id] = tensor_img
+        return processed_frames
+        
     except Exception as e:
         print(f"Error in image preprocessing: {e}")
         return None
 
-
 def preprocess_robot_state(joint_angles, device):
-    # Pseudocode: Convert joint angles list to a tensor normalized as in Kinova_Dataset
-    # Assuming we need a tensor of shape (1, 1, 9). If joint_angles has fewer than 9 values, pad zeros.
+    """Preprocess robot state (joint angles) into a tensor and normalize"""
     try:
+        # Ensure there are 9 values (pad with zeros if necessary)
         if len(joint_angles) < 9:
-            joint_angles = joint_angles + [0.0]*(9 - len(joint_angles))
+            joint_angles = joint_angles + [0.0] * (9 - len(joint_angles))
         robot_tensor = torch.tensor(joint_angles, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
         # Normalize using linear normalization: (angle - 180) / 180, mapping [0,360] to [-1,1]
         robot_tensor = (robot_tensor - 180.0) / 180.0
@@ -51,23 +59,27 @@ def preprocess_robot_state(joint_angles, device):
         print(f"Error in robot state preprocessing: {e}")
         return None
 
-
 def main():
     parser = argparse.ArgumentParser(description="Real-time evaluation using camera and robot controller")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to the checkpoint (.pth) file to load")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to run the inference on")
     args = parser.parse_args()
-
     device = args.device
 
-    # Initialize the model with the same config as used in training
+    # Set checkpoint path (adjust as needed)
+    args.checkpoint = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/kinova_experiments/model_epoch_5.pth'
+
+    # Initialize the model with the same configuration used during training:
     model = bc_transformer_policy(
         history=False,
         max_episode_len=1000,
         use_mpi_pixels_egocentric=False,
         device=device
     ).to(device)
+
+    # Get task string from user and encode it
+    task = input('Type the task you want to eval: ')
+    task_emb = encode_task(task)
 
     # Load checkpoint
     try:
@@ -79,16 +91,21 @@ def main():
         print(f"Error loading checkpoint: {e}")
         return
 
-    # Initialize camera interface
+    # Initialize camera interface with valid camera IDs
     try:
-        camera = CameraInterface(camera_id=0, width=320, height=240, fps=30)
+        available_cams = CameraInterface.list_available_cameras()
+        print(f"Available cameras: {available_cams}")
+        if not available_cams:
+            print("No cameras found!")
+            return
+        cameras = MultiCameraInterface(camera_ids=available_cams, width=320, height=240)
     except Exception as e:
         print(f"Error initializing camera: {e}")
         return
 
-    # Initialize robot controller (which initializes and connects Kinova arm internally)
+    # Initialize robot controller (which connects and initializes the Kinova arm)
     try:
-        robot_controller = RobotController(debug_mode=False)
+        robot_controller = RobotController(debug_mode=False, enable_controller=False)
         if not robot_controller.initialize_devices():
             print("Error initializing robot controller")
             return
@@ -96,73 +113,90 @@ def main():
         print(f"Error initializing robot controller: {e}")
         return
 
-    print("Starting evaluation loop... Press Ctrl+C to exit.")
+    print("Starting inference loop... Press 'q' in any camera window to exit.")
 
     try:
         while True:
-            # Capture frame from camera
-            ret, frame = camera.capture_frame()
-            if not ret or frame is None:
-                print("Failed to capture frame from camera")
+            # Capture frames from all cameras
+            frames = cameras.capture_frames()
+            # Build a dictionary of valid frames (using cam_id as key)
+            frames_dict = {}
+            for cam_id, (success, frame) in frames.items():
+                if success and frame is not None:
+                    cv2.imshow(f"Camera {cam_id}", frame)
+                    frames_dict[cam_id] = frame
+
+            # Check if user pressed 'q' to exit
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("Exiting inference loop.")
+                break
+
+            # If no valid frames were captured, wait and continue
+            if not frames_dict:
+                print("No valid frames captured. Skipping iteration.")
                 time.sleep(0.1)
                 continue
 
-            # Preprocess the captured frame
-            image_tensor = preprocess_image(frame, device)
-            if image_tensor is None:
-                print("Image preprocessing failed")
+            # Preprocess the captured images
+            image_tensor_dict = preprocess_image(frames_dict, device)
+            if image_tensor_dict is None or len(image_tensor_dict) == 0:
+                print("Image preprocessing failed. Skipping iteration.")
                 time.sleep(0.1)
                 continue
 
-            # Collect robot state from the robot controller's arm
+            # Determine which images to use:
+            # Use camera 0 as agent view if available, and camera 2 as egocentric view if available.
+            if 0 in image_tensor_dict:
+                agentview_tensor = image_tensor_dict[0]
+            else:
+                agentview_tensor = list(image_tensor_dict.values())[0]
+
+            if 2 in image_tensor_dict:
+                egocentric_tensor = image_tensor_dict[2]
+            else:
+                egocentric_tensor = list(image_tensor_dict.values())[0]
+
+            # Get robot joint angles from the arm
             joint_angles = robot_controller.arm.get_joint_angles()
             if joint_angles is None:
-                print("Failed to get robot state")
-                time.sleep(0.1)
+                print("Failed to get robot state. Skipping iteration.")
+                time.sleep(0.03333)
                 continue
 
             robot_state_tensor = preprocess_robot_state(joint_angles, device)
             if robot_state_tensor is None:
-                print("Robot state preprocessing failed")
-                time.sleep(0.1)
+                print("Robot state preprocessing failed. Skipping iteration.")
+                time.sleep(0.03333)
                 continue
 
-            # Prepare dummy task embedding (could be replaced with actual task embedding if available)
-            task_emb = torch.zeros((1, 768), device=device)
-
-            # Prepare data dictionary as expected by bc_transformer_policy
+            # Prepare the data dictionary for the transformer-based model
             data = {
-                "pixels": image_tensor,             # shape: (1, 1, 3, 128, 128)
-                "pixels_egocentric": image_tensor,    # using same image for now
-                "proprioceptive": robot_state_tensor, # shape: (1, 1, 9)
+                "pixels": agentview_tensor,             # Expected shape: (1, 1, 3, 128, 128)
+                "pixels_egocentric": egocentric_tensor,   # Expected shape: (1, 1, 3, 128, 128)
+                "proprioceptive": robot_state_tensor,     # Expected shape: (1, 1, 9)
                 "task_emb": task_emb
             }
 
-            # Perform inference
+            # Run the model to predict the action
             try:
-                action = model.get_action(data)  # Expected shape: (1, 7)
-                print("Predicted action:", action)
-            except Exception as e:
-                print(f"Error during inference: {e}")
-                time.sleep(0.1)
-                continue
-
-            # Use the predicted action to control the robot via the robot controller
-            try:
-                action = action.squeeze(0).tolist()
+                action = model.get_action(data)  # Expecting shape: (1, 7)
+                action = action.squeeze(0) 
                 gripper_velocity = action[6]
-        
+                print("Predicted action:", action)
+                # Send the predicted action to the robot controller/arm
                 robot_controller.send_action(action, gripper_velocity)
             except Exception as e:
-                print(f"Error sending action to robot controller: {e}")
+                print(f"Error during inference: {e}")
 
-            time.sleep(0.1)  # Adjust loop timing as needed
+            # Sleep to aim for a ~30Hz control loop
+            time.sleep(0.03333)
+
     except KeyboardInterrupt:
-        print("Exiting evaluation loop.")
+        print("Exiting inference loop (keyboard interrupt).")
     finally:
-        camera.close()
-        # Close the robot controller's arm
+        cameras.close()
         robot_controller.arm.close()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

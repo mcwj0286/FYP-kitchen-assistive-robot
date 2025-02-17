@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 
-from devices.kinova_arm_interface import KinovaArmInterface
-from devices.ps4controller_interface import PS4Interface
+from .devices.kinova_arm_interface import KinovaArmInterface
+from .devices.ps4controller_interface import PS4Interface
 import time
 import threading
 
 
 class RobotController:
-    def __init__(self, debug_mode=False):
+    def __init__(self, debug_mode=False , enable_controller = True):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
-        self.gripper_scale = 3000
-        0  # Scale factor for gripper control
+        self.gripper_scale = 3000.0 # Scale factor for gripper control
         self.running = False
         self.emergency_stop = False
+        self.enable_controller = enable_controller
         self.controller = None
         self.arm = None
         self.control_thread = None
@@ -36,18 +36,19 @@ class RobotController:
             time.sleep(5)
             
             # Initialize PS4 controller
-            try:
-                print("Initializing PS4 controller...")
-                self.controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False, debug_mode=self.debug_mode)
-                print("PS4 Controller initialized")
-                
-                # Start controller in a separate thread
-                self.controller_thread = threading.Thread(target=self.controller.listen)
-                self.controller_thread.daemon = True
-                self.controller_thread.start()
-            except Exception as e:
-                print(f"PS4 controller not available: {e}")
-                return False
+            if self.enable_controller:
+                try:
+                    print("Initializing PS4 controller...")
+                    self.controller = PS4Interface(interface="/dev/input/js0", connecting_using_ds4drv=False, debug_mode=self.debug_mode)
+                    print("PS4 Controller initialized")
+                    
+                    # Start controller in a separate thread
+                    self.controller_thread = threading.Thread(target=self.controller.listen)
+                    self.controller_thread.daemon = True
+                    self.controller_thread.start()
+                except Exception as e:
+                    print(f"PS4 controller not available: {e}")
+                    return False
             
             print("\nInitialization complete - ready for velocity control")
             return True
@@ -138,7 +139,14 @@ class RobotController:
                 print(f"Error in control loop: {e}")
                 break
     def send_action(self, joint_velocities, gripper_velocity):
+        joint_velocities *= self.velocity_scale
+        gripper_velocity *= self.gripper_scale
+        joint_velocities = joint_velocities.tolist()
         self.arm.send_angular_velocity(joint_velocities, hand_mode=1, fingers=(gripper_velocity, gripper_velocity, gripper_velocity), duration=0.03333, period=0.005)
+        joint_velocities[6] = gripper_velocity
+        print(f"Joint Velocities: {[f'{v:.1f}' for v in joint_velocities]}")
+
+
     def start(self):
         """Start the robot controller"""
         if not self.initialize_devices():
