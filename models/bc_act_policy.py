@@ -1,3 +1,4 @@
+#%%
 import sys
 
 sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic')
@@ -16,8 +17,97 @@ from models.networks.policy_head import DeterministicHead
 from models.networks.transformer_modules import TransformerDecoder, SinusoidalPositionEncoding
 import robomimic.utils.tensor_utils as TensorUtils
 import torch.nn.functional as F
+from utils import get_route_embeddings
 n_task = 10
 language_token_dim = 768
+route_embeddings = get_route_embeddings()
+
+
+
+class TaskSpecificGate(nn.Module):
+    """
+    A new gating mechanism for 10 tasks.
+    Each task (given by its language token) is mapped exclusively to one expert.
+    """
+
+    def __init__(self, language_token_dim=language_token_dim, n_experts=n_task):
+        super().__init__()
+        self.language_token_dim = language_token_dim
+        self.n_experts = n_experts
+        # Simple linear projection to map language embedding to expert logits.
+        self.task_to_expert = nn.Linear(language_token_dim, n_experts)
+
+    def forward(self, language_token):
+        """
+        Args:
+            language_token: Tensor of shape (B, language_token_dim)
+        Returns:
+            weights: A tensor of shape (B, n_experts) that is one-hot for each instance.
+            indices: A tensor of shape (B, 1) representing the selected expert indices.
+        """
+        # Project language token to expert logits.
+        logits = self.task_to_expert(language_token)  # Shape: (B, n_experts)
+        # Compute probabilities (optional if you want more interpretability)
+        probs = torch.softmax(logits, dim=-1)
+        # Select the expert with the highest probability.
+        indices = torch.argmax(probs, dim=-1, keepdim=True)  # Shape: (B, 1)
+        # Construct a one-hot vector for the selected expert.
+        weights = torch.zeros_like(probs).scatter_(1, indices, 1.0)
+        # Compute the count of each expert selected in the batch.
+        expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
+        print("Expert selection counts:", expert_counts.tolist())
+
+        return weights, indices
+
+class PrototypeTaskGate(nn.Module):
+    """
+    Prototype-based gating mechanism that routes similar language tokens 
+    to the same expert by maintaining routing embeddings that get updated
+    through direct replacement.
+    """
+    def __init__(self, language_token_dim=768, n_experts=10, similarity_threshold=0.5):
+        super().__init__()
+        self.language_token_dim = language_token_dim
+        self.n_experts = n_experts
+        self.similarity_threshold = similarity_threshold
+        
+        # Initialize random routing embeddings
+        self.routing_embeddings = route_embeddings
+        
+
+    def forward(self, language_token):
+        """
+        Args:
+            language_token (Tensor): shape (B, language_token_dim)
+            
+        Returns:
+            weights (Tensor): shape (B, n_experts), one-hot routing vectors
+            indices (Tensor): shape (B, 1), selected expert indices
+        """
+        batch_size = language_token.size(0)
+        
+        # Get device of language token
+        device = language_token.device
+        self.routing_embeddings = self.routing_embeddings.to(device)
+        
+
+        # Compute cosine similarity
+        norm_tokens = F.normalize(language_token, p=2, dim=-1)
+        norm_embeddings = F.normalize(self.routing_embeddings, p=2, dim=-1)
+        similarities = torch.matmul(norm_tokens, norm_embeddings.t())  # (B, n_experts)
+   
+        max_sims, indices = similarities.max(dim=-1)  # (B,)
+        indices = indices.unsqueeze(-1)  # (B, 1)
+     
+        
+        # Create one-hot routing weights
+        weights = torch.zeros(batch_size, self.n_experts, device=language_token.device)
+        weights.scatter_(1, indices, 1.0)
+        expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
+        print("Expert selection counts:", expert_counts.tolist())
+        return weights, indices
+
+
 ### ACT MOE Transformer Decoder
 class Gate(nn.Module):
     """
@@ -97,14 +187,15 @@ class MoE(nn.Module):
         self.experts_start_idx = 0
         self.experts_end_idx = self.n_local_experts
         
-        self.gate = Gate(
-            input_size, 
-            n_experts=n_experts,
-            n_expert_groups=n_expert_groups,
-            n_limited_groups=n_limited_groups,
-            n_activated_experts=n_activated_experts
-        )
-        
+        # self.gate = Gate(
+        #     input_size, 
+        #     n_experts=n_experts,
+        #     n_expert_groups=n_expert_groups,
+        #     n_limited_groups=n_limited_groups,
+        #     n_activated_experts=n_activated_experts
+        # )
+        # self.gate = TaskSpecificGate(language_token_dim=language_token_dim, n_experts=n_experts)
+        self.gate = PrototypeTaskGate(language_token_dim=language_token_dim, n_experts=n_experts)
         # Initialize routed experts
         self.experts = nn.ModuleList([
             Expert(input_size, mlp_hidden_size) 
@@ -633,6 +724,7 @@ class bc_act_policy(nn.Module):
         Returns:
             loss (torch.Tensor): the negative log likelihood loss.
         """
+        self.train()
         gt_actions = data.get("actions", None)
         B,T,D = gt_actions.shape
         gt_actions = gt_actions.reshape(B, T, self.num_queries, self.act_dim)
@@ -647,8 +739,8 @@ class bc_act_policy(nn.Module):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        if self.use_moe:
-            self.update_expert_bias()
+        # if self.use_moe:
+            # self.update_expert_bias()
             # task_emb = data["task_emb"] # (B,1, E)
             # Count occurrences of each unique task embedding
             # task_emb_flat = task_emb.view(task_emb.size(0), -1)  # Flatten to (B, E)
@@ -700,3 +792,4 @@ class bc_act_policy(nn.Module):
                     # Update: b = b + u * sign(error) where mask is True
                     module.gate.bias += u * torch.sign(error) * mask
                     print(f"bias updated: {module.gate.bias}")
+

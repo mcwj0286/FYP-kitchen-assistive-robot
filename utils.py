@@ -1,3 +1,4 @@
+#%%
 import random
 import re
 import time
@@ -30,7 +31,7 @@ def get_bert_model_and_tokenizer():
         _bert_model = AutoModel.from_pretrained("bert-base-cased")
     return _tokenizer, _bert_model
 
-def encode_task(task_name: str, max_word_len: int = 77, device: str = 'cpu', model_type: str = 'transformer') -> torch.Tensor:
+def encode_task(task_name: str, max_word_len: int = 25, device: str = 'cpu', model_type: str = 'transformer') -> torch.Tensor:
     """Encode task name using either BERT or SentenceTransformer
     
     Args:
@@ -550,3 +551,32 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
     data["proprioceptive"] = data["proprioceptive"].unsqueeze(1)  # [B, 1, D]
 
     return data
+
+
+
+def get_route_embeddings(path='/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic/sim_env/LIBERO/libero/datasets/libero_spatial'):
+    import os
+    import glob
+
+    # Get list of hdf5 files in the directory
+    # directory = os.path.dirname(path)
+    # print(f"directory: {directory}")
+    hdf5_files = glob.glob(os.path.join(path, "*.hdf5"))
+    
+    # Extract just the filenames without path
+    filenames = [os.path.basename(f).replace('_demo.hdf5', '') for f in hdf5_files]
+    filenames = [filename.replace('_', ' ') for filename in filenames]
+    # print(f"filenames: {filenames}")
+    embeddings = []
+
+    for filename in filenames:
+        embedding = encode_task(filename)
+        embeddings.append(embedding)
+    embeddings = torch.stack(embeddings, dim=0)
+    route_embeddings = embeddings.squeeze(1)
+    return route_embeddings
+
+# if __name__ == "__main__":
+#     embeddings = get_route_embeddings()
+#     print(embeddings.shape)
+# %%
