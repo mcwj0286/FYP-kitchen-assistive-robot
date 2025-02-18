@@ -119,7 +119,7 @@ class DataRecorder:
             self.h5_file.close()
 
 class record_demo:
-    def __init__(self, debug_mode=False, camera_width=224, camera_height=224):
+    def __init__(self, debug_mode=False, camera_width=224, camera_height=224, record_modular_demo=False):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
         self.gripper_scale = 3000  # Scale factor for gripper control
         self.running = False
@@ -134,6 +134,14 @@ class record_demo:
         # Set desired camera resolution
         self.camera_width = camera_width
         self.camera_height = camera_height
+
+        # New: Set flag and initialize modular action attributes if enabled
+        self.record_modular_demo = record_modular_demo
+        if self.record_modular_demo:
+            self.modular_names = []  # List to store the task names for each modular action
+            self.current_modular_idx = 0  # Index to track which modular action is current
+        # New: Initialize previous state for options button to prevent repeated toggles
+        self.prev_options_pressed = False
 
     def initialize_devices(self):
         """Initialize PS4 controller and Kinova arm"""
@@ -252,30 +260,50 @@ class record_demo:
                     gripper_velocity = self.gripper_scale   # Close
                 joint_velocities[6] = gripper_velocity
                 
-                # Check for recording control (Options button)
-                if self.controller.options_pressed:
+                # Check for recording control (Options button) using edge detection
+                record_button_state = self.controller.options_pressed
+                if record_button_state and not self.prev_options_pressed:
                     if not self.recording:
-                        print("\nStarting new demo recording...")
+                        if self.record_modular_demo:
+                            print(f"\nStarting new demo recording for modular action: {self.modular_names[self.current_modular_idx]}")
+                        else:
+                            print("\nStarting new demo recording...")
                         self.data_recorder.start_new_demo()
                         self.recording = True
                     else:
                         print("\nEnding demo recording...")
-                        # Ask if the demo should be saved
                         save_response = input("Do you want to save this demo? (y/n): ")
                         if save_response.strip().lower() in ['y', 'yes']:
                             self.data_recorder.end_demo()
                             print("Demo saved.")
+                            if self.record_modular_demo:
+                                # Advance to the next modular action cyclically
+                                self.data_recorder.close()  # Close current modular action's file
+                                self.current_modular_idx = (self.current_modular_idx + 1) % len(self.modular_names)
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
                         else:
-                            # Discard the demo by deleting the group from the HDF5 file
-                            demo_name = self.data_recorder.current_demo.name.split('/')[-1]
-                            print(f"Discarding demo {demo_name}...")
-                            if demo_name in self.data_recorder.h5_file:
-                                del self.data_recorder.h5_file[demo_name]
-                            self.data_recorder.current_demo = None
-                            self.data_recorder.frame_idx = 0
-                            print("Demo discarded.")
+                            if self.record_modular_demo:
+                                demo_name = self.data_recorder.current_demo.name.split('/')[-1]
+                                print(f"Discarding demo for modular action {self.modular_names[self.current_modular_idx]}...")
+                                if demo_name in self.data_recorder.h5_file:
+                                    del self.data_recorder.h5_file[demo_name]
+                                self.data_recorder.current_demo = None
+                                self.data_recorder.frame_idx = 0
+                                print("Demo discarded. Resetting to first modular action.")
+                                self.data_recorder.close()
+                                self.current_modular_idx = 0
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                            else:
+                                demo_name = self.data_recorder.current_demo.name.split('/')[-1]
+                                print(f"Discarding demo {demo_name}...")
+                                if demo_name in self.data_recorder.h5_file:
+                                    del self.data_recorder.h5_file[demo_name]
+                                self.data_recorder.current_demo = None
+                                self.data_recorder.frame_idx = 0
+                                print("Demo discarded.")
                         self.recording = False
                     time.sleep(0.5)  # Debounce
+                self.prev_options_pressed = record_button_state
                 
                 # Check for home position request
                 if self.controller.triangle_pressed:
@@ -316,9 +344,20 @@ class record_demo:
 
     def start(self):
         """Start the robot controller and initiate synchronous camera capture in the control loop"""
-        # Get task name from user
-        task_name = input("Enter task name for recording: ")
-        self.data_recorder = DataRecorder(task_name)
+        # New: Ask for modular actions if record_modular_demo flag is enabled
+        if self.record_modular_demo:
+            num_actions = int(input("Enter the number of modular actions: "))
+            self.modular_names = []
+            for i in range(num_actions):
+                task = input(f"Enter task name for modular action {i+1}: ").strip()
+                self.modular_names.append(task)
+            self.current_modular_idx = 0
+            # Create the DataRecorder for the first modular action
+            self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+        else:
+            # Original behavior: single task name for recording
+            task_name = input("Enter task name for recording: ")
+            self.data_recorder = DataRecorder(task_name)
         
         if not self.initialize_devices():
             return False
@@ -349,7 +388,7 @@ class record_demo:
 def main():
     # Optionally, you can set desired camera resolution by modifying the parameters below.
     # For example, to use 224x224 resolution:
-    controller = record_demo(debug_mode=False, camera_width=320, camera_height=240)  # Set debug_mode=True to enable debug prints
+    controller = record_demo(debug_mode=False, camera_width=320, camera_height=240,record_modular_demo=True)  # Set debug_mode=True to enable debug prints
     try:
         if controller.start():
             # Wait for the control thread to finish
