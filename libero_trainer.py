@@ -43,7 +43,6 @@ def get_model(model_type,cfg):
     Returns:
         tuple: (model, cfg) where model is the initialized model and cfg is its configuration
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.overlap = 0
     # Set default parameters
     cfg.get_pad_mask = False
@@ -56,7 +55,6 @@ def get_model(model_type,cfg):
     cfg.seq_length = 10
     if model_type == "bc_baku":
         # Default configuration for BCBaku
-        cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 64
         cfg.train.lr = 1e-5
@@ -118,7 +116,6 @@ def get_model(model_type,cfg):
         
     elif model_type == "act":
         # Default configuration for ACT
-        cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 64
         cfg.train.n_epochs = 100
@@ -214,7 +211,6 @@ def get_model(model_type,cfg):
         ).to(cfg.device)
     elif model_type == "bc_act":
         # Configuration for BC-ACT
-        cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 32
         cfg.train.n_epochs = 100
@@ -263,12 +259,12 @@ def get_model(model_type,cfg):
             max_episode_len=cfg.max_episode_len,
             use_proprio=cfg.use_proprio,
             learnable_tokens=False,
-            n_layer=8,
-            use_moe=True
+            n_layer=cfg.n_layer,
+            use_moe=cfg.use_moe,
+            benchmark_name=cfg.benchmark_name
         ).to(cfg.device)
     elif model_type == "moe":
         # Configuration for MoE policy
-        cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 16
         cfg.train.lr = 1e-4
@@ -329,7 +325,6 @@ def get_model(model_type,cfg):
         model = moe_policy(**config).to(config['device'])
     elif model_type == "bc_moe":
         # Configuration for BC-MoE policy
-        cfg.device = device
         cfg.seed = 2
         cfg.train.batch_size = 16
         cfg.train.lr = 1e-4
@@ -459,9 +454,31 @@ def main(hydra_cfg):
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
     parser.add_argument('--use_wandb',default=True, action='store_true',
                       help='Enable Weights & Biases logging')
+    parser.add_argument('--device', type=str, default='cuda',
+                      choices=['cuda', 'cpu'],
+                      help='Device to run the model on')
+    parser.add_argument('--n_layer', type=int, default=8,
+                      help='Number of layers in the model')
+    parser.add_argument('--use_moe', default=True, action='store_true',
+                      help='Use MoE in bc_act model')
+    parser.add_argument('--benchmark', type=str, default='libero_spatial',
+                      choices=['libero_spatial', 'libero_object', 'libero_goal', 'libero_10', 'libero_90'],
+                      help='Which benchmark to use for training')
+    
     args = parser.parse_args()
     yaml_config = OmegaConf.to_yaml(hydra_cfg)
     cfg = EasyDict(yaml.safe_load(yaml_config))
+
+    # Add command line arguments to config
+    cfg.device = args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu'
+    cfg.n_layer = args.n_layer
+    cfg.use_moe = args.use_moe
+    cfg.benchmark_name = args.benchmark
+    
+    # Log selections
+    logger.info(f"Using benchmark: {cfg.benchmark_name}")
+    # logger.info(f"Using device: {cfg.device}")
+    # logger.info(f"Using {cfg.n_layer} layers")
 
     # Get model and its configuration first
     model, cfg = get_model(args.model_type,cfg)
@@ -495,14 +512,17 @@ def main(hydra_cfg):
                 "model_type": args.model_type,
                 "seed": cfg.seed,
                 "batch_size": cfg.train.batch_size,
-                "learning_rate": cfg.train.optimizer.kwargs.lr,  # Updated to use correct path
+                "learning_rate": cfg.train.optimizer.kwargs.lr,
                 "num_epochs": cfg.train.n_epochs,
                 "eval_sample_size": args.eval_sample_size,
                 "benchmark_name": cfg.benchmark_name,
                 "seq_length": cfg.seq_length,
                 "num_queries": cfg.num_queries,
                 "hidden_dim": cfg.hidden_dim if hasattr(cfg, 'hidden_dim') else None,
-                "trainable_parameters": num_params/1e6 ,
+                "trainable_parameters": num_params/1e6,
+                "device": cfg.device,
+                "n_layer": cfg.n_layer,
+                "use_moe": cfg.use_moe
             }
         )
 
@@ -531,9 +551,6 @@ def main(hydra_cfg):
     cfg.bddl_folder = get_libero_path("bddl_files")
     cfg.init_states_folder =get_libero_path("init_states")
     
-    # you can specify the benchmark name here
-    cfg.benchmark_name = "libero_spatial" #{"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"}
-
     # Get benchmark and task information
     benchmark = get_benchmark(cfg.benchmark_name)(cfg.data.task_order_index)
     n_manip_tasks = benchmark.n_tasks
