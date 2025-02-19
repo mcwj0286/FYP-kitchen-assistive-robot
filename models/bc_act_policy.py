@@ -103,8 +103,8 @@ class PrototypeTaskGate(nn.Module):
         # Create one-hot routing weights
         weights = torch.zeros(batch_size, self.n_experts, device=language_token.device)
         weights.scatter_(1, indices, 1.0)
-        expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
-        print("Expert selection counts:", expert_counts.tolist())
+        # expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
+        # print("Expert selection counts:", expert_counts.tolist())
         return weights, indices
 
 
@@ -232,14 +232,13 @@ class MoE(nn.Module):
             if counts[i] == 0:
                 continue
             expert = self.experts[i]
-            idx, top = torch.where(indices == i)
-            
-            y[idx] += expert(x[idx])
-  
-        
+            idx, _ = torch.where(indices == i)
+            # Multiply the expert output by its corresponding weight
+            y[idx] += self.expert_weights[i] * expert(x[idx])
+        print(f"expert_weights: {self.expert_weights}")
         # Add shared experts computation
         z = self.shared_experts(x)
-        y = y * self.expert_weights
+       
         return (y + z).view(original_shape)
 
 
