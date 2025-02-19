@@ -303,7 +303,7 @@ class ACT_TransformerDecoder(nn.Module):
                 )
             self.layers.append(nn.ModuleDict(layer))
             
-    def forward(self, x,language_token):
+    def forward(self, x,language_token=None):
         """
         Args:
             x: Input embeddings (B*T, num_features, input_size)
