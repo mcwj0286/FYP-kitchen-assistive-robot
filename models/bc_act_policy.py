@@ -18,46 +18,17 @@ from models.networks.transformer_modules import TransformerDecoder, SinusoidalPo
 import robomimic.utils.tensor_utils as TensorUtils
 import torch.nn.functional as F
 from utils import get_route_embeddings
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+dataset_path_= os.getenv("DATASET_PATH")
 n_task = 10
 language_token_dim = 768
-route_embeddings = get_route_embeddings()
+route_embeddings = None
 
 
 
-class TaskSpecificGate(nn.Module):
-    """
-    A new gating mechanism for 10 tasks.
-    Each task (given by its language token) is mapped exclusively to one expert.
-    """
-
-    def __init__(self, language_token_dim=language_token_dim, n_experts=n_task):
-        super().__init__()
-        self.language_token_dim = language_token_dim
-        self.n_experts = n_experts
-        # Simple linear projection to map language embedding to expert logits.
-        self.task_to_expert = nn.Linear(language_token_dim, n_experts)
-
-    def forward(self, language_token):
-        """
-        Args:
-            language_token: Tensor of shape (B, language_token_dim)
-        Returns:
-            weights: A tensor of shape (B, n_experts) that is one-hot for each instance.
-            indices: A tensor of shape (B, 1) representing the selected expert indices.
-        """
-        # Project language token to expert logits.
-        logits = self.task_to_expert(language_token)  # Shape: (B, n_experts)
-        # Compute probabilities (optional if you want more interpretability)
-        probs = torch.softmax(logits, dim=-1)
-        # Select the expert with the highest probability.
-        indices = torch.argmax(probs, dim=-1, keepdim=True)  # Shape: (B, 1)
-        # Construct a one-hot vector for the selected expert.
-        weights = torch.zeros_like(probs).scatter_(1, indices, 1.0)
-        # Compute the count of each expert selected in the batch.
-        expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
-        print("Expert selection counts:", expert_counts.tolist())
-
-        return weights, indices
 
 class PrototypeTaskGate(nn.Module):
     """
@@ -178,7 +149,7 @@ class Expert(nn.Module):
 class MoE(nn.Module):
     """Mixture-of-Experts (MoE) module."""
     def __init__(self, input_size, mlp_hidden_size, n_experts=8, n_expert_groups=1, 
-                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0):
+                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0,expert_scale=0.1):
         super().__init__()
         self.input_size = input_size
         self.n_routed_experts = n_experts
@@ -186,7 +157,7 @@ class MoE(nn.Module):
         self.n_activated_experts = n_activated_experts
         self.experts_start_idx = 0
         self.experts_end_idx = self.n_local_experts
-        self.expert_weights = nn.Parameter(torch.ones(n_experts))
+        self.expert_weights = nn.Parameter(torch.ones(n_experts) * expert_scale)
         # self.gate = Gate(
         #     input_size, 
         #     n_experts=n_experts,
@@ -414,7 +385,8 @@ class bc_act_policy(nn.Module):
                  use_proprio=True,
                  learnable_tokens=False,
                  n_layer=8,
-                 use_moe=False):
+                 use_moe=False,
+                 benchmark_name="libero_spatial"):
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -433,7 +405,9 @@ class bc_act_policy(nn.Module):
         self.n_task = n_task
         self.use_moe = use_moe
         self.num_queries = num_queries
- 
+
+        global route_embeddings
+        route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
         self.action_dim = (
             self.act_dim * self.num_queries
         )
