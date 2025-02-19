@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 import logging
 import json
+import wandb  # Add wandb import
+from dotenv import load_dotenv  # Add dotenv import
 
 import hydra
 import numpy as np
@@ -433,19 +435,7 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
 
 @hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
 def main(hydra_cfg):
-    # Add model type selection
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_type', type=str, default='bc_act', 
-                      choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act', 'moe', 'bc_moe'],
-                      help='Type of model to train')
-    parser.add_argument('--eval_sample_size', type=int, default=10,
-                      help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
-    args = parser.parse_args()
-    yaml_config = OmegaConf.to_yaml(hydra_cfg)
-    cfg = EasyDict(yaml.safe_load(yaml_config))
-
-    # Setup logging
+    # Setup logging first
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -456,12 +446,67 @@ def main(hydra_cfg):
     )
     logger = logging.getLogger(__name__)
 
-    # Get model and its configuration
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Add model type selection
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_type', type=str, default='bc_act', 
+                      choices=['bc_baku', 'transformer', 'act', 'bc_transformer', 'bc_act', 'moe', 'bc_moe'],
+                      help='Type of model to train')
+    parser.add_argument('--eval_sample_size', type=int, default=10,
+                      help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
+    parser.add_argument('--use_wandb',default=True, action='store_true',
+                      help='Enable Weights & Biases logging')
+    args = parser.parse_args()
+    yaml_config = OmegaConf.to_yaml(hydra_cfg)
+    cfg = EasyDict(yaml.safe_load(yaml_config))
+
+    # Get model and its configuration first
     model, cfg = get_model(args.model_type,cfg)
     cfg.model_type = args.model_type  # Add model type to config
+
     # Print total number of trainable parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total trainable parameters: {num_params/1e6:.2f}M")
+
+    # Initialize wandb if enabled - moved after model configuration
+    if args.use_wandb:
+        # Get WANDB API key from environment
+        wandb_key = os.getenv('WANDB_API_KEY')
+        if wandb_key is None:
+            logger.error("WANDB_API_KEY not found in .env file")
+            raise ValueError("WANDB_API_KEY not found in .env file")
+        
+        # Login to wandb
+        try:
+            wandb.login(key=wandb_key)
+            logger.info("Successfully logged in to Weights & Biases")
+        except Exception as e:
+            logger.error(f"Failed to login to Weights & Biases: {str(e)}")
+            raise
+
+        # Initialize wandb with all available config parameters
+        wandb.init(
+            project="fyp-kitchen-assistive-robot",
+            name=f"{args.model_type}_{time.strftime('%Y%m%d-%H%M%S')}",
+            config={
+                "model_type": args.model_type,
+                "seed": cfg.seed,
+                "batch_size": cfg.train.batch_size,
+                "learning_rate": cfg.train.optimizer.kwargs.lr,  # Updated to use correct path
+                "num_epochs": cfg.train.n_epochs,
+                "eval_sample_size": args.eval_sample_size,
+                "benchmark_name": cfg.benchmark_name,
+                "seq_length": cfg.seq_length,
+                "num_queries": cfg.num_queries,
+                "hidden_dim": cfg.hidden_dim if hasattr(cfg, 'hidden_dim') else None,
+                "trainable_parameters": num_params/1e6 ,
+            }
+        )
+
+    
     # Print configs
     pp = pprint.PrettyPrinter(indent=2)
     # pp.pprint(cfg)
@@ -580,10 +625,8 @@ def main(hydra_cfg):
                     obs_dict[key] = value.to(cfg.device)
                     
             # Use the train_step function with optimizer and scheduler
-            loss_output = model.train_step(obs_dict, optimizer=optimizer)  # Pass scheduler=scheduler if you want per-step updates
+            loss_output = model.train_step(obs_dict, optimizer=optimizer)
             
-            # For ACTPolicy, loss_output is a dict (and we extract loss via "loss"); 
-            # for bc models, train_step returns a loss tensor.
             if isinstance(loss_output, dict):
                 loss = loss_output.get("loss", None)
                 if loss is None:
@@ -599,23 +642,38 @@ def main(hydra_cfg):
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
+        # Log training metrics to wandb
+        if args.use_wandb:
+            wandb.log({
+                "epoch": epoch,
+                "train/loss": avg_train_loss,
+                "train/learning_rate": optimizer.param_groups[0]['lr']
+            })
+        
         # Step the scheduler based on average training loss
         scheduler.step(avg_train_loss)
         
-        # Log current learning rate
+        # Current learning rate
         current_lr = optimizer.param_groups[0]['lr']
-        # logger.info(f"Current learning rate: {current_lr:.2e}")
         
         # Validation step every eval_every epochs
         if epoch > 0 and epoch % cfg.eval.eval_every == 0:
             logger.info(f"Running validation at epoch {epoch}...")
             model.eval()
             with torch.no_grad():
-                # Use sampled eval_task_ids instead of full task_ids for evaluation
                 success_rates = evaluate_multitask_training_success(cfg, benchmark, eval_task_ids, model)
                 avg_success = np.mean(success_rates)
                 logger.info(f"Validation Success Rates for sampled tasks: {success_rates}")
                 logger.info(f"Average Success Rate: {avg_success:.4f}")
+                
+                # Log validation metrics to wandb
+                if args.use_wandb:
+                    wandb.log({
+                        "epoch": epoch,
+                        "val/avg_success_rate": avg_success,
+                        **{f"val/task_{task_id}_success": rate 
+                           for task_id, rate in zip(eval_task_ids, success_rates)}
+                    })
                 
                 # Save checkpoint if improved
                 if avg_success > best_val_success:
@@ -630,20 +688,13 @@ def main(hydra_cfg):
                         'avg_success': avg_success,
                     }, save_path)
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
-                
-                # Save model checkpoint for every eval epoch
-                # eval_save_path = os.path.join(cfg.experiment_dir, f'model_epoch_{epoch}.pth')
-                # torch.save({
-                #         'epoch': epoch,
-                #         'model_state_dict': model.state_dict(),
-                #         'optimizer_state_dict': optimizer.state_dict(),
-                #         'success_rates': success_rates,
-                #     'avg_success': avg_success,
-                # }, eval_save_path)
-                # logger.info(f"Saved evaluation checkpoint at epoch {epoch}")
+                    
+                    # Log best model metrics to wandb
+                    if args.use_wandb:
+                        wandb.run.summary["best_success_rate"] = avg_success
+                        wandb.run.summary["best_epoch"] = epoch
 
-
-    # Save final model checkpoint regardless of performance
+    # Save final model checkpoint
     final_save_path = os.path.join(cfg.experiment_dir, f'model_final.pth')
     torch.save({
         'epoch': epoch,
@@ -651,6 +702,10 @@ def main(hydra_cfg):
         'optimizer_state_dict': optimizer.state_dict(),
     }, final_save_path)
     logger.info(f"Saved final model checkpoint at {final_save_path}")
+
+    # Close wandb run
+    if args.use_wandb:
+        wandb.finish()
 
     logger.info("Training completed")
     train_dataset.close()
