@@ -186,7 +186,7 @@ class MoE(nn.Module):
         self.n_activated_experts = n_activated_experts
         self.experts_start_idx = 0
         self.experts_end_idx = self.n_local_experts
-        
+        self.expert_weights = nn.Parameter(torch.ones(n_experts))
         # self.gate = Gate(
         #     input_size, 
         #     n_experts=n_experts,
@@ -239,8 +239,7 @@ class MoE(nn.Module):
         
         # Add shared experts computation
         z = self.shared_experts(x)
-        
-        # TODO : Consider add a weighting to the expert output
+        y = y * self.expert_weights
         return (y + z).view(original_shape)
 
 
