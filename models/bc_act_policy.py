@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from utils import get_route_embeddings
 from dotenv import load_dotenv
 import os
-
+from models.networks.policy_head import TaskSpecificHead
 load_dotenv()
 dataset_path_= os.getenv("DATASET_PATH")
 n_task = 10
@@ -443,6 +443,12 @@ class bc_act_policy(nn.Module):
             self.action_head = DeterministicHead(
                 self.repr_dim, self.act_dim, num_layers=2 
             )
+        elif policy_head == "task_specific_head":
+            self.action_head = TaskSpecificHead(
+                self.repr_dim, self.act_dim, num_layers=2, n_tasks=n_task, route_embeddings=route_embeddings
+            )
+        else:
+            raise ValueError(f"Invalid policy head type: {policy_head}")
 
         # initialize the vision encoder
         self.vision_encoder = nn.ModuleDict()
@@ -623,8 +629,11 @@ class bc_act_policy(nn.Module):
         # reshape x to [B,T*num_queries,E]
         x = x.reshape(B, -1, E)
 
-        # Get action predictions from action head
-        pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
+        if self._policy_head == "task_specific_head":
+            # Get action predictions from action head
+            pred_actions = self.action_head(x,language_token) # (B, T*num_queries, act_dim)
+        else:
+            pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
  
 
         return pred_actions
@@ -654,8 +663,12 @@ class bc_act_policy(nn.Module):
             
             x = x.squeeze(1) # (B, num_queries, E)
 
-            # Get action prediction
-            pred_actions = self.action_head(x) # (B, num_queries, act_dim)
+            if self._policy_head == "task_specific_head":
+                # Get action prediction
+                pred_actions = self.action_head(x,language_token) # (B, num_queries, act_dim)
+            else:
+                # Get action prediction
+                pred_actions = self.action_head(x) # (B, num_queries, act_dim)
             
             pred_actions= pred_actions.mean
             
