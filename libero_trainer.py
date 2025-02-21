@@ -6,18 +6,15 @@ import time
 from pathlib import Path
 import logging
 import json
-import wandb  # Add wandb import
-from dotenv import load_dotenv  # Add dotenv import
+import wandb
+from dotenv import load_dotenv
 
-import hydra
 import numpy as np
 import yaml
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 from easydict import EasyDict
-from hydra.utils import to_absolute_path
-from omegaconf import OmegaConf
 
 from libero.libero import get_libero_path
 from libero.libero.benchmark import get_benchmark
@@ -30,7 +27,7 @@ from utils import evaluate_multitask_training_success
 from libero.lifelong.utils import control_seed, get_task_embs
 from models.act_policy import ACTPolicy
 from models.bc_act_policy import bc_act_policy
-from models.moe_policy import moe_policy , ModelArgs
+from models.moe_policy import moe_policy, ModelArgs
 from models.bc_moe_policy import bc_moe_policy
 
 
@@ -158,9 +155,8 @@ def get_model(model_type,cfg):
         )
     elif model_type == "bc_transformer": #custom implementation from libero transformer
         # Configuration for our bc_transformer_policy
-        cfg.device = device
         cfg.seed = 32
-        cfg.train.batch_size = 4
+        # cfg.train.batch_size = 64
         cfg.train.lr = 1e-4
         cfg.train.optimizer.name = 'torch.optim.Adam'
         cfg.train.optimizer.kwargs.lr = 1e-4
@@ -211,9 +207,7 @@ def get_model(model_type,cfg):
         ).to(cfg.device)
     elif model_type == "bc_act":
         # Configuration for BC-ACT
-        cfg.seed = 2
-        cfg.train.batch_size = 32
-        cfg.train.n_epochs = 100
+
         cfg.action_dim = 7
         # Optimizer settings
         cfg.train.optimizer = EasyDict()
@@ -428,19 +422,7 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
 
         return loss
 
-@hydra.main(config_path="sim_env/LIBERO/libero/configs", config_name="config")
-def main(hydra_cfg):
-    # Setup logging first
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler('libero_trainer.log'),
-            logging.StreamHandler()
-        ]
-    )
-    logger = logging.getLogger(__name__)
-
+def main():
     # Load environment variables from .env file
     load_dotenv()
     
@@ -452,37 +434,80 @@ def main(hydra_cfg):
                       help='Type of model to train')
     parser.add_argument('--eval_sample_size', type=int, default=10,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
-    parser.add_argument('--use_wandb',default=True, action='store_true',
+    parser.add_argument('--use_wandb', action='store_true', default=True,
                       help='Enable Weights & Biases logging')
     parser.add_argument('--device', type=str, default='cuda',
-                      choices=['cuda', 'cpu'],
                       help='Device to run the model on')
     parser.add_argument('--n_layer', type=int, default=8,
                       help='Number of layers in the model')
-    parser.add_argument('--use_moe', default=True, action='store_true',
+    parser.add_argument('--use_moe', action='store_true', default=False, 
                       help='Use MoE in bc_act model')
     parser.add_argument('--benchmark', type=str, default='libero_spatial',
                       choices=['libero_spatial', 'libero_object', 'libero_goal', 'libero_10', 'libero_90'],
                       help='Which benchmark to use for training')
     
     args = parser.parse_args()
-    yaml_config = OmegaConf.to_yaml(hydra_cfg)
-    cfg = EasyDict(yaml.safe_load(yaml_config))
-
-    # Add command line arguments to config
-    cfg.device = args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu'
-    cfg.n_layer = args.n_layer
-    cfg.use_moe = args.use_moe
-    cfg.benchmark_name = args.benchmark
     
-    # Log selections
-    logger.info(f"Using benchmark: {cfg.benchmark_name}")
-    # logger.info(f"Using device: {cfg.device}")
-    # logger.info(f"Using {cfg.n_layer} layers")
+    # Create base config with all required components
+    cfg = EasyDict({
+        'device': args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu',
+        'n_layer': args.n_layer,
+        'use_moe': args.use_moe,
+        'benchmark_name': args.benchmark,
+        'model_type': args.model_type,
+        'train': {
+            'batch_size': 64,
+            'n_epochs': 100,
+            'optimizer': {
+                'name': 'torch.optim.Adam',
+                'kwargs': {
+                    'lr': 1e-4,
+                    'betas': [0.9, 0.999]
+                }
+            }
+        },
+        'eval': {
+            'eval_every': 5,
+            'max_steps': 650,
+            'use_mp': True,
+            'num_procs': 5,
+            'n_eval': 5
+        },
+        'data': {
+            'task_order_index': 0,
+            'seq_len': 10,
+            'img_h': 128,
+            'img_w': 128,
+            'img_c': 3
+        },
+        'seed': 2,
+        'overlap': 0,
+        'get_pad_mask': False,
+        'get_action_padding': False,
+        'num_queries': 1,
+        'seq_length': 10
+    })
 
-    # Get model and its configuration first
-    model, cfg = get_model(args.model_type,cfg)
-    cfg.model_type = args.model_type  # Add model type to config
+    # Create experiment directory for saving checkpoints
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    cfg.experiment_dir = os.path.join("experiments", f"{cfg.model_type}_{timestamp}")
+    os.makedirs(cfg.experiment_dir, exist_ok=True)
+
+    # Setup logging after creating experiment directory
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(os.path.join(cfg.experiment_dir, 'libero_trainer.log')),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Created experiment directory at: {cfg.experiment_dir}")
+
+    # Get model and its configuration
+    model, cfg = get_model(args.model_type, cfg)
+    cfg.model_type = args.model_type
 
     # Print total number of trainable parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -533,12 +558,6 @@ def main(hydra_cfg):
 
     # Control seed
     control_seed(cfg.seed)
-
-    # Create experiment directory for saving checkpoints
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    cfg.experiment_dir = os.path.join("experiments", f"{cfg.model_type}_{timestamp}")
-    os.makedirs(cfg.experiment_dir, exist_ok=True)
-    logger.info(f"Created experiment directory at: {cfg.experiment_dir}")
 
     # Save experiment config
     config_path = os.path.join(cfg.experiment_dir, "config.yaml")

@@ -157,7 +157,7 @@ class MoE(nn.Module):
         self.n_activated_experts = n_activated_experts
         self.experts_start_idx = 0
         self.experts_end_idx = self.n_local_experts
-        self.expert_weights = nn.Parameter(torch.ones(n_experts) * expert_scale)
+        self.expert_weights = torch.ones(n_experts) * expert_scale
         # self.gate = Gate(
         #     input_size, 
         #     n_experts=n_experts,
@@ -206,7 +206,6 @@ class MoE(nn.Module):
             idx, _ = torch.where(indices == i)
             # Multiply the expert output by its corresponding weight
             y[idx] += self.expert_weights[i] * expert(x[idx])
-        print(f"expert_weights: {self.expert_weights}")
         # Add shared experts computation
         z = self.shared_experts(x)
        
@@ -402,12 +401,16 @@ class bc_act_policy(nn.Module):
         self.observation_buffer = {}
         self.act_dim = act_dim
         self.step = 0
-        self.n_task = n_task
         self.use_moe = use_moe
         self.num_queries = num_queries
 
         global route_embeddings
         route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
+        global n_task
+        if benchmark_name == "libero_90":
+            n_task = 90
+        else:
+            n_task = 10
         self.action_dim = (
             self.act_dim * self.num_queries
         )
