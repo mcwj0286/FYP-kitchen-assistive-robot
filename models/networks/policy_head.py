@@ -47,7 +47,8 @@ class DeterministicHead(nn.Module):
         dist = utils.TruncatedNormal(mu, std)
         return dist
 
-
+    def get_mu(self, x):
+        return self.net(x)
 # NEW: MultiTokenDeterministicHead
 class MultiTokenDeterministicHead(nn.Module):
     """
@@ -184,8 +185,8 @@ class TaskSpecificHead(nn.Module):
     def forward(self, x, language_token, stddev=None, **kwargs):
         """
         Args:
-            x (Tensor): Input features for the policy heads, shape (B, input_size)
-            language_token (Tensor): Task embeddings, shape (B, language_token_dim)
+            x (Tensor): Input features for the policy heads, shape (B, T, input_size)
+            language_token (Tensor): Task embeddings, shape (B, T, language_token_dim)
             stddev (float, optional): Standard deviation override passed to DeterministicHead.
             
         
@@ -195,15 +196,15 @@ class TaskSpecificHead(nn.Module):
         # Count tokens per expert
         counts = torch.bincount(indices.flatten(), minlength=self.n_tasks).tolist()
         # print("Expert selection counts:", counts)
-        # Initialize output tensor
-        y = torch.zeros_like(x)
+        # Initialize output tensor with correct shape (B, T, output_size)
+        y = torch.zeros(x.shape[0], x.shape[1], self.output_size, device=x.device)
         for i in range(self.n_tasks):
             if counts[i] == 0:
                 continue
             head = self.policy_heads[i]
             idx, _ = torch.where(indices == i)
-            y[idx] = head(x[idx])
-          
-            
-        
-        return y 
+            y[idx] = head.get_mu(x[idx])
+        std = stddev if stddev is not None else 0.1
+        std = torch.ones_like(y) * std
+        dist = utils.TruncatedNormal(y, std)
+        return dist
