@@ -3,6 +3,7 @@ import time
 import torch
 import cv2
 import numpy as np
+import os
 
 # Import model definition
 from models.bc_transformer_policy import bc_transformer_policy
@@ -14,6 +15,78 @@ from sim_env.Kinova_gen2.src.robot_controller import RobotController
 import torchvision.transforms as T
 from PIL import Image
 from utils import encode_task
+
+def list_experiment_dirs(base_dir):
+    """List all experiment directories in the base directory"""
+    if not os.path.exists(base_dir):
+        print(f"Error: Directory {base_dir} does not exist!")
+        return []
+    
+    exp_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
+    if not exp_dirs:
+        print("No experiment directories found!")
+        return []
+    
+    print("\nAvailable experiment directories:")
+    print("-" * 50)
+    for idx, dir_name in enumerate(exp_dirs, 1):
+        print(f"{idx}. {dir_name}")
+    print("-" * 50)
+    return exp_dirs
+
+def list_model_weights(exp_dir):
+    """List all model weight files in the experiment directory"""
+    weight_files = [f for f in os.listdir(exp_dir) if f.endswith('.pth')]
+    if not weight_files:
+        print("No model weights found in this directory!")
+        return []
+    
+    print("\nAvailable model weights:")
+    print("-" * 50)
+    for idx, weight_file in enumerate(weight_files, 1):
+        print(f"{idx}. {weight_file}")
+    print("-" * 50)
+    return weight_files
+
+def select_model_weights():
+    """Interactive function to select model weights"""
+    base_dir = "kinova_experiments"
+    
+    # List and select experiment directory
+    exp_dirs = list_experiment_dirs(base_dir)
+    if not exp_dirs:
+        return None
+    
+    while True:
+        try:
+            choice = int(input("\nEnter the number of the experiment directory (1-{}): ".format(len(exp_dirs))))
+            if 1 <= choice <= len(exp_dirs):
+                selected_exp_dir = exp_dirs[choice - 1]
+                break
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
+    
+    exp_path = os.path.join(base_dir, selected_exp_dir)
+    
+    # List and select weight file
+    weight_files = list_model_weights(exp_path)
+    if not weight_files:
+        return None
+    
+    while True:
+        try:
+            choice = int(input("\nEnter the number of the weight file (1-{}): ".format(len(weight_files))))
+            if 1 <= choice <= len(weight_files):
+                selected_weight = weight_files[choice - 1]
+                break
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
+    
+    return os.path.join(exp_path, selected_weight)
 
 def preprocess_image(frames_dict, device):
     """Preprocess multiple camera frames for model input
@@ -68,8 +141,12 @@ def main():
     args = parser.parse_args()
     device = args.device
 
-    # Set checkpoint path (adjust as needed)
-    args.checkpoint = '/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/kinova_experiments/model_epoch_20.pth'
+    # Interactive model weight selection
+    checkpoint_path = select_model_weights()
+    if checkpoint_path is None:
+        print("No valid model weights selected. Exiting...")
+        return
+    print(f"\nSelected checkpoint: {checkpoint_path}")
 
     # Initialize the model with the same configuration used during training:
     model = bc_transformer_policy(
@@ -80,15 +157,19 @@ def main():
     ).to(device)
 
     # Get task string from user and encode it
-    task = input('Type the task you want to eval: ')
+    task = input('\nType the task you want to eval: ')
     task_emb = encode_task(task)
 
     # Load checkpoint
     try:
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(checkpoint)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        # Handle both old and new checkpoint formats
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
         model.eval()
-        print(f"Loaded checkpoint from {args.checkpoint}")
+        print(f"Successfully loaded checkpoint from {checkpoint_path}")
     except Exception as e:
         print(f"Error loading checkpoint: {e}")
         return
