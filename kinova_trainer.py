@@ -3,6 +3,7 @@ import os
 import time
 import logging
 import argparse
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -37,6 +38,27 @@ def parse_args():
                         help="Number of dataloader worker processes")
     return parser.parse_args()
 
+def create_experiment_dir(base_dir, model_type):
+    """
+    Create a unique experiment directory with timestamp.
+    
+    Parameters:
+        base_dir (str): Base directory for all experiments
+        model_type (str): Type of model being trained
+    
+    Returns:
+        str: Path to the created experiment directory
+    """
+    # Create timestamp string
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Create experiment directory name
+    exp_dir_name = f"{model_type}_{timestamp}"
+    # Create full path
+    exp_dir = os.path.join(base_dir, exp_dir_name)
+    # Create directory
+    os.makedirs(exp_dir, exist_ok=True)
+    return exp_dir
+
 def main():
     args = parse_args()
 
@@ -48,8 +70,20 @@ def main():
     # Device
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Create experiment directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    # Create experiment directory with timestamp
+    exp_dir = create_experiment_dir(args.output_dir, args.model_type)
+    logger.info("Created experiment directory: %s", exp_dir)
+
+    # Create log file in experiment directory
+    log_file = os.path.join(exp_dir, "training.log")
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(file_handler)
+
+    # Save training arguments
+    with open(os.path.join(exp_dir, "args.txt"), "w") as f:
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
 
     # Initialize the Kinova dataset.
     dataset = Kinova_Dataset(
@@ -81,6 +115,7 @@ def main():
 
     # Initialize model based on model type.
     if args.model_type == "bc_act":
+        from models.bc_act_policy import bc_act_policy
         # Define a simple configuration dictionary for bc_act_policy.
         config = {
             "obs_shape": {
@@ -88,16 +123,14 @@ def main():
                 "pixels_egocentric": (3, 128, 128),
                 "proprioceptive": (9,)
             },
-            "action_dim": 7,
+            "act_dim": 7,
             "policy_head": "deterministic",
             "hidden_dim": 256,
             "device": device,
-            "history": True,
-            "history_len": 10,
             "num_queries": 10,
-            "temporal_agg": True,
             "max_episode_len": 650,
             "use_proprio": True,
+            'n_layer': 4,
         }
         model = bc_act_policy(**config).to(device)
     elif args.model_type == "bc_transformer":
@@ -131,16 +164,10 @@ def main():
         total_loss = 0.0
         for batch_idx, batch in enumerate(dataloader):
             # Move batch data to device.
-            # for key in batch:
-            #     if torch.is_tensor(batch[key]):
-            #         batch[key] = batch[key].to(device)
-            # # Print batch keys and shapes
-            # print("\nBatch contents:")
-            # for key, value in batch.items():
-            #     if torch.is_tensor(value):
-            #         print(f"{key}: {value.shape}")
-            #     else:
-            #         print(f"{key}: {type(value)}")
+            for key in batch:
+                if torch.is_tensor(batch[key]):
+                    batch[key] = batch[key].to(device)
+
 
             optimizer.zero_grad()
             # Assumes the model has a train_step(batch, optimizer=...) method that returns a loss tensor.
@@ -154,15 +181,27 @@ def main():
         logger.info("Epoch %d completed, Average Loss: %.4f", epoch+1, avg_loss)
         scheduler.step(avg_loss)
     
-        # Optionally, save a checkpoint every 5 epochs.
+        # Save checkpoints in the experiment directory
         if (epoch + 1) % 5 == 0:
-            checkpoint_path = os.path.join(args.output_dir, f"model_epoch_{epoch+1}.pth")
-            torch.save(model.state_dict(), checkpoint_path)
+            checkpoint_path = os.path.join(exp_dir, f"model_epoch_{epoch+1}.pth")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'loss': avg_loss,
+            }, checkpoint_path)
             logger.info("Saved checkpoint to %s", checkpoint_path)
 
-    # Save the final model.
-    final_path = os.path.join(args.output_dir, "model_final.pth")
-    torch.save(model.state_dict(), final_path)
+    # Save the final model in the experiment directory
+    final_path = os.path.join(exp_dir, "model_final.pth")
+    torch.save({
+        'epoch': args.epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': avg_loss,
+    }, final_path)
     logger.info("Training completed. Final model saved to %s", final_path)
 
     # (Validation and evaluation code can be added later as required)
