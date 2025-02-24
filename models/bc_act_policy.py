@@ -406,14 +406,14 @@ class bc_act_policy(nn.Module):
         self.use_moe = use_moe
         self.num_queries = num_queries
         self.use_mpi = use_mpi
-
-        global route_embeddings
-        route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
-        global n_task
-        if benchmark_name == "libero_90":
-            n_task = 90
-        else:
-            n_task = 10
+        if self.use_moe:
+            global route_embeddings
+            route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
+            global n_task
+            if benchmark_name == "libero_90":
+                n_task = 90
+            else:
+                n_task = 10
         self.action_dim = (
             self.act_dim * self.num_queries
         )
