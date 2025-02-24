@@ -392,6 +392,7 @@ class Kinova_Dataset(Dataset):
                 file_path = os.path.join(self.data_path, file)
                 # Use the filename (without extension) as the task name.
                 task_name = os.path.splitext(file)[0]
+                task_name = task_name.replace('_', ' ')
                 self.task_files[task_name] = file_path
                 if self.load_task_emb and task_name not in self.task_embeddings:
                     self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
