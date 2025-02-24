@@ -4,8 +4,7 @@ import sys
 sys.path.append('/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robotic')
 # from models.networks.gpt import GPT, GPTConfig
 from models.networks.mlp import MLP
-
-from models.networks.rgb_modules import BaseEncoder, ResnetEncoder
+from models.networks.rgb_modules import BaseEncoder, ResnetEncoder, MPIVisionEncoder
 import torch
 import torch.nn as nn
 import utils
@@ -21,6 +20,7 @@ from utils import get_route_embeddings
 from dotenv import load_dotenv
 import os
 from models.networks.policy_head import TaskSpecificHead
+from models.networks.rgb_modules import MPIVisionEncoder
 load_dotenv()
 dataset_path_= os.getenv("DATASET_PATH")
 n_task = 10
@@ -385,6 +385,8 @@ class bc_act_policy(nn.Module):
                  learnable_tokens=False,
                  n_layer=8,
                  use_moe=False,
+                 use_mpi=False,  # New flag for MPI encoder
+                 mpi_root_dir="/home/john/project/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints/mpi-small",  # Path to MPI model
                  benchmark_name="libero_spatial"):
         super().__init__()  # Call parent class constructor
         
@@ -403,6 +405,7 @@ class bc_act_policy(nn.Module):
         self.step = 0
         self.use_moe = use_moe
         self.num_queries = num_queries
+        self.use_mpi = use_mpi
 
         global route_embeddings
         route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
@@ -445,20 +448,32 @@ class bc_act_policy(nn.Module):
             )
         elif policy_head == "task_specific_head":
             self.action_head = TaskSpecificHead(
-                self.repr_dim, self.act_dim, num_layers=2, n_tasks=n_task, route_embeddings=route_embeddings
+                self.repr_dim, self.act_dim,language_token_dim=self.language_dim, num_layers=2, n_tasks=n_task, route_embeddings=route_embeddings
             )
         else:
             raise ValueError(f"Invalid policy head type: {policy_head}")
 
+        if self.use_mpi:
+           use_proj = False
+           self.mpi_encoder = MPIVisionEncoder(
+                    use_proj=use_proj,
+                    mpi_root_dir=mpi_root_dir,
+                    device=device,
+                    output_dim=512 if use_proj else 384
+                )
         # initialize the vision encoder
         self.vision_encoder = nn.ModuleDict()
         for key in self.pixel_keys:
-            self.vision_encoder[key] = ResnetEncoder(
-                obs_shape,
-                512,
-                language_dim=self.lang_repr_dim,
-                language_fusion=self.language_fusion,
-            )
+            if use_mpi:
+                use_proj = False
+                self.vision_encoder[key] = self.mpi_encoder
+            else:
+                self.vision_encoder[key] = ResnetEncoder(
+                    obs_shape,
+                    512,
+                    language_dim=self.lang_repr_dim,
+                    language_fusion=self.language_fusion,
+                )
 
         # Initialize language encoder with proper configuration
         self.language_projector = MLP(
@@ -516,15 +531,6 @@ class bc_act_policy(nn.Module):
             2. Vision tokens (Total 2 token ,1 token per vision input type - pixels, pixels_egocentric)
             3. Proprioceptive token (1 token if proprioceptive features used)
         - E: Embedding dimension (self.repr_dim)
-
-        The tokens are arranged in the following order:
-        1. Language token from task embedding
-        2. Vision tokens from each image input
-        3. Proprioceptive token (if used)
-
-        Each modality's features are projected to the same embedding dimension E
-        before being concatenated along the modality dimension.
-      
         """
         encoded = []
         
@@ -546,13 +552,17 @@ class bc_act_policy(nn.Module):
             
             # Process each timestep
             pixel = pixel.reshape(B * T, C, H, W)
-            lang = lang_features.repeat_interleave(T, dim=0) if self.language_fusion == "film" else None
-
-            pixel = self.vision_encoder[key](
-                pixel,
-                lang=lang  # Reshape [B,E] -> [B*T,E]
-            )
-            pixel = pixel.view(B, T, 1, -1)
+            
+            # Handle language features differently for MPI vs ResNet
+            if self.use_mpi:
+                pixel = self.vision_encoder[key](pixel)  # MPI doesn't use language features
+                pixel = pixel.view(B, T, -1, 384)
+            else:
+                lang = lang_features.repeat_interleave(T, dim=0) if self.language_fusion == "film" else None
+                pixel = self.vision_encoder[key](pixel, lang=lang)
+                pixel = pixel.view(B, T, 1, -1)
+                
+            
             encoded.append(pixel)
             
         # 3. Process proprioceptive features if used
@@ -621,8 +631,8 @@ class bc_act_policy(nn.Module):
         # Expand language token to match temporal dimension
         # language_token is currently [B, 1, E]
         # Need to repeat T times to get [B, T, E]
-        language_token = language_token.repeat(1, T, 1)  # [B, T, E]
-        language_token = language_token.view(B*T, -1)
+        language_tokens = language_token.repeat(1, T, 1)  # [B, T, E]
+        language_tokens = language_tokens.view(B*T, -1)
         # Apply temporal encoding
         x = self.temporal_encode(x,language_token)
         B,T,num_queries,E = x.shape
@@ -631,7 +641,7 @@ class bc_act_policy(nn.Module):
 
         if self._policy_head == "task_specific_head":
             # Get action predictions from action head
-            pred_actions = self.action_head(x,language_token) # (B, T*num_queries, act_dim)
+            pred_actions = self.action_head(x,language_token.squeeze(1)) # (B, T*num_queries, act_dim)
         else:
             pred_actions = self.action_head(x) # (B, T*num_queries, act_dim)
  
@@ -665,7 +675,7 @@ class bc_act_policy(nn.Module):
 
             if self._policy_head == "task_specific_head":
                 # Get action prediction
-                pred_actions = self.action_head(x,language_token) # (B, num_queries, act_dim)
+                pred_actions = self.action_head(x,language_token.squeeze(1)) # (B, num_queries, act_dim)
             else:
                 # Get action prediction
                 pred_actions = self.action_head(x) # (B, num_queries, act_dim)

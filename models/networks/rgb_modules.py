@@ -11,8 +11,7 @@ import torch.nn.functional as F
 import torchvision
 
 import utils
-
-
+import torchvision.transforms as T
 ###############################################################################
 #
 # Modules related to encoding visual information (can conditioned on language)
@@ -315,3 +314,52 @@ class ResnetEncoder(nn.Module):
 
     def output_shape(self):
         return self.output_shape
+
+class MPIVisionEncoder(nn.Module):
+    def __init__(self, use_proj=False,mpi_root_dir="/home/john/project/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints/mpi-small", device="cuda:0", output_dim=512):
+        super().__init__()
+        import sys
+        import os
+        # Add MPI directory to path
+        mpi_dir = os.path.dirname(os.path.dirname(os.path.dirname(mpi_root_dir)))
+        if mpi_dir not in sys.path:
+            sys.path.append(mpi_dir)
+        from mpi import load_mpi
+        # Load the MPI model; freeze=True ensures weights are fixed
+        self.mpi_model = load_mpi(mpi_root_dir, device, freeze=True)
+        # Projection layer: assume MPI output dimension is 384 (from example), project to output_dim
+        if use_proj:
+            self.proj = nn.Linear(384, output_dim)
+        else:
+            self.proj = nn.Identity()
+        self.device = device
+
+    def forward(self, x, lang=None):
+        # x is expected to be (N, C, H, W)
+        # Duplicate the input along a new dimension to match expected shape: (N, 2, C, H, W)
+        # Create transform to resize input to 224x224
+        transform = T.Compose([
+            T.Resize(256),
+            T.CenterCrop(224)
+        ])
+        
+        # x is (N, C, 128, 128)
+        N, C, H, W = x.shape
+        
+        # Reshape to (N*C, H, W) for transform
+        x= x.reshape(-1, H, W)
+        
+        # Apply transform and reshape back
+        x = transform(x.unsqueeze(1))  # Add channel dim for transform
+        x = x.reshape(N, C, 224, 224)  # Back to (N, C, 224, 224)
+        x_dual = torch.stack((x, x), dim=1)
+        with torch.no_grad():
+            # Get visual representations without language tokens
+            x = self.mpi_model.get_representations(x_dual, None, with_lang_tokens=False) # (1, 197, 384)
+        # repr shape assumed to be (N, T, 384), aggregate over token dimension
+        # x = torch.mean(x, dim=1).unsqueeze(1) # (N, 1, 384)
+
+        # take aggregated token
+        # x = x[:,-1,:].unsqueeze(1) # (N, 1, 384)
+        out = self.proj(x)  # (N, 1, output_dim)
+        return out
