@@ -61,6 +61,9 @@ class CameraInterface:
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self.cap.set(cv2.CAP_PROP_FPS, self.fps)
             
+            # Set buffer size to 1 to always get the latest frame
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
             # Check if camera opened successfully
             if not self.cap.isOpened():
                 raise Exception(f"Failed to open camera {self.camera_id}")
@@ -93,6 +96,10 @@ class CameraInterface:
         if not self.cap:
             return False, None
             
+        # Clear buffer by discarding a few frames
+        for _ in range(3):
+            self.cap.grab()
+        
         ret, frame = self.cap.read()
         return ret, frame
         
@@ -102,6 +109,13 @@ class CameraInterface:
             self.cap.release()
             self.cap = None
             print(f"Camera {self.camera_id} released")
+
+    def reset_camera(self):
+        """Reset the camera connection"""
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        self.initialize_camera()
 
 class MultiCameraInterface:
     def __init__(self, camera_ids=None, width=320, height=240, fps=30):
@@ -145,9 +159,12 @@ class MultiCameraInterface:
         
     def close(self):
         """Release all cameras"""
+        print("Releasing cameras...")
         for camera in self.cameras.values():
             camera.close()
+            del camera
         self.cameras.clear()
+        print("All cameras released")
 
 def main():
     """Test the camera interfaces"""
