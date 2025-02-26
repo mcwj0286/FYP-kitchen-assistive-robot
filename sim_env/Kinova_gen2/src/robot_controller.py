@@ -18,7 +18,7 @@ class RobotController:
         self.control_thread = None
         self.debug_mode = debug_mode
 
-    def initialize_devices(self):
+    def initialize_devices(self ,move_home=True):
         """Initialize PS4 controller and Kinova arm"""
         try:
             # Initialize Kinova arm first
@@ -28,8 +28,9 @@ class RobotController:
             print("Kinova arm initialized successfully")
             
             # Move to home position first and wait for completion
-            print("\nMoving to home position before starting control...")
-            self.arm.move_home()
+            if move_home:
+                print("\nMoving to home position before starting control...")
+                self.arm.move_home()
                 
             # Wait for movement to complete (5 seconds should be enough)
             print("Waiting for home position movement to complete...")
@@ -163,12 +164,34 @@ class RobotController:
 
     def stop(self):
         """Stop the robot controller"""
+        print("Stopping robot controller...")
+        
+        # First stop any ongoing motion
+        try:
+            zero_velocities = [0.0] * 7
+            if self.arm:
+                self.arm.send_angular_velocity(zero_velocities, hand_mode=1, 
+                    fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+                time.sleep(0.2)  # Wait for the command to take effect
+        except:
+            pass
+
         self.running = False
+        self.emergency_stop = True
+
         if self.control_thread:
-            self.control_thread.join()
+            print("Waiting for control thread to finish...")
+            self.control_thread.join(timeout=2.0)  # Add timeout to prevent hanging
+            
         if hasattr(self, 'arm'):
-            self.arm.close()
-        print("Robot controller stopped")
+            print("Closing Kinova arm...")
+            try:
+                self.arm.close()
+                self.arm = None
+            except Exception as e:
+                print(f"Error closing arm: {e}")
+                
+        print("Robot controller stopped successfully")
 
 def main():
     controller = RobotController(debug_mode=False)  # Set debug_mode=True to enable debug prints
