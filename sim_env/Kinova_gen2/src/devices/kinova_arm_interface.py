@@ -8,6 +8,10 @@ import time
 ANGULAR_POSITION = 2
 ANGULAR_VELOCITY = 8
 
+# Add cartesian control type constants
+CARTESIAN_POSITION = 1
+CARTESIAN_VELOCITY = 7
+
 # Define the KinovaDevice structure
 class KinovaDevice(ctypes.Structure):
     _fields_ = [
@@ -266,7 +270,91 @@ class KinovaArmInterface:
             time.sleep(period)
         # print("Angular velocity command issued successfully.")
 
- 
+    def send_cartesian_position(self, position, rotation, fingers=(0.0, 0.0, 0.0)):
+        """
+        Send a Cartesian position command to the arm.
+        
+        Args:
+            position: Tuple of (x, y, z) position in meters
+            rotation: Tuple of (theta_x, theta_y, theta_z) rotation in degrees/radians
+            fingers: Tuple of finger positions
+        """
+        point = TrajectoryPoint()
+        
+        # Set user position type to Cartesian position
+        point.Position.Type = CARTESIAN_POSITION
+        point.Position.Delay = 0.0
+        
+        # Set Cartesian Position 
+        point.Position.CartesianPosition = CartesianInfo(
+            position[0], position[1], position[2],
+            rotation[0], rotation[1], rotation[2]
+        )
+        
+        # Set fingers
+        point.Position.Fingers = FingersPosition(*fingers)
+        
+        # Disable trajectory limitations
+        point.LimitationsActive = 0
+        point.SynchroType = 0
+        point.Limitations = Limitation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        
+        ret = self.lib.SendBasicTrajectory(point)
+        if ret != self.NO_ERROR:
+            print(f"SendBasicTrajectory (Cartesian) failed with error code: {ret}")
+        else:
+            print("Cartesian position command issued successfully.")
+
+    def send_cartesian_velocity(self, linear_velocity, angular_velocity, 
+                               fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005):
+        """
+        Send a Cartesian velocity command to the arm.
+        
+        Args:
+            linear_velocity: Tuple of (vx, vy, vz) linear velocities in m/s
+            angular_velocity: Tuple of (wx, wy, wz) angular velocities in deg/s
+            fingers: Tuple of finger velocities
+            duration: Duration to apply the velocity command in seconds
+            period: Update period in seconds (typically 5ms)
+        """
+        point = TrajectoryPoint()
+        
+        # Set user position type to Cartesian velocity
+        point.Position.Type = CARTESIAN_VELOCITY
+        point.Position.Delay = 0.0
+        
+        # Set Cartesian velocities
+        point.Position.CartesianPosition = CartesianInfo(
+            linear_velocity[0], linear_velocity[1], linear_velocity[2],
+            angular_velocity[0], angular_velocity[1], angular_velocity[2]
+        )
+        
+        # Set fingers
+        point.Position.Fingers = FingersPosition(*fingers)
+        
+        # Disable trajectory limitations
+        point.LimitationsActive = 0
+        point.SynchroType = 0
+        point.Limitations = Limitation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        
+        # Calculate number of cycles based on duration and period
+        num_cycles = int(duration / period)
+        for i in range(num_cycles):
+            ret = self.lib.SendBasicTrajectory(point)
+            if ret != self.NO_ERROR:
+                print(f"SendBasicTrajectory (Cartesian velocity) failed with error code: {ret}")
+                break
+            time.sleep(period)
+        
+        # Send zero velocity to stop motion
+        if duration > 0.1:  # Only if duration was significant
+            stop_point = TrajectoryPoint()
+            stop_point.Position.Type = CARTESIAN_VELOCITY
+            stop_point.Position.CartesianPosition = CartesianInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            stop_point.Position.Fingers = FingersPosition(*fingers)
+            stop_point.LimitationsActive = 0
+            stop_point.SynchroType = 0
+            self.lib.SendBasicTrajectory(stop_point)
 
     def get_current_angular_positions(self):
         arr = (ctypes.c_float * self.POSITION_CURRENT_COUNT)()
@@ -324,12 +412,54 @@ class KinovaArmInterface:
         ]
         return joint_angles + finger_angles
 
+    def get_cartesian_force(self):
+        """Retrieve the current Cartesian force values (X,Y,Z, Torque values) from the robot sensor."""
+        force = CartesianInfo()
+        ret = self.lib.GetCartesianForce(ctypes.byref(force))
+        if ret != self.NO_ERROR:
+            print(f"GetCartesianForce failed with error code: {ret}")
+            return None
+        return force
+
+    def get_cartesian_position(self):
+        """Get the current Cartesian position of the robot end-effector."""
+        cartesian_position = CartesianInfo()
+        ret = self.lib.GetCartesianCommand(ctypes.byref(cartesian_position))
+        if ret != self.NO_ERROR:
+            print(f"GetCartesianCommand failed with error code: {ret}")
+            return None
+        return cartesian_position
+
+    def set_cartesian_control(self):
+        """Switch to Cartesian control mode."""
+        ret = self.lib.SetCartesianControl()
+        if ret != self.NO_ERROR:
+            print(f"SetCartesianControl failed with error code: {ret}")
+        else:
+            print("Switched to Cartesian Control mode.")
+
     def close(self):
         try:
             if self.lib:
+                # First stop any ongoing motion
+                try:
+                    # Stop with appropriate control type based on last command
+                    # Send zero velocity in both control modes to be safe
+                    self.send_angular_velocity([0.0] * 7, hand_mode=1, 
+                        fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+                    time.sleep(0.1)
+                    
+                    self.send_cartesian_velocity(
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 
+                        fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+                    time.sleep(0.1)
+                except:
+                    pass
+                
                 # Stop control API first
                 if hasattr(self.lib, "StopControlAPI"):
                     self.lib.StopControlAPI()
+                    time.sleep(0.1)  # Give it time to stop
                 
                 # Then close the API
                 ret = self.lib.CloseAPI()
@@ -344,54 +474,59 @@ class KinovaArmInterface:
             print(f"Error closing API: {e}")
 
 def main():
-    arm = None
+    manager = None
     try:
-        arm = KinovaArmInterface()
-        arm.connect()
-        arm.move_home()
-        arm.set_angular_control()
+        from kinova_arm_manager import KinovaArmManager
         
-        # Example of position control
-        print("\nTesting position control...")
-        arm.send_angular_trajectory([273.0, 167.0, 57.0, 240.0, 82.0, 65.0, 0.0], 
-                                  hand_mode=1, fingers=(0.0, 0.0, 0.0))
-        time.sleep(2)
-        arm.print_finger_info()
+        manager = KinovaArmManager()
+        manager.initialize()
+        # manager.print_angular_info()
 
-        # Test simulated velocity control
-        print("\nTesting simulated velocity control (closing fingers)...")
-        # Move joint 6 at 20 deg/s while closing fingers
-        arm.send_angular_velocity(
-            [0.0, 0.0, 0.0, 0.0, 0.0, -40.0, 0.0],  # Joint velocities
-            hand_mode=1,
-            fingers=(2000.0, 0.0, 2000.0),  # Close fingers
-            duration=2.0,
-            period=0.005  # 50Hz update rate
-        )
-        # time.sleep(2)
-        arm.print_finger_info()
+        # Example of Cartesian position control
+        # print("\nTesting Cartesian position control...")
+        # manager.send_cartesian_position(
+        #     position=(0.0, -0.4, 0.5),     # X, Y, Z position in meters
+        #     rotation=(180.0, 0.0, 90.0),   # Rotation angles in degrees
+        #     fingers=(1000.0, 1000.0, 1000.0)        # Finger positions
+        # )
+        # time.sleep(3)  # Wait for movement to complete
+        # manager.print_angular_info()
 
-        print("\nTesting simulated velocity control (opening fingers)...")
-        # Move joint 6 at -20 deg/s while opening fingers
-        arm.send_angular_velocity(
-            [0.0, 0.0, 0.0, 0.0, 0.0, 50.0, 0.0],  # Joint velocities
-            hand_mode=1,
-            fingers=(-1000.0, -1000.0, -1000.0),  # Open fingers
-            duration=2.0,
-            period=0.005  # 50Hz update rate
+        # Example of Cartesian velocity control
+        print("\nTesting Cartesian velocity control...")
+        # Move along Y axis at 0.15 m/s for 1 second
+        # manager.send_cartesian_velocity(
+        #     linear_velocity=(0.0, 0.15, 0.0),  # X, Y, Z velocities in m/s
+        #     angular_velocity=(0.0, 0.0, 0.0),  # Angular velocities in deg/s
+        #     duration=1.0
+        # )
+        
+        # Get angular information
+        manager.print_angular_info()
+        
+        # Move along Z axis at 0.1 m/s for 1 second
+        manager.send_cartesian_velocity(
+            linear_velocity=(0.0, 0.0, 0.0),  # X, Y, Z velocities in m/s
+            angular_velocity=(50.0, 0.0, 0.0),  # Angular velocities in deg/s
+            duration=3.0
         )
+        
+        # Get angular information again
+        manager.print_angular_info()
+        
+        print("Moving back to home position...")
+        # manager.move_home()
         time.sleep(2)
-        arm.print_finger_info()
 
     finally:
-        # Ensure we close the API even if an error occurs
-        if arm is not None:
-            arm.close()
+        # Ensure we close the manager even if an error occurs
+        if manager:
+            manager.close()
             # Give some time for the system to clean up before exiting
-            time.sleep(0.1)
+            time.sleep(0.5)
     
     # Exit cleanly
-    sys.exit(0)
+    print("Program completed successfully")
 
 if __name__ == '__main__':
     main()
