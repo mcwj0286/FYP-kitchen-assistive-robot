@@ -4,12 +4,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """
-This script creates a basic environment with a plane and the Kinova Gen 2 JACO 6-DOF arm.
+This script demonstrates the Kinova JACO2 (6-Dof) robotic arm.
 
 .. code-block:: bash
 
     # Usage
-    ./isaaclab.sh -p kinova_env.py
+    ./isaaclab.sh -p scripts/demos/kinova_env.py
 
 """
 
@@ -20,7 +20,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="This script creates a basic environment with the Kinova JACO2 6-DOF arm.")
+parser = argparse.ArgumentParser(description="This script demonstrates the Kinova JACO2 (6-Dof) robotic arm.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -44,12 +44,31 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 ##
 # Pre-defined configs
 ##
-# Import the Kinova JACO2 6-DOF configuration
-from isaaclab_assets import KINOVA_JACO2_N6S300_CFG
+# isort: off
+from isaaclab_assets import (
+    KINOVA_JACO2_N6S300_CFG,
+)
+
+# isort: on
 
 
-def design_scene() -> dict:
-    """Designs the scene with a ground plane and Kinova JACO2 6-DOF arm."""
+def define_origins(num_origins: int, spacing: float) -> list[list[float]]:
+    """Defines the origins of the the scene."""
+    # create tensor based on number of environments
+    env_origins = torch.zeros(num_origins, 3)
+    # create a grid of origins
+    num_rows = np.floor(np.sqrt(num_origins))
+    num_cols = np.ceil(num_origins / num_rows)
+    xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols), indexing="xy")
+    env_origins[:, 0] = spacing * xx.flatten()[:num_origins] - spacing * (num_rows - 1) / 2
+    env_origins[:, 1] = spacing * yy.flatten()[:num_origins] - spacing * (num_cols - 1) / 2
+    env_origins[:, 2] = 0.0
+    # return the origins
+    return env_origins.tolist()
+
+
+def design_scene() -> tuple[dict, list[list[float]]]:
+    """Designs the scene."""
     # Ground-plane
     cfg = sim_utils.GroundPlaneCfg()
     cfg.func("/World/defaultGroundPlane", cfg)
@@ -57,14 +76,15 @@ def design_scene() -> dict:
     cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
-    # Create root for robot and table
-    prim_utils.create_prim("/World/Origin", "Xform", translation=(0.0, 0.0, 0.0))
-    
-    # Create table
+    # Create just a single origin for the Kinova arm
+    origins = define_origins(num_origins=1, spacing=2.0)
+
+    # Set up the Kinova JACO2 (6-Dof) arm
+    prim_utils.create_prim("/World/Origin", "Xform", translation=origins[0])
+    # -- Table
     cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
     cfg.func("/World/Origin/Table", cfg, translation=(0.0, 0.0, 0.8))
-    
-    # Setup Kinova JACO2 (6-Dof) arm
+    # -- Robot
     kinova_arm_cfg = KINOVA_JACO2_N6S300_CFG.replace(prim_path="/World/Origin/Robot")
     kinova_arm_cfg.init_state.pos = (0.0, 0.0, 0.8)
     kinova_j2n6s300 = Articulation(cfg=kinova_arm_cfg)
@@ -73,19 +93,15 @@ def design_scene() -> dict:
     scene_entities = {
         "kinova_j2n6s300": kinova_j2n6s300,
     }
-    return scene_entities
+    return scene_entities, origins
 
 
-def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articulation]):
+def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articulation], origins: torch.Tensor):
     """Runs the simulation loop."""
     # Define simulation stepping
     sim_dt = sim.get_physics_dt()
     sim_time = 0.0
     count = 0
-    
-    # Get the Kinova arm
-    kinova_arm = entities["kinova_j2n6s300"]
-    
     # Simulate physics
     while simulation_app.is_running():
         # reset
@@ -93,36 +109,40 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articula
             # reset counters
             sim_time = 0.0
             count = 0
-            # reset the arm
-            # root state
-            root_state = kinova_arm.data.default_root_state.clone()
-            kinova_arm.write_root_pose_to_sim(root_state[:, :7])
-            kinova_arm.write_root_velocity_to_sim(root_state[:, 7:])
-            # set joint positions
-            joint_pos, joint_vel = kinova_arm.data.default_joint_pos.clone(), kinova_arm.data.default_joint_vel.clone()
-            kinova_arm.write_joint_state_to_sim(joint_pos, joint_vel)
-            # clear internal buffers
-            kinova_arm.reset()
+            # reset the scene entities
+            for index, robot in enumerate(entities.values()):
+                # root state
+                root_state = robot.data.default_root_state.clone()
+                root_state[:, :3] += origins[index]
+                robot.write_root_pose_to_sim(root_state[:, :7])
+                robot.write_root_velocity_to_sim(root_state[:, 7:])
+                # set joint positions
+                joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
+                robot.write_joint_state_to_sim(joint_pos, joint_vel)
+                # clear internal buffers
+                robot.reset()
             print("[INFO]: Resetting robot state...")
+        # apply random actions to the robot
+        for robot in entities.values():
+            # Get velocity limits from robot configuration
+            max_velocity_limits = 100.0  # As defined in kinova.py
             
-        # Apply random actions to the robot
-        # generate random joint positions
-        joint_pos_target = kinova_arm.data.default_joint_pos + torch.randn_like(kinova_arm.data.joint_pos) * 0.1
-        joint_pos_target = joint_pos_target.clamp_(
-            kinova_arm.data.soft_joint_pos_limits[..., 0], kinova_arm.data.soft_joint_pos_limits[..., 1]
-        )
-        # apply action to the robot
-        kinova_arm.set_joint_position_target(joint_pos_target)
-        # write data to sim
-        kinova_arm.write_data_to_sim()
-        
+            # Joint velocity control
+            joint_vel_target = torch.randint(-100, 101, size=robot.data.joint_vel.shape, device=robot.data.joint_vel.device)*0.3  # Random integer velocity commands from -100 to 100
+            print(joint_vel_target)
+            joint_vel_target = joint_vel_target.clamp_(
+                -max_velocity_limits, max_velocity_limits  # Using the defined limits
+            )
+            robot.set_joint_velocity_target(joint_vel_target)  # This method should exist in the API
+            robot.write_data_to_sim()
         # perform step
         sim.step()
         # update sim-time
         sim_time += sim_dt
         count += 1
         # update buffers
-        kinova_arm.update(sim_dt)
+        for robot in entities.values():
+            robot.update(sim_dt)
 
 
 def main():
@@ -131,15 +151,16 @@ def main():
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
-    sim.set_camera_view([2.0, 2.0, 2.0], [0.0, 0.0, 0.8])
+    sim.set_camera_view([3.5, 0.0, 3.2], [0.0, 0.0, 0.5])
     # design scene
-    scene_entities = design_scene()
+    scene_entities, scene_origins = design_scene()
+    scene_origins = torch.tensor(scene_origins, device=sim.device)
     # Play the simulator
     sim.reset()
     # Now we are ready!
     print("[INFO]: Setup complete...")
     # Run the simulator
-    run_simulator(sim, scene_entities)
+    run_simulator(sim, scene_entities, scene_origins)
 
 
 if __name__ == "__main__":
