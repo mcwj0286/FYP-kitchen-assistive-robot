@@ -494,8 +494,10 @@ class Kinova_Dataset(Dataset):
                 # Create an empty container for resized images.
                 resized_array = np.empty((self.seq_length, H_target, W_target, C), dtype=img_array.dtype)
                 for i in range(self.seq_length):
+                    #change to rgb
+                    image_rgb = cv2.cvtColor(img_array[i], cv2.COLOR_BGR2RGB)
                     # Note: cv2.resize expects (width, height)
-                    resized_array[i] = cv2.resize(img_array[i], (W_target, H_target))
+                    resized_array[i] = cv2.resize(image_rgb, (W_target, H_target))
                 img_array = resized_array
                 # Optionally update H and W if needed (not strictly required here)
                 H, W = H_target, W_target
