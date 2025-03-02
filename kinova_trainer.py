@@ -36,6 +36,8 @@ def parse_args():
                         help="Directory to save training checkpoints")
     parser.add_argument("--num_workers", type=int, default=0,
                         help="Number of dataloader worker processes")
+    parser.add_argument("--train_ratio", type=float, default=0.9,
+                        help="Ratio of data to use for training vs validation")
     return parser.parse_args()
 
 def create_experiment_dir(base_dir, model_type):
@@ -58,6 +60,80 @@ def create_experiment_dir(base_dir, model_type):
     # Create directory
     os.makedirs(exp_dir, exist_ok=True)
     return exp_dir
+
+def create_datasets(data_path, train_ratio, **dataset_kwargs):
+    """
+    Create training and validation datasets.
+    
+    Parameters:
+        data_path (str): Path to the dataset
+        train_ratio (float): Proportion of data to use for training
+        **dataset_kwargs: Additional arguments to pass to the dataset constructor
+    
+    Returns:
+        tuple: (train_dataset, val_dataset)
+    """
+    # Create training dataset
+    train_dataset = Kinova_Dataset(
+        data_path=data_path,
+        train_ratio=train_ratio,
+        is_train=True,
+        **dataset_kwargs
+    )
+    
+    # Create validation dataset
+    val_dataset = Kinova_Dataset(
+        data_path=data_path,
+        train_ratio=train_ratio,
+        is_train=False,
+        **dataset_kwargs
+    )
+    
+    return train_dataset, val_dataset
+
+def validate(model, dataloader, device, logger,model_type):
+    """
+    Validate the model on the validation dataset.
+    
+    Parameters:
+        model: The model to validate
+        dataloader: DataLoader for the validation dataset
+        device: Device to perform validation on
+        logger: Logger for logging validation information
+        
+    Returns:
+        float: Average validation loss
+    """
+    model.eval()
+    total_val_loss = 0.0
+    mse_loss = nn.MSELoss()
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            # Move batch data to device
+            for key in batch:
+                if torch.is_tensor(batch[key]):
+                    batch[key] = batch[key].to(device)
+            
+            # Forward pass
+            predicted_actions = model(batch)
+            target_actions = batch['actions']
+            
+            if model_type == "bc_act":
+                # Extract mean from distribution and reshape to match target shape
+                predicted_actions = predicted_actions.mean
+                B, S, an = target_actions.shape  # batch_size, seq_len, act_dim*num_queries
+                predicted_actions = predicted_actions.reshape(B, S, an)
+            else:
+                predicted_actions = predicted_actions.mean
+                
+            # Calculate MSE loss
+            loss = mse_loss(predicted_actions, target_actions)
+            total_val_loss += loss.item()
+    
+    avg_val_loss = total_val_loss / len(dataloader)
+    logger.info(f"Validation Loss: {avg_val_loss:.4f}")
+    return avg_val_loss
 
 def main():
     args = parse_args()
@@ -85,30 +161,46 @@ def main():
         for arg, value in vars(args).items():
             f.write(f"{arg}: {value}\n")
 
-    # Initialize the Kinova dataset.
-    dataset = Kinova_Dataset(
+    # Common dataset parameters
+    dataset_kwargs = {
+        "seq_length": 10,
+        "frame_stack": 1,
+        "overlap": 2,
+        "pad_frame_stack": True,
+        "pad_seq_length": True,
+        "get_pad_mask": True,
+        "get_action_padding": True,
+        "num_queries": 10,
+        "image_shape": (128, 128),
+        "action_velocity_scale": 30.0,
+        "gripper_scale": 3000.0,
+        "load_task_emb": True,
+        "max_word_len": 25
+    }
+
+    # Initialize train and validation datasets
+    train_dataset, val_dataset = create_datasets(
         data_path=os.getenv('KINOVA_DATASET'),
-        seq_length=10,
-        frame_stack=1,
-        overlap=2,
-        pad_frame_stack=True,
-        pad_seq_length=True,
-        get_pad_mask=True,
-        get_action_padding=True,
-        num_queries=10,
-        image_shape=(128, 128),         # Target image size: 128x128
-        action_velocity_scale=30.0,       # Joint velocities in [-30, 30]
-        gripper_scale=3000.0,             # Gripper velocity in [-3000, 3000]
-        load_task_emb=True,
-        max_word_len=25
+        train_ratio=args.train_ratio,
+        **dataset_kwargs
     )
-    logger.info("Kinova_Dataset loaded %d segments from %d tasks", len(dataset), len(dataset.task_files))
     
-    # Create DataLoader
-    dataloader = DataLoader(
-        dataset,
+    logger.info("Training dataset: %d segments", len(train_dataset))
+    logger.info("Validation dataset: %d segments", len(val_dataset))
+    
+    # Create DataLoaders
+    train_loader = DataLoader(
+        train_dataset,
         batch_size=args.batch_size,
-        sampler=RandomSampler(dataset),
+        sampler=RandomSampler(train_dataset),
+        pin_memory=True,
+        num_workers=args.num_workers
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
         pin_memory=True,
         num_workers=args.num_workers
     )
@@ -140,8 +232,7 @@ def main():
             history=False,
             max_episode_len=1000,
             use_mpi_pixels_egocentric=False,
-            device= device,
-
+            device=device,
         ).to(device)
     else:
         raise ValueError("Unknown model type: {}".format(args.model_type))
@@ -157,17 +248,24 @@ def main():
         min_lr=1e-6
     )
 
+    # Initialize tracking of best validation loss
+    best_val_loss = float('inf')
+    
+    # Prepare for tracking losses
+    train_losses = []
+    val_losses = []
+
     # Begin training loop.
     logger.info("Starting training loop for %d epochs", args.epochs)
     for epoch in range(args.epochs):
+        # Training phase
         model.train()
         total_loss = 0.0
-        for batch_idx, batch in enumerate(dataloader):
+        for batch_idx, batch in enumerate(train_loader):
             # Move batch data to device.
             for key in batch:
                 if torch.is_tensor(batch[key]):
                     batch[key] = batch[key].to(device)
-
 
             optimizer.zero_grad()
             # Assumes the model has a train_step(batch, optimizer=...) method that returns a loss tensor.
@@ -176,12 +274,34 @@ def main():
             total_loss += loss.item()
 
             # if (batch_idx + 1) % 10 == 0:
-            #     logger.info("Epoch %d, Batch %d/%d, Loss: %.4f", epoch+1, batch_idx+1, len(dataloader), loss.item())
-        avg_loss = total_loss / len(dataloader)
-        logger.info("Epoch %d completed, Average Loss: %.4f", epoch+1, avg_loss)
-        scheduler.step(avg_loss)
+            #     logger.info("Epoch %d, Batch %d/%d, Loss: %.4f", epoch+1, batch_idx+1, len(train_loader), loss.item())
+        
+        avg_train_loss = total_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
+        logger.info("Epoch %d completed, Training Loss: %.4f", epoch+1, avg_train_loss)
+        
+        # Validation phase
+        val_loss = validate(model, val_loader, device, logger,args.model_type)
+        val_losses.append(val_loss)
+        
+        # Update learning rate based on validation loss
+        scheduler.step(val_loss)
+        
+        # Save model if validation loss improved
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_path = os.path.join(exp_dir, "best_model.pth")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': avg_train_loss,
+                'val_loss': val_loss,
+            }, best_model_path)
+            logger.info("New best model saved with validation loss: %.4f", val_loss)
     
-        # Save checkpoints in the experiment directory
+        # Save regular checkpoints
         if (epoch + 1) % 5 == 0:
             checkpoint_path = os.path.join(exp_dir, f"model_epoch_{epoch+1}.pth")
             torch.save({
@@ -189,7 +309,8 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'loss': avg_loss,
+                'train_loss': avg_train_loss,
+                'val_loss': val_loss,
             }, checkpoint_path)
             logger.info("Saved checkpoint to %s", checkpoint_path)
 
@@ -200,11 +321,14 @@ def main():
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
-        'loss': avg_loss,
+        'train_loss': avg_train_loss,
+        'val_loss': val_loss,
     }, final_path)
     logger.info("Training completed. Final model saved to %s", final_path)
 
-    # (Validation and evaluation code can be added later as required)
+    # Clean up datasets to close HDF5 files
+    train_dataset.close()
+    val_dataset.close()
 
 if __name__ == "__main__":
     main() 
