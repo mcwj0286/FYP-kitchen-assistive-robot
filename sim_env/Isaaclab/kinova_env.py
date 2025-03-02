@@ -40,6 +40,7 @@ import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.sensors.camera import Camera, CameraCfg  # Add camera imports
 
 # Add this new import to access local assets
 import os
@@ -102,10 +103,33 @@ def design_scene() -> tuple[dict, list[list[float]]]:
     kinova_arm_cfg = KINOVA_JACO2_N6S300_CFG.replace(prim_path="/World/Origin/Robot")
     kinova_arm_cfg.init_state.pos = (0.0, 0.0, 0.8)
     kinova_j2n6s300 = Articulation(cfg=kinova_arm_cfg)
+    
+    # -- Wrist Camera
+    # Create a camera on the wrist link (j2n6s300_link_6)
+    wrist_camera_cfg = CameraCfg(
+        prim_path="/World/Origin/Robot/j2n6s300_link_6/wrist_camera",
+        update_period=0.0,  # Set to 0.0 to update every frame
+        width=320,
+        height=240,
+        data_types=["rgb"],  # Only RGB data
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0, 
+            focus_distance=400.0, 
+            horizontal_aperture=20.955, 
+            clipping_range=(0.01, 10.0)
+        ),
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.05, 0.0, 0.02),  # Small offset from the wrist link
+            rot=(0.5, -0.5, 0.5, -0.5),  # Orientation with camera pointing forward
+            convention="ros"
+        ),
+    )
+    wrist_camera = Camera(cfg=wrist_camera_cfg)
 
     # return the scene information
     scene_entities = {
         "kinova_j2n6s300": kinova_j2n6s300,
+        "wrist_camera": wrist_camera,
     }
     return scene_entities, origins
 
@@ -123,40 +147,75 @@ def run_simulator(sim: sim_utils.SimulationContext, entities: dict[str, Articula
             # reset counters
             sim_time = 0.0
             count = 0
+            
+            # Reset camera if present - do this before resetting the robot
+            # as the camera might be attached to the robot
+            if "wrist_camera" in entities:
+                try:
+                    entities["wrist_camera"].reset()
+                except Exception as e:
+                    print(f"Camera reset error: {e}")
+            
             # reset the scene entities
             for index, robot in enumerate(entities.values()):
-                # root state
-                root_state = robot.data.default_root_state.clone()
-                root_state[:, :3] += origins[index]
-                robot.write_root_pose_to_sim(root_state[:, :7])
-                robot.write_root_velocity_to_sim(root_state[:, 7:])
-                # set joint positions
-                joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
-                robot.write_joint_state_to_sim(joint_pos, joint_vel)
-                # clear internal buffers
-                robot.reset()
+                if isinstance(robot, Articulation):
+                    # root state
+                    root_state = robot.data.default_root_state.clone()
+                    root_state[:, :3] += origins[index]
+                    robot.write_root_pose_to_sim(root_state[:, :7])
+                    robot.write_root_velocity_to_sim(root_state[:, 7:])
+                    # set joint positions
+                    joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
+                    robot.write_joint_state_to_sim(joint_pos, joint_vel)
+                    # clear internal buffers
+                    robot.reset()
+            
             print("[INFO]: Resetting robot state...")
         # apply random actions to the robot
-        for robot in entities.values():
-            # Get velocity limits from robot configuration
-            max_velocity_limits = 100.0  # As defined in kinova.py
-            
-            # Joint velocity control
-            joint_vel_target = torch.randint(-100, 101, size=robot.data.joint_vel.shape, device=robot.data.joint_vel.device)*0.3  # Random integer velocity commands from -100 to 100
-            print(joint_vel_target)
-            joint_vel_target = joint_vel_target.clamp_(
-                -max_velocity_limits, max_velocity_limits  # Using the defined limits
-            )
-            robot.set_joint_velocity_target(joint_vel_target)  # This method should exist in the API
-            robot.write_data_to_sim()
-        # perform step
+        robot = entities["kinova_j2n6s300"]
+        # Get velocity limits from robot configuration
+        max_velocity_limits = 100.0  # As defined in kinova.py
+        
+        # Joint velocity control
+        joint_vel_target = torch.randint(-100, 101, size=robot.data.joint_vel.shape, device=robot.data.joint_vel.device)*0.3  # Random integer velocity commands from -100 to 100
+        print(joint_vel_target)
+        joint_vel_target = joint_vel_target.clamp_(
+            -max_velocity_limits, max_velocity_limits  # Using the defined limits
+        )
+        robot.set_joint_velocity_target(joint_vel_target)  # This method should exist in the API
+        robot.write_data_to_sim()
+        
+        # Step physics first
         sim.step()
+        
+        # Update camera after physics step
+        if "wrist_camera" in entities:
+            try:
+                # Update camera without any arguments
+                entities["wrist_camera"].update()
+                
+                # Print camera info every 50 frames
+                if count % 50 == 0:
+                    print("-------------------------------")
+                    print(f"Camera info at frame {count}:")
+                    print(entities["wrist_camera"])
+                    
+                    # Safely check and print data attributes
+                    if hasattr(entities["wrist_camera"], "data"):
+                        if hasattr(entities["wrist_camera"].data, "output"):
+                            if "rgb" in entities["wrist_camera"].data.output:
+                                print("Camera RGB shape:", entities["wrist_camera"].data.output["rgb"].shape)
+                    print("-------------------------------")
+            except Exception as e:
+                print(f"Camera update error: {e}")
+        
         # update sim-time
         sim_time += sim_dt
         count += 1
-        # update buffers
-        for robot in entities.values():
-            robot.update(sim_dt)
+        
+        # Update robot after camera update
+        if "kinova_j2n6s300" in entities:
+            entities["kinova_j2n6s300"].update(sim_dt)
 
 
 def main():
