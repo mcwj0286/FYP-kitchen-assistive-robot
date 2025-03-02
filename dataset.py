@@ -334,8 +334,10 @@ class Kinova_Dataset(Dataset):
         image_shape: Tuple[int, int] = (128, 128),  # desired output image size (height, width)
         action_velocity_scale: float = 30.0,       # scale for joint velocities normalization
         gripper_scale: float = 3000.0,             # scale for gripper velocity normalization
-        load_task_emb: bool = True,                # NEW: whether to encode task embedding from HDF5 filename
-        max_word_len: int = 25                     # NEW: maximum word length for task encoding
+        load_task_emb: bool = True,                # whether to encode task embedding from HDF5 filename
+        max_word_len: int = 25,                    # maximum word length for task encoding
+        train_ratio: float = 0.8,                  # ratio of demonstrations to use for training
+        is_train: bool = True                      # whether this is a training or validation dataset
     ):
         """
         Args:
@@ -350,11 +352,13 @@ class Kinova_Dataset(Dataset):
             num_queries (int): Number of future actions to concatenate.
             camera_mapping (dict): Mapping of output image key to dataset key within the "images" group.
                                    Default is {"pixels": "cam_0", "pixels_egocentric": "cam_1"}.
-            image_shape (tuple): NEW: The target image size (height, width). Default is (128, 128).
+            image_shape (tuple): The target image size (height, width). Default is (128, 128).
             action_velocity_scale (float): Scale for joint velocities normalization.
             gripper_scale (float): Scale for gripper velocity normalization.
             load_task_emb (bool): Whether to encode task embedding from HDF5 filename.
             max_word_len (int): Maximum word length for task encoding.
+            train_ratio (float): Ratio of demonstrations to use for training (0.0 to 1.0).
+            is_train (bool): Whether this dataset instance is for training (True) or validation (False).
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -371,6 +375,12 @@ class Kinova_Dataset(Dataset):
         self.gripper_scale = gripper_scale
         self.load_task_emb = load_task_emb
         self.max_word_len = max_word_len
+        self.train_ratio = train_ratio
+        self.is_train = is_train
+        
+        if not (0.0 <= train_ratio <= 1.0):
+            raise ValueError(f"train_ratio must be between 0.0 and 1.0, got {train_ratio}")
+        
         if self.load_task_emb:
             self.task_embeddings = {}
         
@@ -397,14 +407,36 @@ class Kinova_Dataset(Dataset):
                 if self.load_task_emb and task_name not in self.task_embeddings:
                     self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
                 
-                # Open file to gather segments from each demo.
+                # Open file to gather demos and split into train/val sets
                 with h5py.File(file_path, 'r') as f:
+                    # Collect all valid demo keys
+                    valid_demos = []
                     for demo_key in f.keys():
                         if not demo_key.startswith('demo_'):
                             continue
                         demo = f[demo_key]
                         if "actions" not in demo:
                             continue
+                        valid_demos.append(demo_key)
+                    
+                    # Split demos into train and validation sets
+                    n_demos = len(valid_demos)
+                    n_train = int(n_demos * train_ratio)
+                    
+                    # Sort to ensure consistent splits across runs
+                    valid_demos.sort()
+                    
+                    # Select the appropriate demo keys based on is_train flag
+                    if is_train:
+                        selected_demos = valid_demos[:n_train]
+                    else:
+                        selected_demos = valid_demos[n_train:]
+                    
+                    print(f"Task {task_name}: {len(selected_demos)}/{n_demos} demos selected for {'training' if is_train else 'validation'}")
+                    
+                    # Process the selected demonstrations
+                    for demo_key in selected_demos:
+                        demo = f[demo_key]
                         n_timesteps = demo["actions"].shape[0]
                         
                         # Determine offset based on frame stacking
@@ -430,7 +462,8 @@ class Kinova_Dataset(Dataset):
                             ))
                             current_start += (self.seq_length - self.overlap)
         
-        print(f"Loaded {len(self.segment_map)} segments from {len(self.task_files)} tasks")
+        split_type = "training" if is_train else "validation"
+        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks")
         self.file_cache = {}
     
     def _get_file(self, file_path: str) -> h5py.File:
@@ -576,8 +609,9 @@ class Kinova_Dataset(Dataset):
 
 if __name__ == "__main__":
     # Test RealDataset and visualize a resized image sequence as a video
-    kinova_dataset = Kinova_Dataset(
-        data_path="/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+    # Create training dataset (80% of demos)
+    train_dataset = Kinova_Dataset(
+        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
         seq_length=10,
         frame_stack=4,
         overlap=2,
@@ -588,21 +622,38 @@ if __name__ == "__main__":
         num_queries=10,
         image_shape=(128, 128),  # Target image size: 128x128
         action_velocity_scale=30.0,
-        gripper_scale=3000.0
+        gripper_scale=3000.0,
+        train_ratio=0.9,
+        is_train=True
     )
-    print(f"Kinova_Dataset loaded {len(kinova_dataset)} segments from {len(kinova_dataset.task_files)} tasks.")
-    sample = kinova_dataset[0]
-    # print(kinova_dataset[0])
-    # try:
-    #     sample = real_dataset[0]
-    # except Exception as e:
-    #     print("Failed to retrieve a segment:", e)
-    #     real_dataset.close()
-    #     exit(1)
     
-    # Print shapes in the sample for verification.
-    # print("\n--- Sample Segment Details ---")
-    for key, value in sample.items():
+    # Create validation dataset (20% of demos)
+    val_dataset = Kinova_Dataset(
+        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+        seq_length=10,
+        frame_stack=4,
+        overlap=2,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True,
+        get_action_padding=True,
+        num_queries=10,
+        image_shape=(128, 128),  # Target image size: 128x128
+        action_velocity_scale=30.0,
+        gripper_scale=3000.0,
+        train_ratio=0.8,
+        is_train=False
+    )
+    
+    print(f"Training dataset: {len(train_dataset)} segments")
+    print(f"Validation dataset: {len(val_dataset)} segments")
+    
+    # Sample from training dataset
+    train_sample = train_dataset[0]
+    
+    # Print shapes in the sample for verification
+    print("\n--- Training Sample Details ---")
+    for key, value in train_sample.items():
         if isinstance(value, torch.Tensor):
             print(f"{key} shape:", value.shape)
         elif isinstance(value, dict):
@@ -611,43 +662,7 @@ if __name__ == "__main__":
                 if isinstance(sub_value, torch.Tensor):
                     print(f"  {sub_key} shape:", sub_value.shape)
     
-    # # Visualize the first image using matplotlib
-    # try:
-    #     import matplotlib.pyplot as plt
-    #     if "images" in sample and "pixels" in sample["images"]:
-    #         img_tensor = sample["images"]["pixels"][0]
-    #         img_np = img_tensor.permute(1, 2, 0).numpy()
-    #         plt.figure(figsize=(4, 4))
-    #         plt.imshow(img_np)
-    #         plt.title("Resized Image from RealDataset (128x128)")
-    #         plt.axis("off")
-    #         plt.show()
-    # except ImportError:
-    #     print("matplotlib not installed; skipping static image visualization.")
-    
-    # # -------------------------------
-    # # New: Visualize the entire sequence as a video using OpenCV.
-    # try:
-    #     video_window = "RealDataset Video Playback"
-    #     cv2.namedWindow(video_window, cv2.WINDOW_NORMAL)
-    #     num_frames = sample["images"]["pixels"].shape[0]
-    #     print(f"\nDisplaying video: {num_frames} frames (press 'q' to quit)")
-    #     for i in range(num_frames):
-    #         # Each frame tensor has shape: (C, H, W)
-    #         frame_tensor = sample["images"]["pixels_egocentric"][i]
-    #         # Convert tensor to numpy array (H, W, C)
-    #         frame_np = frame_tensor.permute(1, 2, 0).numpy()
-    #         # Scale back to [0,255] for display
-    #         frame_disp = (frame_np * 255).astype(np.uint8)
-    #         cv2.imshow(video_window, frame_disp)
-    #         # Wait 300ms between frames; press 'q' to exit early.
-    #         if cv2.waitKey(300) & 0xFF == ord('q'):
-    #             break
-    #     cv2.destroyWindow(video_window)
-    # except Exception as e:
-    #     print("Error during video playback:", e)
-    
-    # # Clean up by closing open HDF5 files
-    # real_dataset.close()
-    # print("\nRealDataset closed successfully")
+    # Clean up resources
+    train_dataset.close()
+    val_dataset.close()
     
