@@ -41,6 +41,9 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+# Add this new import to access local assets
+import os
+
 ##
 # Pre-defined configs
 ##
@@ -81,9 +84,20 @@ def design_scene() -> tuple[dict, list[list[float]]]:
 
     # Set up the Kinova JACO2 (6-Dof) arm
     prim_utils.create_prim("/World/Origin", "Xform", translation=origins[0])
+    
+    # -- Kitchen Environment
+    kitchen_usd_path = os.path.join(os.getcwd(), "assets/Kitchen_set/Kitchen_set.usd")
+    cfg = sim_utils.UsdFileCfg(usd_path=kitchen_usd_path)
+    cfg.func("/World/Origin/Kitchen", cfg, translation=(0.5, 0.5, 0.0))
+    # Apply scale to the kitchen prim after creation
+    prim_utils.set_prim_property("/World/Origin/Kitchen", "xformOp:scale", (0.01, 0.01, 0.01))
+    # Make sure the scale operation is in the transform order
+    prim_utils.set_prim_property("/World/Origin/Kitchen", "xformOpOrder", ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"])
+    
     # -- Table
     cfg = sim_utils.UsdFileCfg(usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd")
     cfg.func("/World/Origin/Table", cfg, translation=(0.0, 0.0, 0.8))
+    
     # -- Robot
     kinova_arm_cfg = KINOVA_JACO2_N6S300_CFG.replace(prim_path="/World/Origin/Robot")
     kinova_arm_cfg.init_state.pos = (0.0, 0.0, 0.8)
