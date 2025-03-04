@@ -30,10 +30,12 @@ class LIBERODataset(Dataset):
         seq_length: int = 10,  # Length of each sequence segment
         frame_stack: int = 1,  # Number of frames to stack
         overlap: int = 0,  # Number of overlapping timestamps between sequences
-        pad_frame_stack: bool = True,  # Whether to pad for frame stacking
-        pad_seq_length: bool = True,  # Whether to pad for sequence length
+        pad_frame_stack: bool = False,  # Whether to pad for frame stacking
+        pad_seq_length: bool = False,  # Whether to pad for sequence length
         get_pad_mask: bool = False,  # Whether to return padding masks
-        get_action_padding: bool = False  # Whether to return action padding masks
+        get_action_padding: bool = False,  # Whether to return action padding masks
+        train_ratio: float = 0.8,  # Ratio of demonstrations to use for training
+        is_train: bool = True  # Whether this is a training or validation dataset
     ):
         """
         Args:
@@ -50,11 +52,16 @@ class LIBERODataset(Dataset):
             pad_seq_length (bool): Whether to pad for sequence length
             get_pad_mask (bool): Whether to return padding masks
             get_action_padding (bool): Whether to return action padding masks
+            train_ratio (float): Ratio of demonstrations to use for training (0.0 to 1.0)
+            is_train (bool): Whether this dataset instance is for training (True) or validation (False)
         """
         super().__init__()
         
         if benchmark not in self.BENCHMARKS:
             raise ValueError(f"Benchmark must be one of {list(self.BENCHMARKS.keys())}")
+        
+        if not (0.0 <= train_ratio <= 1.0):
+            raise ValueError(f"train_ratio must be between 0.0 and 1.0, got {train_ratio}")
             
         self.data_path = os.path.join(data_path, benchmark)
         self.device = 'cpu'  # Force CPU for dataset
@@ -68,6 +75,8 @@ class LIBERODataset(Dataset):
         self.pad_seq_length = pad_seq_length
         self.get_pad_mask = get_pad_mask
         self.get_action_padding = get_action_padding
+        self.train_ratio = train_ratio
+        self.is_train = is_train
             
         # Load all HDF5 files and organize by tasks
         self.task_files = {}  # Maps task_name to file path
@@ -87,7 +96,30 @@ class LIBERODataset(Dataset):
                 
                 # Map demonstrations in this file and create segments
                 with h5py.File(file_path, 'r') as f:
+                    # Collect all valid demo keys
+                    valid_demos = []
                     for demo_key in f['data'].keys():
+                        if 'actions' not in f['data'][demo_key]:
+                            continue
+                        valid_demos.append(demo_key)
+                    
+                    # Split demos into train and validation sets
+                    n_demos = len(valid_demos)
+                    n_train = int(n_demos * train_ratio)
+                    
+                    # Sort to ensure consistent splits across runs
+                    valid_demos.sort()
+                    
+                    # Select the appropriate demo keys based on is_train flag
+                    if is_train:
+                        selected_demos = valid_demos[:n_train]
+                    else:
+                        selected_demos = valid_demos[n_train:]
+                    
+                    print(f"Task {task_name}: {len(selected_demos)}/{n_demos} demos selected for {'training' if is_train else 'validation'}")
+                    
+                    # Process only the selected demonstrations
+                    for demo_key in selected_demos:
                         # Get number of timesteps in this demo
                         n_timesteps = len(f['data'][demo_key]['actions'])
                         
@@ -131,10 +163,11 @@ class LIBERODataset(Dataset):
                 if self.load_task_emb and task_name not in self.task_embeddings:
                     self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
                         
-        print(f"Loaded {len(self.segment_map)} segments from {len(self.task_files)} tasks")
+        split_type = "training" if is_train else "validation"
+        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks")
         for task_name, files in self.task_files.items():
             n_demos = sum(1 for f in files for _ in h5py.File(f, 'r')['data'].keys())
-            print(f"Task: {task_name} - {n_demos} demonstrations")
+            print(f"Task: {task_name} - {n_demos} demonstrations available")
         
         # Cache for open HDF5 files
         self.file_cache = {}
@@ -665,4 +698,50 @@ if __name__ == "__main__":
     # Clean up resources
     train_dataset.close()
     val_dataset.close()
+    
+    # Example of using LIBERODataset with train/validation split
+    print("\n\n--- LIBERO Dataset Examples ---")
+    
+    # Create training dataset (80% of demos)
+    libero_train_dataset = LIBERODataset(
+        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
+        benchmark="libero_90",
+        seq_length=10,
+        frame_stack=4,
+        overlap=2,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True,
+        get_action_padding=True,
+        num_queries=10,
+        max_word_len=77,
+        load_task_emb=True,
+        train_ratio=0.8,
+        is_train=True
+    )
+    
+    # Create validation dataset (20% of demos)
+    libero_val_dataset = LIBERODataset(
+        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
+        benchmark="libero_90",
+        seq_length=10,
+        frame_stack=4,
+        overlap=2,
+        pad_frame_stack=True,
+        pad_seq_length=True,
+        get_pad_mask=True,
+        get_action_padding=True,
+        num_queries=10,
+        max_word_len=77,
+        load_task_emb=True,
+        train_ratio=0.8,
+        is_train=False
+    )
+    
+    print(f"LIBERO Training dataset: {len(libero_train_dataset)} segments")
+    print(f"LIBERO Validation dataset: {len(libero_val_dataset)} segments")
+    
+    # Clean up resources
+    libero_train_dataset.close()
+    libero_val_dataset.close()
     
