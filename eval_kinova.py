@@ -160,12 +160,86 @@ def preprocess_robot_state(joint_angles, device):
         print(f"Error in robot state preprocessing: {e}")
         return None
 
+def parse_args_file(args_file_path):
+    """Parse the args.txt file to extract hyperparameters"""
+    config = {}
+    if not os.path.exists(args_file_path):
+        print(f"Warning: args.txt not found at {args_file_path}")
+        return None
+    
+    try:
+        with open(args_file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or ': ' not in line:
+                    continue
+                key, value = line.split(': ', 1)
+                # Convert values to appropriate types
+                if value.lower() == 'true':
+                    value = True
+                elif value.lower() == 'false':
+                    value = False
+                elif value.isdigit():
+                    value = int(value)
+                elif value.replace('.', '', 1).isdigit():
+                    value = float(value)
+                config[key] = value
+        return config
+    except Exception as e:
+        print(f"Error parsing args.txt: {e}")
+        return None
+
 def get_policy_class(experiment_dir):
-    """Determine which policy class to use based on experiment directory name"""
+    """Determine which policy class to use based on experiment directory and args.txt"""
+    args_file_path = os.path.join(experiment_dir, 'args.txt')
+    args_config = parse_args_file(args_file_path)
+    
+    # Default device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if args_config and 'model_type' in args_config:
+        model_type = args_config['model_type'].lower()
+        print(f"Using {model_type} policy based on args.txt")
+        
+        if model_type == 'bc_act':
+            # Configure BC-ACT policy based on args.txt
+            config = {
+                "obs_shape": {
+                    "pixels": (3, 128, 128),
+                    "pixels_egocentric": (3, 128, 128),
+                    "proprioceptive": (9,)
+                },
+                "act_dim": 7,
+                "policy_head": args_config.get("policy_head", "deterministic"),
+                "hidden_dim": args_config.get("hidden_dim", 256),
+                "device": device,
+                "num_queries": args_config.get("num_queries", 10),
+                "max_episode_len": 1000,
+                "use_proprio": True,
+                "n_layer": args_config.get("n_layer", 4),
+                "use_mpi": args_config.get("use_mpi",False),
+                "mpi_root_dir": "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints"
+            }
+            
+            # Add additional parameters if present in args.txt
+            if "repr_dim" in args_config:
+                config["repr_dim"] = args_config["repr_dim"]
+                
+            return bc_act_policy, config
+        
+        elif model_type == 'bc_transformer':
+            config = {
+                "history": args_config.get("history", False),
+                "max_episode_len": 1000,
+                "use_mpi_pixels_egocentric": args_config.get("use_mpi", False),
+                "device": device
+            }
+            return bc_transformer_policy, config
+    
+    # Fallback to directory name-based detection if args.txt parsing failed
     dir_name = os.path.basename(experiment_dir).lower()
     if 'bc_act' in dir_name:
-        print("Using BC-ACT policy")
-        # Define config for bc_act_policy matching training configuration
+        print("Using BC-ACT policy (fallback method)")
         config = {
             "obs_shape": {
                 "pixels": (3, 128, 128),
@@ -175,32 +249,29 @@ def get_policy_class(experiment_dir):
             "act_dim": 7,
             "policy_head": "deterministic",
             "hidden_dim": 256,
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-            # "history": True,
-            # "history_len": 10,
+            "device": device,
             "num_queries": 10,
-            # "temporal_agg": True,
             "max_episode_len": 1000,
             "use_proprio": True,
-            "n_layer" : 4
+            "n_layer": 4
         }
         return bc_act_policy, config
     elif 'bc_transformer' in dir_name:
-        print("Using BC-Transformer policy")
+        print("Using BC-Transformer policy (fallback method)")
         config = {
             "history": False,
             "max_episode_len": 1000,
             "use_mpi_pixels_egocentric": False,
-            "device": "cuda" if torch.cuda.is_available() else "cpu"
+            "device": device
         }
         return bc_transformer_policy, config
     else:
-        print("Warning: Could not determine policy type from directory name. Defaulting to BC-Transformer")
+        print("Warning: Could not determine policy type. Defaulting to BC-Transformer")
         config = {
             "history": False,
             "max_episode_len": 1000,
             "use_mpi_pixels_egocentric": False,
-            "device": "cuda" if torch.cuda.is_available() else "cpu"
+            "device": device
         }
         return bc_transformer_policy, config
 
