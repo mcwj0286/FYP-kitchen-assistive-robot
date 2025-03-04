@@ -424,6 +424,51 @@ def loss_fn(dist, target, reduction="mean", model_type="bc_baku", **kwargs):
 
         return loss
 
+def validate(model, dataloader, device, logger, model_type):
+    """
+    Validate the model on the validation dataset.
+    
+    Parameters:
+        model: The model to validate
+        dataloader: DataLoader for the validation dataset
+        device: Device to perform validation on
+        logger: Logger for logging validation information
+        model_type: Type of model being validated
+        
+    Returns:
+        float: Average validation loss
+    """
+    model.eval()
+    total_val_loss = 0.0
+    mse_loss = nn.MSELoss()
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            # Move batch data to device
+            for key in batch:
+                if torch.is_tensor(batch[key]):
+                    batch[key] = batch[key].to(device)
+            
+            # Forward pass
+            predicted_actions = model(batch)
+            target_actions = batch['actions']
+            
+            if model_type == "bc_act":
+                # Extract mean from distribution and reshape to match target shape
+                predicted_actions = predicted_actions.mean
+                B, S, an = target_actions.shape  # batch_size, seq_len, act_dim*num_queries
+                predicted_actions = predicted_actions.reshape(B, S, an)
+            else:
+                predicted_actions = predicted_actions.mean
+                
+            # Calculate MSE loss
+            loss = mse_loss(predicted_actions, target_actions)
+            total_val_loss += loss.item()
+    
+    avg_val_loss = total_val_loss / len(dataloader)
+    logger.info(f"Validation Loss: {avg_val_loss:.4f}")
+    return avg_val_loss
+
 def main():
     # Load environment variables from .env file
     load_dotenv()
@@ -450,8 +495,13 @@ def main():
                       help='Batch size for training')
     parser.add_argument('--num_queries', type=int, default=10,
                       help='Number of action tokens/queries for models that use them')
-    parser.add_argument('--use_moe', action='store_true', default=False, 
-                      help='Use MoE in bc_act model')
+    parser.add_argument('--policy_head', type=str, default="deterministic",
+                      choices=["deterministic", "task_specific_head"],
+                      help='Type of policy head')
+    parser.add_argument('--train_ratio', type=float, default=0.9,
+                      help='Ratio of data to use for training vs validation')
+    parser.add_argument('--use_moe', action='store_true', default=False,
+                      help='Use Mixture of Experts')
     parser.add_argument('--use_mpi', action='store_true', default=False,
                       help='Use MPI vision encoder instead of ResNet18')
     parser.add_argument('--mpi_root_dir', type=str, 
@@ -460,9 +510,6 @@ def main():
     parser.add_argument('--benchmark', type=str, default='libero_spatial',
                       choices=['libero_spatial', 'libero_object', 'libero_goal', 'libero_10', 'libero_90'],
                       help='Which benchmark to use for training')
-    parser.add_argument('--policy_head', type=str, default='deterministic',
-                      choices=['deterministic', 'task_specific_head'],
-                      help='Type of policy head to use')
     
     args = parser.parse_args()
     
@@ -574,6 +621,7 @@ def main():
                 "repr_dim": cfg.repr_dim,
                 "use_moe": cfg.use_moe,
                 "use_mpi": cfg.use_mpi,
+                "train_ratio": args.train_ratio,
             }
         )
 
@@ -631,15 +679,43 @@ def main():
         seq_length=cfg.seq_length,
         get_pad_mask = cfg.get_pad_mask,
         get_action_padding=cfg.get_action_padding,
-        overlap=cfg.overlap
+        overlap=cfg.overlap,
+        train_ratio=args.train_ratio,
+        is_train=True
+    )
+    
+    # Create validation dataset
+    val_dataset = LIBERODataset(
+        data_path=cfg.folder,
+        benchmark=cfg.benchmark_name,
+        device=cfg.device,
+        load_task_emb=True,
+        num_queries=cfg.num_queries,
+        seq_length=cfg.seq_length,
+        get_pad_mask = cfg.get_pad_mask,
+        get_action_padding=cfg.get_action_padding,
+        overlap=cfg.overlap,
+        train_ratio=args.train_ratio,
+        is_train=False
     )
 
-    # Create data loader
+    logger.info(f"Training dataset: {len(train_dataset)} segments")
+    logger.info(f"Validation dataset: {len(val_dataset)} segments")
+
+    # Create data loaders
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.train.batch_size,
         num_workers=0,
         sampler=RandomSampler(train_dataset),
+        pin_memory=True,
+    )
+    
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=cfg.train.batch_size,
+        num_workers=0,
+        shuffle=False,
         pin_memory=True,
     )
 
@@ -672,6 +748,7 @@ def main():
     
     # Training loop
     logger.info("Starting training...")
+    best_val_loss = float('inf')  # Track best validation loss
     best_val_success = 0.0
     task_ids = list(range(n_manip_tasks))  # Full task list for training
     best_task_success_rates = np.zeros(len(eval_task_ids))  # Track best success rates for eval tasks
@@ -696,7 +773,6 @@ def main():
             else:
                 loss = loss_output
             
-
             if isinstance(loss, torch.Tensor):
                 total_loss += loss.item()
             else:
@@ -705,23 +781,40 @@ def main():
         avg_train_loss = total_loss / len(train_dataloader)
         logger.info(f"Epoch {epoch} Average Training Loss: {avg_train_loss:.4f}")
         
-        # Log training metrics to wandb
+        # Validation phase
+        val_loss = validate(model, val_dataloader, cfg.device, logger, args.model_type)
+        
+        # Update learning rate scheduler based on validation loss
+        scheduler.step(val_loss)
+        
+        # Save best model based on validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "val_loss": val_loss,
+                    "train_loss": avg_train_loss,
+                },
+                os.path.join(cfg.experiment_dir, "best_model_val.pth")
+            )
+            logger.info(f"New best validation model saved with loss: {val_loss:.4f}")
+        
+        # Log training and validation metrics to wandb
         if args.use_wandb:
             wandb.log({
                 "epoch": epoch,
                 "train/loss": avg_train_loss,
+                "val/loss": val_loss,
                 "train/learning_rate": optimizer.param_groups[0]['lr']
             })
-        
-        # Step the scheduler based on average training loss
-        scheduler.step(avg_train_loss)
-        
-        # Current learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        # Validation step every eval_every epochs
-        if epoch > 0 and epoch % cfg.eval.eval_every == 0:
-            logger.info(f"Running validation at epoch {epoch}...")
+            
+        # Validation step for task success metrics every eval_every epochs
+        if hasattr(cfg, 'eval') and hasattr(cfg.eval, 'eval_every') and epoch > 0 and epoch % cfg.eval.eval_every == 0:
+            logger.info(f"Running task success validation at epoch {epoch}...")
             model.eval()
             with torch.no_grad():
                 success_rates = evaluate_multitask_training_success(cfg, benchmark, eval_task_ids, model)
@@ -741,7 +834,7 @@ def main():
                 # Save checkpoint if improved
                 if avg_success > best_val_success:
                     best_val_success = avg_success
-                    save_path = os.path.join(cfg.experiment_dir, f'model_best.pth')
+                    save_path = os.path.join(cfg.experiment_dir, f'model_best_success.pth')
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.state_dict(),
@@ -749,6 +842,7 @@ def main():
                         'scheduler_state_dict': scheduler.state_dict(),  # Save scheduler state
                         'success_rates': success_rates,
                         'avg_success': avg_success,
+                        'val_loss': val_loss,
                     }, save_path)
                     logger.info(f"Saved best model checkpoint with success rate {avg_success:.4f}")
                     
