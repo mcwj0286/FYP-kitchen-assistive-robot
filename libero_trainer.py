@@ -63,11 +63,10 @@ def get_model(model_type,cfg):
         cfg.data.seq_len = 10
         cfg.obs_type = "pixels"
         cfg.policy_type = "gpt"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = cfg.policy_head
         cfg.use_proprio = True
         cfg.use_language = True
         cfg.temporal_agg = True
-        cfg.num_queries = 10
         cfg.hidden_dim = 256
         cfg.history = True
         cfg.history_len = 10
@@ -163,10 +162,10 @@ def get_model(model_type,cfg):
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = cfg.policy_head
         cfg.use_proprio = True
         cfg.temporal_agg = True
-        cfg.num_queries = 10
+        # num_queries from command line
         cfg.hidden_dim = 256
         cfg.history = False
         cfg.history_len = 10
@@ -219,10 +218,9 @@ def get_model(model_type,cfg):
         
         # Model parameters
         cfg.obs_type = "pixels"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = cfg.policy_head
         cfg.use_proprio = True
-        cfg.num_queries = 10
-        cfg.hidden_dim = 256
+        # cfg.num_queries is now set from command line args
    
         cfg.film = True
         cfg.max_episode_len = 650
@@ -230,10 +228,12 @@ def get_model(model_type,cfg):
         cfg.get_pad_mask = True
         cfg.get_action_padding = True
         cfg.overlap = 0
+
+      
         
         # Initialize BC-ACT model
         model = bc_act_policy(
-            repr_dim=512,
+            repr_dim=cfg.repr_dim,
             act_dim=cfg.action_dim,
             hidden_dim=cfg.hidden_dim,
             policy_head=cfg.policy_head,
@@ -244,7 +244,7 @@ def get_model(model_type,cfg):
                 'proprioceptive': (9,),
             },
             language_dim=768,
-            lang_repr_dim=512,
+            lang_repr_dim=cfg.repr_dim,
             language_fusion="film" if cfg.film else None,
             pixel_keys=['pixels', 'pixels_egocentric'],
             proprio_key='proprioceptive',
@@ -255,6 +255,8 @@ def get_model(model_type,cfg):
             learnable_tokens=False,
             n_layer=cfg.n_layer,
             use_moe=cfg.use_moe,
+            use_mpi=cfg.use_mpi,
+            mpi_root_dir=cfg.mpi_root_dir,
             benchmark_name=cfg.benchmark_name
         ).to(cfg.device)
     elif model_type == "moe":
@@ -267,7 +269,7 @@ def get_model(model_type,cfg):
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = cfg.policy_head
         cfg.use_proprio = True
         cfg.temporal_agg = False
         cfg.num_queries = 1
@@ -301,7 +303,7 @@ def get_model(model_type,cfg):
         'repr_dim': 512,
         'act_dim': 7,
         'hidden_dim': 256,
-        'policy_head': 'deterministic',
+        'policy_head': cfg.policy_head,
         'obs_type': 'pixels',
         'obs_shape': {
             'pixels': (3, 128, 128),
@@ -327,10 +329,10 @@ def get_model(model_type,cfg):
         cfg.train.optimizer.kwargs.betas = [0.9, 0.999]
         cfg.train.n_epochs = 100
         cfg.obs_type = "pixels"
-        cfg.policy_head = "deterministic"
+        cfg.policy_head = cfg.policy_head
         cfg.use_proprio = True
         cfg.temporal_agg = True  # Set to False to avoid dimension mismatch
-        cfg.num_queries = 10       # Set to 1 to match action dimensions
+        # Use num_queries from command line 
         cfg.hidden_dim = 256
         cfg.history = False       # Simplify training initially
         cfg.history_len = 1
@@ -434,17 +436,33 @@ def main():
                       help='Type of model to train')
     parser.add_argument('--eval_sample_size', type=int, default=10,
                       help='Number of tasks to sample for evaluation. If None, all tasks will be evaluated.')
-    parser.add_argument('--use_wandb', action='store_true', default=True,
+    parser.add_argument('--use_wandb', action='store_true', default=False,
                       help='Enable Weights & Biases logging')
     parser.add_argument('--device', type=str, default='cuda',
                       help='Device to run the model on')
     parser.add_argument('--n_layer', type=int, default=8,
                       help='Number of layers in the model')
+    parser.add_argument('--repr_dim', type=int, default=512,
+                      help='Representation dimension for the model')
+    parser.add_argument('--hidden_dim', type=int, default=256,
+                      help='Hidden dimension for the model')
+    parser.add_argument('--batch_size', type=int, default=32,
+                      help='Batch size for training')
+    parser.add_argument('--num_queries', type=int, default=10,
+                      help='Number of action tokens/queries for models that use them')
     parser.add_argument('--use_moe', action='store_true', default=False, 
                       help='Use MoE in bc_act model')
+    parser.add_argument('--use_mpi', action='store_true', default=False,
+                      help='Use MPI vision encoder instead of ResNet18')
+    parser.add_argument('--mpi_root_dir', type=str, 
+                      default="/home/john/project/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints/mpi-small",
+                      help='Path to MPI model checkpoints')
     parser.add_argument('--benchmark', type=str, default='libero_spatial',
                       choices=['libero_spatial', 'libero_object', 'libero_goal', 'libero_10', 'libero_90'],
                       help='Which benchmark to use for training')
+    parser.add_argument('--policy_head', type=str, default='deterministic',
+                      choices=['deterministic', 'task_specific_head'],
+                      help='Type of policy head to use')
     
     args = parser.parse_args()
     
@@ -452,12 +470,18 @@ def main():
     cfg = EasyDict({
         'device': args.device if torch.cuda.is_available() or args.device == 'cpu' else 'cpu',
         'n_layer': args.n_layer,
+        'repr_dim': args.repr_dim,
+        'hidden_dim': args.hidden_dim,
         'use_moe': args.use_moe,
+        'use_mpi': args.use_mpi,
+        'mpi_root_dir': args.mpi_root_dir,
         'benchmark_name': args.benchmark,
         'model_type': args.model_type,
+        'policy_head': args.policy_head,
         'train': {
-            'batch_size': 64,
+            'batch_size': args.batch_size,
             'n_epochs': 100,
+            'accumulation_steps': 4,  # Add gradient accumulation steps
             'optimizer': {
                 'name': 'torch.optim.Adam',
                 'kwargs': {
@@ -484,7 +508,7 @@ def main():
         'overlap': 0,
         'get_pad_mask': False,
         'get_action_padding': False,
-        'num_queries': 1,
+        'num_queries': args.num_queries,
         'seq_length': 10
     })
 
@@ -543,11 +567,13 @@ def main():
                 "benchmark_name": cfg.benchmark_name,
                 "seq_length": cfg.seq_length,
                 "num_queries": cfg.num_queries,
-                "hidden_dim": cfg.hidden_dim if hasattr(cfg, 'hidden_dim') else None,
+                "hidden_dim": cfg.hidden_dim,
                 "trainable_parameters": num_params/1e6,
                 "device": cfg.device,
                 "n_layer": cfg.n_layer,
-                "use_moe": cfg.use_moe
+                "repr_dim": cfg.repr_dim,
+                "use_moe": cfg.use_moe,
+                "use_mpi": cfg.use_mpi,
             }
         )
 
@@ -670,6 +696,7 @@ def main():
             else:
                 loss = loss_output
             
+
             if isinstance(loss, torch.Tensor):
                 total_loss += loss.item()
             else:
