@@ -392,7 +392,7 @@ class bc_act_policy(nn.Module):
         
         self.device = device
         self.language_dim = language_dim
-        self.lang_repr_dim = lang_repr_dim
+        self.lang_repr_dim = repr_dim
         self.language_fusion = language_fusion
         self.pixel_keys = pixel_keys if pixel_keys else []
         self.proprio_key = proprio_key
@@ -634,7 +634,7 @@ class bc_act_policy(nn.Module):
         language_tokens = language_token.repeat(1, T, 1)  # [B, T, E]
         language_tokens = language_tokens.view(B*T, -1)
         # Apply temporal encoding
-        x = self.temporal_encode(x,language_token)
+        x = self.temporal_encode(x,language_tokens)
         B,T,num_queries,E = x.shape
         # reshape x to [B,T*num_queries,E]
         x = x.reshape(B, -1, E)
