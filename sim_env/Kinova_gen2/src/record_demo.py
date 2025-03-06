@@ -8,6 +8,7 @@ import cv2
 import h5py
 import numpy as np
 import os
+import argparse  # Added for command-line arguments
 
 class DataRecorder:
     def __init__(self, task_name):
@@ -119,9 +120,11 @@ class DataRecorder:
             self.h5_file.close()
 
 class record_demo:
-    def __init__(self, debug_mode=False, camera_width=224, camera_height=224, record_modular_demo=False):
-        self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
+    def __init__(self, debug_mode=False, camera_width=224, camera_height=224, record_modular_demo=False, control_mode='joint'):
+        self.velocity_scale = 20.0# Maximum joint velocity in degrees/second (reduced for safety)
         self.gripper_scale = 3000  # Scale factor for gripper control
+        self.cartesian_linear_scale = 0.20  # Maximum Cartesian linear velocity in m/s
+        self.cartesian_angular_scale = 40.0  # Maximum Cartesian angular velocity in degrees/s
         self.running = False
         self.emergency_stop = False
         self.controller = None
@@ -134,6 +137,9 @@ class record_demo:
         # Set desired camera resolution
         self.camera_width = camera_width
         self.camera_height = camera_height
+        
+        # Control mode ('joint' or 'cartesian')
+        self.control_mode = control_mode
 
         # New: Set flag and initialize modular action attributes if enabled
         self.record_modular_demo = record_modular_demo
@@ -151,6 +157,14 @@ class record_demo:
             self.arm = KinovaArmInterface()
             self.arm.connect()
             print("Kinova arm initialized successfully")
+            
+            # Set appropriate control mode
+            if self.control_mode == 'cartesian':
+                print("Setting Cartesian control mode...")
+                self.arm.set_cartesian_control()
+            else:
+                print("Setting Angular control mode...")
+                self.arm.set_angular_control()
             
             # Move to home position first and wait for completion
             print("\nMoving to home position before starting control...")
@@ -186,15 +200,22 @@ class record_demo:
             except Exception as e:
                 print(f"Camera initialization failed: {e}")
             
-            print("\nInitialization complete - ready for velocity control")
+            print(f"\nInitialization complete - ready for {self.control_mode} control")
             return True
         except Exception as e:
             print(f"Error initializing devices: {e}")
             return False
 
     def record_demo_loop(self):
-        """Main control loop for the robot using velocity control. Captures camera frames synchronously at the start of each iteration."""
-        print("\nPS4 Controller Mapping:")
+        """Main control loop for recording demos"""
+        if self.control_mode == 'cartesian':
+            self.cartesian_record_demo_loop()
+        else:
+            self.joint_record_demo_loop()
+            
+    def joint_record_demo_loop(self):
+        """Control loop for recording demos in joint velocity mode"""
+        print("\nPS4 Controller Mapping (Joint Velocity Mode):")
         print("Left Stick X/Y: Joint 1 & 2")
         print("Right Stick X/Y: Joint 3 & 4")
         print("L2/R2 Triggers: Joint 5")
@@ -203,9 +224,8 @@ class record_demo:
         print("Triangle: Move to Home Position")
         print("Share: Emergency Stop")
         print("Options: Start/Stop Recording")
-        print("Options: Exit")
         
-        print("\nStarting velocity control loop...")
+        print("\nStarting joint velocity control loop...")
         print("Note: The arm should now be in home position and ready for velocity control")
         
         while self.running and not self.emergency_stop:
@@ -260,50 +280,8 @@ class record_demo:
                     gripper_velocity = self.gripper_scale   # Close
                 joint_velocities[6] = gripper_velocity
                 
-                # Check for recording control (Options button) using edge detection
-                record_button_state = self.controller.options_pressed
-                if record_button_state and not self.prev_options_pressed:
-                    if not self.recording:
-                        if self.record_modular_demo:
-                            print(f"\nStarting new demo recording for modular action: {self.modular_names[self.current_modular_idx]}")
-                        else:
-                            print("\nStarting new demo recording...")
-                        self.data_recorder.start_new_demo()
-                        self.recording = True
-                    else:
-                        print("\nEnding demo recording...")
-                        save_response = input("Do you want to save this demo? (y/n): ")
-                        if save_response.strip().lower() in ['y', 'yes']:
-                            self.data_recorder.end_demo()
-                            print("Demo saved.")
-                            if self.record_modular_demo:
-                                # Advance to the next modular action cyclically
-                                self.data_recorder.close()  # Close current modular action's file
-                                self.current_modular_idx = (self.current_modular_idx + 1) % len(self.modular_names)
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
-                        else:
-                            if self.record_modular_demo:
-                                demo_name = self.data_recorder.current_demo.name.split('/')[-1]
-                                print(f"Discarding demo for modular action {self.modular_names[self.current_modular_idx]}...")
-                                if demo_name in self.data_recorder.h5_file:
-                                    del self.data_recorder.h5_file[demo_name]
-                                self.data_recorder.current_demo = None
-                                self.data_recorder.frame_idx = 0
-                                print("Demo discarded. Resetting to first modular action.")
-                                self.data_recorder.close()
-                                self.current_modular_idx = 0
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
-                            else:
-                                demo_name = self.data_recorder.current_demo.name.split('/')[-1]
-                                print(f"Discarding demo {demo_name}...")
-                                if demo_name in self.data_recorder.h5_file:
-                                    del self.data_recorder.h5_file[demo_name]
-                                self.data_recorder.current_demo = None
-                                self.data_recorder.frame_idx = 0
-                                print("Demo discarded.")
-                        self.recording = False
-                    time.sleep(0.5)  # Debounce
-                self.prev_options_pressed = record_button_state
+                # Handle recording controls and other button presses
+                self._handle_recording_controls()
                 
                 # Check for home position request
                 if self.controller.triangle_pressed:
@@ -339,8 +317,173 @@ class record_demo:
                 time.sleep(0.03333)
                 
             except Exception as e:
-                print(f"Error in control loop: {e}")
+                print(f"Error in joint control loop: {e}")
                 break
+    
+    def cartesian_record_demo_loop(self):
+        """Control loop for recording demos in Cartesian velocity mode"""
+        print("\nPS4 Controller Mapping (Cartesian Velocity Mode):")
+        print("Left Stick X/Y: X/Y translation")
+        print("L2/R2 Triggers: Z translation (up/down)")
+        print("Right Stick X: Rotation around Y (Pitch)")
+        print("Right Stick Y: Rotation around X (Roll)")
+        print("L1/R1 Buttons: Rotation around Z (Yaw)")
+        print("Square/Circle: Gripper Open/Close")
+        print("Triangle: Move to Home Position")
+        print("Share: Emergency Stop")
+        print("Options: Start/Stop Recording")
+        
+        print("\nStarting Cartesian velocity control loop...")
+        print("Note: The arm should now be in home position and ready for Cartesian control")
+        
+        while self.running and not self.emergency_stop:
+            try:
+                frames_dict = {}
+                # Synchronously capture frames from all cameras at the start of each iteration
+                if self.cameras is not None and self.cameras.cameras:
+                    frames = self.cameras.capture_frames()
+                    for cam_id, (success, frame) in frames.items():
+                        if success and frame is not None:
+                            cv2.imshow(f"Camera {cam_id}", frame)
+                            if self.recording:
+                                frames_dict[cam_id] = frame
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        print("Camera feed windows closed by user")
+                        self.running = False
+                        break
+                
+                if not self.controller:
+                    print("No controller connected")
+                    break
+                
+                # Map controller inputs to Cartesian velocities
+                # Linear velocities (X, Y, Z) in m/s
+                linear_velocity = [0.0, 0.0, 0.0]
+                linear_velocity[0] = -self.controller.left_stick_x * self.cartesian_linear_scale  # X axis
+                linear_velocity[1] = self.controller.left_stick_y * self.cartesian_linear_scale  # Y axis
+                
+                # Use L2/R2 triggers for Z axis movement
+                z_velocity = 0.0
+                if self.controller.l2_trigger:
+                    z_velocity = self.cartesian_linear_scale
+                elif self.controller.r2_trigger:
+                    z_velocity = -self.cartesian_linear_scale
+                linear_velocity[2] = z_velocity
+                
+                # Angular velocities (around X, Y, Z) in degrees/s
+                angular_velocity = [0.0, 0.0, 0.0]
+                
+                # Roll (rotation around X axis) - Right Stick Y
+                angular_velocity[0] = self.controller.right_stick_y * self.cartesian_angular_scale
+                
+                # Pitch (rotation around Y axis) - Right Stick X
+                angular_velocity[1] = -self.controller.right_stick_x * self.cartesian_angular_scale
+                
+                # Yaw (rotation around Z axis) - L1/R1 Buttons
+                if self.controller.r1_pressed:
+                    angular_velocity[2] = -self.cartesian_angular_scale
+                elif self.controller.l1_pressed:
+                    angular_velocity[2] = self.cartesian_angular_scale
+                
+                # Gripper control - Square/Circle buttons
+                gripper_velocity = 0.0
+                if self.controller.circle_pressed:
+                    gripper_velocity = -self.gripper_scale  # Open
+                elif self.controller.square_pressed:
+                    gripper_velocity = self.gripper_scale   # Close
+                
+                # Handle recording controls and other button presses
+                self._handle_recording_controls()
+                
+                # Check for home position request
+                if self.controller.triangle_pressed:
+                    print("Moving to home position...")
+                    self.arm.move_home()
+                    # Wait for movement to complete
+                    print("Waiting for home position movement to complete...")
+                    time.sleep(5)
+                    print("Ready for Cartesian control again")
+                    continue
+                
+                # Get current joint angles if recording (even in Cartesian mode, we record joint angles)
+                if self.recording:
+                    # Assuming get_joint_angles returns a 9-element array (6 joints + 3 fingers)
+                    joint_angles = self.arm.get_joint_angles()
+                    
+                    # For Cartesian mode, we need to include the Cartesian velocities and gripper in the action vector
+                    # Create an action vector that contains linear velocity, angular velocity, and gripper
+                    cartesian_action = linear_velocity + angular_velocity + [gripper_velocity]
+                    
+                    # Record the frame
+                    self.data_recorder.add_frame(frames_dict, joint_angles, cartesian_action)
+                
+                # Send Cartesian velocity commands to the arm
+                self.arm.send_cartesian_velocity(
+                    linear_velocity=tuple(linear_velocity),
+                    angular_velocity=tuple(angular_velocity),
+                    fingers=(gripper_velocity, gripper_velocity, gripper_velocity),
+                    duration=0.03333,  # Duration for 30Hz control loop
+                    period=0.005,  # 30Hz update rate
+                    hand_mode=1  # For gripper control
+                )
+                
+                # Print velocities for debugging if there's movement
+                if any(abs(v) > 0.01 for v in linear_velocity) or any(abs(v) > 0.1 for v in angular_velocity):
+                    print(f"Linear Velocity: {[f'{v:.3f}' for v in linear_velocity]} m/s, " +
+                          f"Angular Velocity: {[f'{v:.1f}' for v in angular_velocity]} deg/s")
+                
+                # Sleep for the remainder of the control cycle
+                time.sleep(0.03333)
+                
+            except Exception as e:
+                print(f"Error in Cartesian control loop: {e}")
+                break
+    
+    def _handle_recording_controls(self):
+        """Handle recording controls (Options button) using edge detection"""
+        record_button_state = self.controller.options_pressed
+        if record_button_state and not self.prev_options_pressed:
+            if not self.recording:
+                if self.record_modular_demo:
+                    print(f"\nStarting new demo recording for modular action: {self.modular_names[self.current_modular_idx]}")
+                else:
+                    print("\nStarting new demo recording...")
+                self.data_recorder.start_new_demo()
+                self.recording = True
+            else:
+                print("\nEnding demo recording...")
+                save_response = input("Do you want to save this demo? (y/n): ")
+                if save_response.strip().lower() in ['y', 'yes']:
+                    self.data_recorder.end_demo()
+                    print("Demo saved.")
+                    if self.record_modular_demo:
+                        # Advance to the next modular action cyclically
+                        self.data_recorder.close()  # Close current modular action's file
+                        self.current_modular_idx = (self.current_modular_idx + 1) % len(self.modular_names)
+                        self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                else:
+                    if self.record_modular_demo:
+                        demo_name = self.data_recorder.current_demo.name.split('/')[-1]
+                        print(f"Discarding demo for modular action {self.modular_names[self.current_modular_idx]}...")
+                        if demo_name in self.data_recorder.h5_file:
+                            del self.data_recorder.h5_file[demo_name]
+                        self.data_recorder.current_demo = None
+                        self.data_recorder.frame_idx = 0
+                        print("Demo discarded. Resetting to first modular action.")
+                        self.data_recorder.close()
+                        self.current_modular_idx = 0
+                        self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                    else:
+                        demo_name = self.data_recorder.current_demo.name.split('/')[-1]
+                        print(f"Discarding demo {demo_name}...")
+                        if demo_name in self.data_recorder.h5_file:
+                            del self.data_recorder.h5_file[demo_name]
+                        self.data_recorder.current_demo = None
+                        self.data_recorder.frame_idx = 0
+                        print("Demo discarded.")
+                self.recording = False
+            time.sleep(0.5)  # Debounce
+        self.prev_options_pressed = record_button_state
 
     def start(self):
         """Start the robot controller and initiate synchronous camera capture in the control loop"""
@@ -374,6 +517,28 @@ class record_demo:
     def stop(self):
         """Stop the robot controller"""
         self.running = False
+        
+        # First stop any ongoing motion
+        try:
+            if self.control_mode == 'cartesian':
+                # Stop Cartesian motion
+                self.arm.send_cartesian_velocity(
+                    linear_velocity=(0.0, 0.0, 0.0),
+                    angular_velocity=(0.0, 0.0, 0.0),
+                    fingers=(0.0, 0.0, 0.0),
+                    duration=0.1,
+                    period=0.005
+                )
+            else:
+                # Stop joint motion
+                zero_velocities = [0.0] * 7
+                if self.arm:
+                    self.arm.send_angular_velocity(zero_velocities, hand_mode=1, 
+                        fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+            time.sleep(0.2)  # Wait for the command to take effect
+        except:
+            pass
+        
         if self.control_thread:
             self.control_thread.join()
         if hasattr(self, 'arm'):
@@ -386,9 +551,26 @@ class record_demo:
         print("Robot controller stopped")
 
 def main():
-    # Optionally, you can set desired camera resolution by modifying the parameters below.
-    # For example, to use 224x224 resolution:
-    controller = record_demo(debug_mode=False, camera_width=320, camera_height=240,record_modular_demo=True)  # Set debug_mode=True to enable debug prints
+    # Add command-line arguments for control mode
+    parser = argparse.ArgumentParser(description='Record Robot Demonstrations')
+    parser.add_argument('--mode', type=str, choices=['joint', 'cartesian'], default='cartesian',
+                      help='Control mode (joint or cartesian)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--modular', action='store_true', help='Enable modular demo recording')
+    parser.add_argument('--width', type=int, default=320, help='Camera width')
+    parser.add_argument('--height', type=int, default=240, help='Camera height')
+    args = parser.parse_args()
+    
+    # Initialize controller with parsed arguments
+    controller = record_demo(
+        debug_mode=args.debug,
+        camera_width=args.width,
+        camera_height=args.height,
+        record_modular_demo=args.modular,
+        control_mode=args.mode
+    )
+    
+    print(f"Starting robot controller in {args.mode} control mode")
     try:
         if controller.start():
             # Wait for the control thread to finish
