@@ -96,9 +96,9 @@ class CameraInterface:
         if not self.cap:
             return False, None
             
-        # Clear buffer by discarding a few frames
-        for _ in range(3):
-            self.cap.grab()
+        # # Clear buffer by discarding a few frames
+        # for _ in range(3):
+        #     self.cap.grab()
         
         ret, frame = self.cap.read()
         return ret, frame

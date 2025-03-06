@@ -306,7 +306,7 @@ class KinovaArmInterface:
             print("Cartesian position command issued successfully.")
 
     def send_cartesian_velocity(self, linear_velocity, angular_velocity, 
-                               fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005):
+                               fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005, hand_mode=1):
         """
         Send a Cartesian velocity command to the arm.
         
@@ -316,6 +316,7 @@ class KinovaArmInterface:
             fingers: Tuple of finger velocities
             duration: Duration to apply the velocity command in seconds
             period: Update period in seconds (typically 5ms)
+            hand_mode: Hand mode (1 for velocity control of fingers)
         """
         point = TrajectoryPoint()
         
@@ -329,7 +330,8 @@ class KinovaArmInterface:
             angular_velocity[0], angular_velocity[1], angular_velocity[2]
         )
         
-        # Set fingers
+        # Set hand mode and fingers
+        point.Position.HandMode = hand_mode
         point.Position.Fingers = FingersPosition(*fingers)
         
         # Disable trajectory limitations
@@ -508,6 +510,8 @@ def main():
         manager.send_cartesian_velocity(
             linear_velocity=(0.0, 0.0, 0.0),  # X, Y, Z velocities in m/s
             angular_velocity=(50.0, 0.0, 0.0),  # Angular velocities in deg/s
+            fingers=(6000,6000,6000),
+            handmode=1,
             duration=3.0
         )
         

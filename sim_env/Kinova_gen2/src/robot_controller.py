@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 
-from .devices.kinova_arm_interface import KinovaArmInterface
-from .devices.ps4controller_interface import PS4Interface
+# from .devices.kinova_arm_interface import KinovaArmInterface
+# from .devices.ps4controller_interface import PS4Interface
+from devices.kinova_arm_interface import KinovaArmInterface
+from devices.ps4controller_interface import PS4Interface
 import time
 import threading
+import argparse
 
 
 class RobotController:
-    def __init__(self, debug_mode=False , enable_controller = True):
+    def __init__(self, debug_mode=False, enable_controller=True, control_mode='joint'):
         self.velocity_scale = 30.0  # Maximum joint velocity in degrees/second (reduced for safety)
         self.gripper_scale = 3000.0 # Scale factor for gripper control
+        self.cartesian_linear_scale = 0.20  # Maximum Cartesian linear velocity in m/s
+        self.cartesian_angular_scale = 40.0  # Maximum Cartesian angular velocity in degrees/s
         self.running = False
         self.emergency_stop = False
         self.enable_controller = enable_controller
@@ -17,8 +22,9 @@ class RobotController:
         self.arm = None
         self.control_thread = None
         self.debug_mode = debug_mode
+        self.control_mode = control_mode  # 'joint' or 'cartesian'
 
-    def initialize_devices(self ,move_home=True):
+    def initialize_devices(self, move_home=True):
         """Initialize PS4 controller and Kinova arm"""
         try:
             # Initialize Kinova arm first
@@ -26,6 +32,14 @@ class RobotController:
             self.arm = KinovaArmInterface()
             self.arm.connect()
             print("Kinova arm initialized successfully")
+            
+            # Set appropriate control mode
+            if self.control_mode == 'cartesian':
+                print("Setting Cartesian control mode...")
+                self.arm.set_cartesian_control()
+            else:
+                print("Setting Angular control mode...")
+                self.arm.set_angular_control()
             
             # Move to home position first and wait for completion
             if move_home:
@@ -51,15 +65,22 @@ class RobotController:
                     print(f"PS4 controller not available: {e}")
                     return False
             
-            print("\nInitialization complete - ready for velocity control")
+            print(f"\nInitialization complete - ready for {self.control_mode} control")
             return True
         except Exception as e:
             print(f"Error initializing devices: {e}")
             return False
 
     def control_loop(self):
-        """Main control loop for the robot using velocity control"""
-        print("\nPS4 Controller Mapping:")
+        """Main control loop for the robot using joint velocity control"""
+        if self.control_mode == 'cartesian':
+            self.cartesian_control_loop()
+        else:
+            self.joint_control_loop()
+            
+    def joint_control_loop(self):
+        """Control loop for joint velocity control mode"""
+        print("\nPS4 Controller Mapping (Joint Velocity Mode):")
         print("Left Stick X/Y: Joint 1 & 2")
         print("Right Stick X/Y: Joint 3 & 4")
         print("L2/R2 Triggers: Joint 5")
@@ -69,7 +90,7 @@ class RobotController:
         print("Share: Emergency Stop")
         print("Options: Exit")
         
-        print("\nStarting velocity control loop...")
+        print("\nStarting joint velocity control loop...")
         print("Note: The arm should now be in home position and ready for velocity control")
         
         while self.running and not self.emergency_stop:
@@ -137,8 +158,99 @@ class RobotController:
                 time.sleep(0.03333)
                 
             except Exception as e:
-                print(f"Error in control loop: {e}")
+                print(f"Error in joint control loop: {e}")
                 break
+    
+    def cartesian_control_loop(self):
+        """Control loop for Cartesian velocity control mode"""
+        print("\nPS4 Controller Mapping (Cartesian Velocity Mode):")
+        print("Left Stick X/Y: X/Y translation")
+        print("Up/Down Arrows: Z translation (up/down)")
+        print("Right Stick X: Rotation around Y (Pitch)")
+        print("Right Stick Y: Rotation around X (Roll)")
+        print("L1/R1 Buttons: Rotation around Z (Yaw)")
+        print("Square/Circle: Gripper Open/Close")
+        print("Triangle: Move to Home Position")
+        print("Share: Emergency Stop")
+        print("Options: Exit")
+        
+        print("\nStarting Cartesian velocity control loop...")
+        print("Note: The arm should now be in home position and ready for Cartesian control")
+        
+        while self.running and not self.emergency_stop:
+            try:
+                if not self.controller:
+                    print("No controller connected")
+                    break
+                
+                # Map controller inputs to Cartesian velocities
+                # Linear velocities (X, Y, Z) in m/s
+                linear_velocity = [0.0, 0.0, 0.0]
+                linear_velocity[0] = -self.controller.left_stick_x * self.cartesian_linear_scale  # X axis
+                linear_velocity[1] = self.controller.left_stick_y * self.cartesian_linear_scale  # Y axis
+                
+                # Use up/down arrows for Z axis movement
+                z_velocity = 0.0
+                if self.controller.l2_trigger:
+                    z_velocity = self.cartesian_linear_scale
+                elif self.controller.r2_trigger:
+                    z_velocity = -self.cartesian_linear_scale
+              
+                linear_velocity[2]=z_velocity
+                # Angular velocities (around X, Y, Z) in degrees/s
+                angular_velocity = [0.0, 0.0, 0.0]
+                
+                # Roll (rotation around X axis) - Now using Right Stick Y
+                angular_velocity[0] = self.controller.right_stick_y * self.cartesian_angular_scale
+                
+                # Pitch (rotation around Y axis) - Right Stick X
+                angular_velocity[1] = -self.controller.right_stick_x * self.cartesian_angular_scale
+                
+                # Yaw (rotation around Z axis) - L1/R1 Buttons
+                if self.controller.r1_pressed:
+                    angular_velocity[2] = -self.cartesian_angular_scale
+                elif self.controller.l1_pressed:
+                    angular_velocity[2] = self.cartesian_angular_scale
+                
+                # Gripper control - Square/Circle buttons
+                gripper_velocity = 0.0
+                if self.controller.circle_pressed:
+                    gripper_velocity = -self.gripper_scale  # Open
+                elif self.controller.square_pressed:
+                    gripper_velocity = self.gripper_scale   # Close
+                
+                # Check for home position request
+                if self.controller.triangle_pressed:
+                    print("Moving to home position...")
+                    self.arm.move_home()
+                    # Wait for movement to complete
+                    print("Waiting for home position movement to complete...")
+                    time.sleep(5)
+                    print("Ready for Cartesian control again")
+                    continue
+                
+                # Send Cartesian velocity commands to the arm
+                self.arm.send_cartesian_velocity(
+                    linear_velocity=tuple(linear_velocity),
+                    angular_velocity=tuple(angular_velocity),
+                    fingers=(gripper_velocity, gripper_velocity, gripper_velocity),
+                    duration=0.03333,  # Duration for 30Hz control loop
+                    period=0.005,  # 30Hz update rate
+                    hand_mode=1  # Add this parameter
+                )
+                
+                # Print velocities for debugging if there's movement
+                if any(abs(v) > 0.01 for v in linear_velocity) or any(abs(v) > 0.1 for v in angular_velocity):
+                    print(f"Linear Velocity: {[f'{v:.3f}' for v in linear_velocity]} m/s, " +
+                          f"Angular Velocity: {[f'{v:.1f}' for v in angular_velocity]} deg/s")
+                
+                # Sleep for next control cycle
+                time.sleep(0.03333)
+                
+            except Exception as e:
+                print(f"Error in Cartesian control loop: {e}")
+                break
+
     def send_action(self, joint_velocities, gripper_velocity):
         joint_velocities *= self.velocity_scale
         gripper_velocity *= self.gripper_scale
@@ -168,11 +280,22 @@ class RobotController:
         
         # First stop any ongoing motion
         try:
-            zero_velocities = [0.0] * 7
-            if self.arm:
-                self.arm.send_angular_velocity(zero_velocities, hand_mode=1, 
-                    fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
-                time.sleep(0.2)  # Wait for the command to take effect
+            if self.control_mode == 'cartesian':
+                # Stop Cartesian motion
+                self.arm.send_cartesian_velocity(
+                    linear_velocity=(0.0, 0.0, 0.0),
+                    angular_velocity=(0.0, 0.0, 0.0),
+                    fingers=(0.0, 0.0, 0.0),
+                    duration=0.1,
+                    period=0.005
+                )
+            else:
+                # Stop joint motion
+                zero_velocities = [0.0] * 7
+                if self.arm:
+                    self.arm.send_angular_velocity(zero_velocities, hand_mode=1, 
+                        fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+            time.sleep(0.2)  # Wait for the command to take effect
         except:
             pass
 
@@ -194,7 +317,16 @@ class RobotController:
         print("Robot controller stopped successfully")
 
 def main():
-    controller = RobotController(debug_mode=False)  # Set debug_mode=True to enable debug prints
+    # Modify to allow command-line selection of control mode
+    parser = argparse.ArgumentParser(description='Robot Controller Application')
+    parser.add_argument('--mode', type=str, choices=['joint', 'cartesian'], default='cartesian',
+                        help='Control mode (joint or cartesian)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    args = parser.parse_args()
+    
+    controller = RobotController(debug_mode=args.debug, control_mode=args.mode)
+    
+    print(f"Starting robot controller in {args.mode} control mode")
     try:
         if controller.start():
             # Wait for the control thread to finish

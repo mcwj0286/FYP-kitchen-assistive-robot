@@ -35,6 +35,14 @@ class PS4Interface(Controller):
         self.triangle_pressed = False
         self.x_pressed = False
         self.options_pressed = False
+        
+        # D-pad states - various names to ensure compatibility
+        self.up_arrow_pressed = False
+        self.down_arrow_pressed = False
+
+        # Add new button states
+        self.l3_pressed = False
+        self.r3_pressed = False
 
     def apply_deadzone(self, value):
         """Apply deadzone to analog inputs
@@ -193,6 +201,80 @@ class PS4Interface(Controller):
     def on_share_release(self):
         if self.debug_mode:
             print("Share button released")
+
+    # D-pad Buttons - multiple implementations to catch different event names
+
+    # Implementation 1: on_up_arrow_press/release
+    def on_up_arrow_press(self):
+        self.up_arrow_pressed = True
+        self.dpad_up = True
+        if self.debug_mode:
+            print("Up arrow button pressed")
+    
+    def on_up_arrow_release(self):
+        self.up_arrow_pressed = False
+        self.dpad_up = False
+        if self.debug_mode:
+            print("Up arrow button released")
+    
+    def on_down_arrow_press(self):
+        self.down_arrow_pressed = True
+      
+        if self.debug_mode:
+            print("Down arrow button pressed")
+    
+    def on_down_arrow_release(self):
+        self.down_arrow_pressed = False
+       
+        if self.debug_mode:
+            print("Down arrow button released")
+    
+    # Implementation 2: on_up_press/release (alternative naming)
+    def on_up_press(self):
+        self.up_arrow_pressed = True
+  
+        if self.debug_mode:
+            print("Up button pressed (alternative)")
+    
+    def on_up_release(self):
+        self.up_arrow_pressed = False
+   
+        if self.debug_mode:
+            print("Up button released (alternative)")
+    
+    def on_down_press(self):
+        self.down_arrow_pressed = True
+        if self.debug_mode:
+            print("Down button pressed (alternative)")
+    
+    def on_down_release(self):
+        self.down_arrow_pressed = False
+        self.dpad_down = False
+        if self.debug_mode:
+            print("Down button released (alternative)")
+
+   
+
+    # Add L3/R3 button press callbacks
+    def on_L3_press(self):
+        self.l3_pressed = True
+        if self.debug_mode:
+            print("L3 button pressed")
+    
+    def on_L3_release(self):
+        self.l3_pressed = False
+        if self.debug_mode:
+            print("L3 button released")
+    
+    def on_R3_press(self):
+        self.r3_pressed = True
+        if self.debug_mode:
+            print("R3 button pressed")
+    
+    def on_R3_release(self):
+        self.r3_pressed = False
+        if self.debug_mode:
+            print("R3 button released")
 
 
 def main():
