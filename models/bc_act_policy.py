@@ -36,11 +36,12 @@ class PrototypeTaskGate(nn.Module):
     to the same expert by maintaining routing embeddings that get updated
     through direct replacement.
     """
-    def __init__(self, language_token_dim=768, n_experts=10, similarity_threshold=0.5):
+    def __init__(self, language_token_dim=768, n_experts=10, similarity_threshold=0.5, top_n_experts=1):
         super().__init__()
         self.language_token_dim = language_token_dim
         self.n_experts = n_experts
         self.similarity_threshold = similarity_threshold
+        self.top_n_experts = top_n_experts
         
         # Initialize random routing embeddings
         self.routing_embeddings = route_embeddings
@@ -52,8 +53,8 @@ class PrototypeTaskGate(nn.Module):
             language_token (Tensor): shape (B, language_token_dim)
             
         Returns:
-            weights (Tensor): shape (B, n_experts), one-hot routing vectors
-            indices (Tensor): shape (B, 1), selected expert indices
+            weights (Tensor): shape (B, n_experts), soft routing vectors with top-n experts activated
+            indices (Tensor): shape (B, top_n_experts), selected expert indices
         """
         batch_size = language_token.size(0)
         
@@ -67,16 +68,27 @@ class PrototypeTaskGate(nn.Module):
         norm_embeddings = F.normalize(self.routing_embeddings, p=2, dim=-1)
         similarities = torch.matmul(norm_tokens, norm_embeddings.t())  # (B, n_experts)
    
-        max_sims, indices = similarities.max(dim=-1)  # (B,)
-        indices = indices.unsqueeze(-1)  # (B, 1)
+        # Get top-n experts with highest similarities
+        top_sims, top_indices = torch.topk(similarities, min(self.top_n_experts, self.n_experts), dim=-1)  # (B, top_n_experts)
      
         
-        # Create one-hot routing weights
+        # Create routing weights with values for top-n experts
         weights = torch.zeros(batch_size, self.n_experts, device=language_token.device)
-        weights.scatter_(1, indices, 1.0)
-        # expert_counts = torch.bincount(indices.view(-1), minlength=self.n_experts)
+        
+        # Distribute weights among top-n experts using raw similarity values directly
+        for i in range(batch_size):
+            # Ensure similarities are positive (cosine similarity can range from -1 to 1)
+            # Rescale to [0, 1] range if any values are negative
+            sim_values = top_sims[i]
+            if torch.any(sim_values < 0):
+                sim_values = (sim_values + 1) / 2
+            weights[i].scatter_(0, top_indices[i], sim_values)
+            
+        # expert_counts = torch.bincount(top_indices.view(-1), minlength=self.n_experts)
         # print("Expert selection counts:", expert_counts.tolist())
-        return weights, indices
+        # print(f'weights: {weights}')
+        # print(f'top_indices: {top_indices}')
+        return weights, top_indices
 
 
 ### ACT MOE Transformer Decoder
@@ -149,7 +161,7 @@ class Expert(nn.Module):
 class MoE(nn.Module):
     """Mixture-of-Experts (MoE) module."""
     def __init__(self, input_size, mlp_hidden_size, n_experts=8, n_expert_groups=1, 
-                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0,expert_scale=0.1):
+                 n_limited_groups=1, n_activated_experts=2, n_shared_experts=2, dropout=0.0, expert_scale=0.1, top_n_experts=1):
         super().__init__()
         self.input_size = input_size
         self.n_routed_experts = n_experts
@@ -166,7 +178,7 @@ class MoE(nn.Module):
         #     n_activated_experts=n_activated_experts
         # )
         # self.gate = TaskSpecificGate(language_token_dim=language_token_dim, n_experts=n_experts)
-        self.gate = PrototypeTaskGate(language_token_dim=language_token_dim, n_experts=n_experts)
+        self.gate = PrototypeTaskGate(language_token_dim=language_token_dim, n_experts=n_experts, top_n_experts=top_n_experts)
         # Initialize routed experts
         self.experts = nn.ModuleList([
             Expert(input_size, mlp_hidden_size) 
@@ -190,22 +202,22 @@ class MoE(nn.Module):
         if x.shape[0] != language_token.shape[0]:
             raise ValueError(f"Batch size mismatch: x has shape {x.shape[0]} but language_token has shape {language_token.shape[0]}")
         # Get routing weights and expert indices
-        weights, indices = self.gate(language_token) # (B, 1), (B, 1)
+        weights, indices = self.gate(language_token) # (B, top_n_experts), (B, top_n_experts)
         
         # Initialize output tensor
         y = torch.zeros_like(x)
         
-        # Count tokens per expert
-        counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
+        # Route inputs to experts using the weights distribution
+        batch_size = x.shape[0]
+        for b in range(batch_size):
+            for i in range(self.experts_start_idx, self.experts_end_idx):
+                # If this expert has non-zero weight for this batch item
+                if weights[b, i] > 0:
+                    expert = self.experts[i]
+                    # Apply the expert to this batch item and scale by its weight 
+                    # (using raw similarity weight directly)
+                    y[b] += weights[b, i] * self.expert_weights[i] * expert(x[b].unsqueeze(0)).squeeze(0)
         
-        # Route inputs to experts
-        for i in range(self.experts_start_idx, self.experts_end_idx):
-            if counts[i] == 0:
-                continue
-            expert = self.experts[i]
-            idx, _ = torch.where(indices == i)
-            # Multiply the expert output by its corresponding weight
-            y[idx] += self.expert_weights[i] * expert(x[idx])
         # Add shared experts computation
         z = self.shared_experts(x)
        
@@ -226,7 +238,8 @@ class ACT_TransformerDecoder(nn.Module):
         num_queries=10,
         learnable_tokens=True,
         n_dense_layers=0,  # NEW: number of dense (standard MLP) layers; layers beyond this will use MoE when use_moe is True
-        use_moe=False      # NEW: flag to use MoE for layers beyond n_dense_layers
+        use_moe=False,     # NEW: flag to use MoE for layers beyond n_dense_layers
+        top_n_experts=1    # NEW: number of experts to select for MoE
     ):
         super().__init__()
         
@@ -238,6 +251,7 @@ class ACT_TransformerDecoder(nn.Module):
         self.num_queries = num_queries
         self.n_dense_layers = n_dense_layers
         self.use_moe = use_moe
+        self.top_n_experts = top_n_experts
         
         # Action token embeddings - either learnable or fixed
         if learnable_tokens:
@@ -289,7 +303,8 @@ class ACT_TransformerDecoder(nn.Module):
                             n_limited_groups=1,
                             n_activated_experts=1,
                             dropout=dropout,
-                            n_shared_experts=1
+                            n_shared_experts=1,
+                            top_n_experts=self.top_n_experts
                         )
             else:
                 # Standard MLP
@@ -387,7 +402,8 @@ class bc_act_policy(nn.Module):
                  use_moe=False,
                  use_mpi=False,  # New flag for MPI encoder
                  mpi_root_dir="/home/john/project/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints/mpi-small",  # Path to MPI model
-                 benchmark_name="libero_spatial"):
+                 benchmark_name="libero_spatial",
+                 top_n_experts=2):  # New parameter for top-n expert selection
         super().__init__()  # Call parent class constructor
         
         self.device = device
@@ -406,6 +422,7 @@ class bc_act_policy(nn.Module):
         self.use_moe = use_moe
         self.num_queries = num_queries
         self.use_mpi = use_mpi
+        self.top_n_experts = top_n_experts
         if self.use_moe:
             global route_embeddings
             route_embeddings = get_route_embeddings(os.path.join(os.getenv("DATASET_PATH"), benchmark_name))
@@ -432,7 +449,8 @@ class bc_act_policy(nn.Module):
             num_queries=self.num_queries,
             learnable_tokens=learnable_tokens,
             n_dense_layers=1,
-            use_moe=use_moe
+            use_moe=use_moe,
+            top_n_experts=top_n_experts
         )
         
         # Initialize temporal position encoding
