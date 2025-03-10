@@ -140,25 +140,53 @@ class LIBERODataset(Dataset):
                             
                         # Create sequences with overlap
                         current_start = start_offset
-                        while current_start < n_timesteps:
-                            actual_length = min(self.seq_length, n_timesteps - current_start)
-                            is_padded = actual_length < self.seq_length
-                            
-                            if not self.pad_seq_length and is_padded:
-                                break
-                                
-                            self.segment_map.append((
+                        processed_segments = []
+                        
+                        while current_start + self.seq_length <= n_timesteps:
+                            # This is a full-length segment
+                            segment = (
                                 file_path, 
                                 demo_key, 
                                 task_name, 
                                 current_start, 
-                                is_padded, 
-                                actual_length
-                            ))
+                                False,  # is_padded
+                                self.seq_length
+                            )
+                            processed_segments.append(segment)
+                            self.segment_map.append(segment)
                             
                             # Move to next sequence start, considering overlap
                             current_start += (self.seq_length - self.overlap)
                         
+                        # Handle remaining frames when pad_seq_length is False
+                        remaining_frames = n_timesteps - current_start
+                        if not self.pad_seq_length and remaining_frames > 0:
+                            # Create a segment that starts earlier to maintain seq_length
+                            # This will overlap with previously processed frames
+                            overlap_start = n_timesteps - self.seq_length
+                            
+                            # Add the overlapping segment
+                            segment = (
+                                file_path,
+                                demo_key,
+                                task_name,
+                                overlap_start,
+                                False,  # is_padded
+                                self.seq_length
+                            )
+                            self.segment_map.append(segment)
+                        elif self.pad_seq_length and remaining_frames > 0:
+                            # Original padding logic
+                            is_padded = True
+                            self.segment_map.append((
+                                file_path,
+                                demo_key,
+                                task_name,
+                                current_start,
+                                is_padded,
+                                remaining_frames
+                            ))
+                
                 # Pre-compute task embedding if needed
                 if self.load_task_emb and task_name not in self.task_embeddings:
                     self.task_embeddings[task_name] = encode_task(task_name, self.max_word_len, self.device)
@@ -643,105 +671,196 @@ class Kinova_Dataset(Dataset):
 if __name__ == "__main__":
     # Test RealDataset and visualize a resized image sequence as a video
     # Create training dataset (80% of demos)
-    train_dataset = Kinova_Dataset(
-        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
-        seq_length=10,
-        frame_stack=4,
-        overlap=2,
-        pad_frame_stack=True,
-        pad_seq_length=True,
-        get_pad_mask=True,
-        get_action_padding=True,
-        num_queries=10,
-        image_shape=(128, 128),  # Target image size: 128x128
-        action_velocity_scale=30.0,
-        gripper_scale=3000.0,
-        train_ratio=0.9,
-        is_train=True
-    )
+    # train_dataset = Kinova_Dataset(
+    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+    #     seq_length=10,
+    #     frame_stack=4,
+    #     overlap=2,
+    #     pad_frame_stack=True,
+    #     pad_seq_length=True,
+    #     get_pad_mask=True,
+    #     get_action_padding=True,
+    #     num_queries=10,
+    #     image_shape=(128, 128),  # Target image size: 128x128
+    #     action_velocity_scale=30.0,
+    #     gripper_scale=3000.0,
+    #     train_ratio=0.9,
+    #     is_train=True
+    # )
     
-    # Create validation dataset (20% of demos)
-    val_dataset = Kinova_Dataset(
-        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
-        seq_length=10,
-        frame_stack=4,
-        overlap=2,
-        pad_frame_stack=True,
-        pad_seq_length=True,
-        get_pad_mask=True,
-        get_action_padding=True,
-        num_queries=10,
-        image_shape=(128, 128),  # Target image size: 128x128
-        action_velocity_scale=30.0,
-        gripper_scale=3000.0,
-        train_ratio=0.8,
-        is_train=False
-    )
+    # # Create validation dataset (20% of demos)
+    # val_dataset = Kinova_Dataset(
+    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+    #     seq_length=10,
+    #     frame_stack=4,
+    #     overlap=2,
+    #     pad_frame_stack=True,
+    #     pad_seq_length=True,
+    #     get_pad_mask=True,
+    #     get_action_padding=True,
+    #     num_queries=10,
+    #     image_shape=(128, 128),  # Target image size: 128x128
+    #     action_velocity_scale=30.0,
+    #     gripper_scale=3000.0,
+    #     train_ratio=0.8,
+    #     is_train=False
+    # )
     
-    print(f"Training dataset: {len(train_dataset)} segments")
-    print(f"Validation dataset: {len(val_dataset)} segments")
+    # print(f"Training dataset: {len(train_dataset)} segments")
+    # print(f"Validation dataset: {len(val_dataset)} segments")
     
-    # Sample from training dataset
-    train_sample = train_dataset[0]
+    # # Sample from training dataset
+    # train_sample = train_dataset[0]
     
-    # Print shapes in the sample for verification
-    print("\n--- Training Sample Details ---")
-    for key, value in train_sample.items():
-        if isinstance(value, torch.Tensor):
-            print(f"{key} shape:", value.shape)
-        elif isinstance(value, dict):
-            print(f"{key}:")
-            for sub_key, sub_value in value.items():
-                if isinstance(sub_value, torch.Tensor):
-                    print(f"  {sub_key} shape:", sub_value.shape)
+    # # Print shapes in the sample for verification
+    # print("\n--- Training Sample Details ---")
+    # for key, value in train_sample.items():
+    #     if isinstance(value, torch.Tensor):
+    #         print(f"{key} shape:", value.shape)
+    #     elif isinstance(value, dict):
+    #         print(f"{key}:")
+    #         for sub_key, sub_value in value.items():
+    #             if isinstance(sub_value, torch.Tensor):
+    #                 print(f"  {sub_key} shape:", sub_value.shape)
     
-    # Clean up resources
-    train_dataset.close()
-    val_dataset.close()
+    # # Clean up resources
+    # train_dataset.close()
+    # val_dataset.close()
     
     # Example of using LIBERODataset with train/validation split
-    print("\n\n--- LIBERO Dataset Examples ---")
+    # print("\n\n--- LIBERO Dataset Examples ---")
     
-    # Create training dataset (80% of demos)
-    libero_train_dataset = LIBERODataset(
-        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
-        benchmark="libero_90",
-        seq_length=10,
-        frame_stack=4,
-        overlap=2,
-        pad_frame_stack=True,
-        pad_seq_length=True,
-        get_pad_mask=True,
-        get_action_padding=True,
-        num_queries=10,
-        max_word_len=77,
-        load_task_emb=True,
-        train_ratio=0.8,
-        is_train=True
-    )
+    # # Create training dataset (80% of demos)
+    # libero_train_dataset = LIBERODataset(
+    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
+    #     benchmark="libero_90",
+    #     seq_length=10,
+    #     frame_stack=1,
+    #     overlap=0,
+    #     pad_frame_stack=True,
+    #     pad_seq_length=True,
+    #     get_pad_mask=True,
+    #     get_action_padding=True,
+    #     num_queries=10,
+    #     max_word_len=77,
+    #     load_task_emb=True,
+    #     train_ratio=0.8,
+    #     is_train=True
+    # )
+
+    # Test case for comparing padded vs. non-padded approaches
+    def test_remaining_frames_handling():
+        print("\n\n--- Testing Remaining Frames Handling ---")
+        data_path = "/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets"
+        
+        # Parameters for testing
+        seq_length = 8
+        overlap = 2
+        
+        # 1. Dataset with padding enabled (original approach)
+        padding_dataset = LIBERODataset(
+            data_path=data_path,
+            benchmark="libero_90",
+            seq_length=seq_length,
+            frame_stack=1,  # Simplified for testing
+            overlap=overlap,
+            pad_frame_stack=True,
+            pad_seq_length=True,  # Padding enabled
+            get_pad_mask=True,
+            train_ratio=0.8,
+            is_train=True
+        )
+        
+        # 2. Dataset with our new overlapping approach (padding disabled)
+        overlap_dataset = LIBERODataset(
+            data_path=data_path,
+            benchmark="libero_90",
+            seq_length=seq_length,
+            frame_stack=1,  # Simplified for testing
+            overlap=overlap,
+            pad_frame_stack=True,
+            pad_seq_length=False,  # Padding disabled - use our new approach
+            get_pad_mask=True,
+            train_ratio=0.8,
+            is_train=True
+        )
+        
+        print(f"Padding dataset segments: {len(padding_dataset.segment_map)}")
+        print(f"Overlapping approach segments: {len(overlap_dataset.segment_map)}")
+        
+        # Analyze sequences from a specific demonstration
+        def analyze_demo_coverage(dataset, name):
+            # Dictionary to track frame coverage
+            frame_coverage = {}
+            
+            # Count segments and frames for each demo
+            demo_segments = {}
+            
+            # Analyze each segment
+            for file_path, demo_key, task_name, start_idx, is_padded, actual_length in dataset.segment_map:
+                # Initialize tracking for this demo if not seen before
+                if demo_key not in demo_segments:
+                    demo_segments[demo_key] = []
+                    
+                # Add segment info
+                demo_segments[demo_key].append((start_idx, start_idx + actual_length - 1, is_padded))
+                
+                # Open the file to get total frame count for this demo
+                if demo_key not in frame_coverage:
+                    with h5py.File(file_path, 'r') as f:
+                        total_frames = len(f['data'][demo_key]['actions'])
+                        frame_coverage[demo_key] = [False] * total_frames
+                
+                # Mark frames as covered
+                for i in range(start_idx, min(start_idx + actual_length, len(frame_coverage[demo_key]))):
+                    frame_coverage[demo_key][i] = True
+            
+            # Randomly select 5 demos to analyze in detail
+            import random
+            demo_keys = list(frame_coverage.keys())
+            sample_size = min(5, len(demo_keys))
+            selected_demos = random.sample(demo_keys, sample_size)
+            
+            print(f"\n{name} Analysis:")
+            print(f"Total demonstrations: {len(demo_segments)}")
+            
+            # Report on selected demos
+            for demo_key in selected_demos:
+                total_frames = len(frame_coverage[demo_key])
+                covered_frames = sum(frame_coverage[demo_key])
+                coverage_pct = (covered_frames / total_frames) * 100
+                
+                print(f"\nDemo {demo_key}:")
+                print(f"  Total frames: {total_frames}")
+                print(f"  Covered frames: {covered_frames} ({coverage_pct:.2f}%)")
+                print(f"  Segments: {len(demo_segments[demo_key])}")
+                
+                # Print segments details (first 3 and last 3)
+                segments = demo_segments[demo_key]
+                print("  Segments details (start, end, is_padded):")
+                if len(segments) <= 6:
+                    for seg in segments:
+                        print(f"    {seg}")
+                else:
+                    for seg in segments[:3]:
+                        print(f"    {seg}")
+                    print("    ...")
+                    for seg in segments[-3:]:
+                        print(f"    {seg}")
+        
+        # Run analysis on both datasets
+        analyze_demo_coverage(padding_dataset, "Padding Approach")
+        analyze_demo_coverage(overlap_dataset, "Overlapping Approach")
+        
+        # Cleanup
+        padding_dataset.close()
+        overlap_dataset.close()
+        
+        print("\nTest completed.")
     
-    # Create validation dataset (20% of demos)
-    libero_val_dataset = LIBERODataset(
-        data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
-        benchmark="libero_90",
-        seq_length=10,
-        frame_stack=4,
-        overlap=2,
-        pad_frame_stack=True,
-        pad_seq_length=True,
-        get_pad_mask=True,
-        get_action_padding=True,
-        num_queries=10,
-        max_word_len=77,
-        load_task_emb=True,
-        train_ratio=0.8,
-        is_train=False
-    )
+    # Run the test function
+    test_remaining_frames_handling()
     
-    print(f"LIBERO Training dataset: {len(libero_train_dataset)} segments")
-    print(f"LIBERO Validation dataset: {len(libero_val_dataset)} segments")
-    
-    # Clean up resources
-    libero_train_dataset.close()
-    libero_val_dataset.close()
+    # Cleanup
+    # libero_train_dataset.close()
     
