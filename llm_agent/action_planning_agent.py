@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env variables
 
 # Import functions from get_prompt.py
-from .get_prompt import (
+from get_prompt import (
     upload_images_to_cloudinary,
     upload_image_to_server,
     call_llm_with_images,
@@ -29,10 +29,9 @@ class ActionPlanningAgent:
         """
         self.server_url = server_url or os.getenv("IMAGE_SERVER_URL")
         self.model_name = os.getenv("MODEL_NAME")
-        self.system_prompt = os.getenv("SYSTEM_PROMPT")
         
         # Initialize the base planning prompt
-        self.planning_prompt_template = """
+        self.system_prompt = """
         You are an expert in tactical planning. Using the provided user goal and the environmental 
         context from a live camera feed, devise a well-organized action plan in numbered steps. 
         Each step should describe a concrete action (e.g., "1. Pick up the bowl", "2. Place it in the cabinet", 
@@ -44,8 +43,6 @@ class ActionPlanningAgent:
         - Physical constraints of a robotic arm
         - Safety considerations
         - Logical sequence of operations
-        
-        User goal: {user_goal}
         
         Please provide a clear, numbered list of actions to accomplish this goal based on what you see in the image.
         """
@@ -103,7 +100,7 @@ class ActionPlanningAgent:
             # Use Cloudinary upload
             return upload_images_to_cloudinary(image_paths)
     
-    def generate_action_plan(self, user_goal, camera_interface=None):
+    def generate_action_plan(self, user_goal, camera_interface=None,image_paths=None):
         """
         Generate an action plan based on the user goal and images from cameras.
         
@@ -115,7 +112,8 @@ class ActionPlanningAgent:
             str: The generated action plan.
         """
         # Capture and save images
-        image_paths = self.capture_and_process_images(camera_interface)
+        if image_paths is None:
+            image_paths = self.capture_and_process_images(camera_interface)
         
         if not image_paths:
             return "Failed to capture any images for planning."
@@ -126,12 +124,12 @@ class ActionPlanningAgent:
         if not uploaded_urls:
             return "Failed to upload any images for planning."
         
-        # Construct the prompt with the user goal
-        prompt = self.planning_prompt_template.format(user_goal=user_goal)
+      
+    
         
         # Call LLM with images
         llm_response = call_llm_with_images(
-            prompt, 
+            user_goal, 
             uploaded_urls, 
             model_name=self.model_name, 
             system_prompt=self.system_prompt
@@ -179,13 +177,15 @@ class ActionPlanningAgent:
         Args:
             new_prompt (str): The new prompt template to use.
         """
-        self.planning_prompt_template = new_prompt
+        self.system_prompt = new_prompt
 
 
 if __name__ == "__main__":
     # Example usage
     agent = ActionPlanningAgent()
-    action_plan = agent.generate_action_plan("Clean the kitchen table")
+    image_paths = {'cam0':'/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/assortment-delicious-healthy-food_23-2149043057.jpg'}
+    
+    action_plan = agent.generate_action_plan("Clean the kitchen table",image_paths=image_paths)
     print(f"Action Plan:\n{action_plan}")
     
     # Parse the action plan into steps
