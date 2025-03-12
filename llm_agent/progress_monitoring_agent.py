@@ -30,17 +30,15 @@ class ProgressMonitoringAgent:
         """
         self.server_url = server_url or os.getenv("IMAGE_SERVER_URL")
         self.model_name = os.getenv("MODEL_NAME")
-        self.system_prompt = os.getenv("SYSTEM_PROMPT")
         
         # Initialize the base monitoring prompt
-        self.monitoring_prompt_template = """
+        self.system_prompt = """
         You are an AI assistant helping to monitor the progress of a kitchen task.
         
         Please analyze the provided image(s) and answer the following questions:
         1. What is the current state of the task?
         2. Has there been progress since the last update?
         3. Are there any issues or obstacles that might prevent successful completion?
-        4. What should be the next step to make progress?
         
         Please be specific and descriptive in your analysis.
         """
@@ -98,7 +96,7 @@ class ProgressMonitoringAgent:
             # Use Cloudinary upload
             return upload_images_to_cloudinary(image_paths)
     
-    def monitor_progress(self, task_context="", camera_interface=None):
+    def monitor_progress(self, task_name="", camera_interface=None,image_paths=None):
         """
         Monitor the progress of a task by capturing images, uploading them,
         and getting feedback from an LLM.
@@ -111,7 +109,8 @@ class ProgressMonitoringAgent:
             str: The LLM's feedback on the task progress.
         """
         # Capture and save images
-        image_paths = self.capture_and_process_images(camera_interface)
+        if image_paths is None:
+            image_paths = self.capture_and_process_images(camera_interface)
         
         if not image_paths:
             return "Failed to capture any images for monitoring."
@@ -122,11 +121,8 @@ class ProgressMonitoringAgent:
         if not uploaded_urls:
             return "Failed to upload any images for monitoring."
         
-        # Construct the prompt with task context
-        if task_context:
-            prompt = f"{self.monitoring_prompt_template}\n\nTask Context: {task_context}"
-        else:
-            prompt = self.monitoring_prompt_template
+        
+        prompt = f"Current executing task: {task_name}"
         
         # Call LLM with images
         llm_response = call_llm_with_images(
@@ -151,5 +147,6 @@ class ProgressMonitoringAgent:
 if __name__ == "__main__":
     # Example usage
     agent = ProgressMonitoringAgent()
-    feedback = agent.monitor_progress("Preparing a sandwich")
+    image_paths = {'cam0':'/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/assortment-delicious-healthy-food_23-2149043057.jpg'}
+    feedback = agent.monitor_progress("Preparing a sandwich",image_paths=image_paths)
     print(f"Progress Feedback: {feedback}")
