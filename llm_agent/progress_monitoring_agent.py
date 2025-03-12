@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env variables
 
 # Import functions from get_prompt.py
-from .get_prompt import (
+from get_prompt import (
     upload_images_to_cloudinary,
     upload_image_to_server,
     call_llm_with_images,
@@ -31,16 +31,23 @@ class ProgressMonitoringAgent:
         self.server_url = server_url or os.getenv("IMAGE_SERVER_URL")
         self.model_name = os.getenv("MODEL_NAME")
         
-        # Initialize the base monitoring prompt
+        # Updated strict monitoring prompt
         self.system_prompt = """
-        You are an AI assistant helping to monitor the progress of a kitchen task.
+        You are a highly skilled AI progress monitoring assistant analyzing images of a robotic arm performing tasks. Your output must strictly adhere to the following structure:
+
+        Analysis: Provide a succinct summary of your observations from the image. Focus only on details directly related to the task's progress or anomalies.
+
+        Classification: Classify the task status as exactly one of the following:
+            - "executing" (if the task is actively in progress without issues),
+            - "finished" (if the task has been successfully completed),
+            - "failed" (if the task has encountered insurmountable issues),
+            - "collision" (if you detect the robotic arm colliding with a non-target object).
         
-        Please analyze the provided image(s) and answer the following questions:
-        1. What is the current state of the task?
-        2. Has there been progress since the last update?
-        3. Are there any issues or obstacles that might prevent successful completion?
-        
-        Please be specific and descriptive in your analysis.
+        Operation: Based on your classification, issue an operational command as follows:
+            - Output "continue" only if the classification is "executing".
+            - Output "stop" if the classification is "finished", "failed", or "collision".
+
+        Your response must include only these three sections labeled **Analysis**, **Classification**, and **Operation** (each followed by a colon) with no additional commentary or text.
         """
     
     def capture_and_process_images(self, camera_interface=None):
@@ -96,7 +103,7 @@ class ProgressMonitoringAgent:
             # Use Cloudinary upload
             return upload_images_to_cloudinary(image_paths)
     
-    def monitor_progress(self, task_name="", camera_interface=None,image_paths=None):
+    def monitor_progress(self, task_name="", camera_interface=None, image_paths=None):
         """
         Monitor the progress of a task by capturing images, uploading them,
         and getting feedback from an LLM.
@@ -106,7 +113,7 @@ class ProgressMonitoringAgent:
             camera_interface: Optional camera interface to use for capturing frames.
             
         Returns:
-            str: The LLM's feedback on the task progress.
+            dict: The LLM's feedback on the task progress.
         """
         # Capture and save images
         if image_paths is None:
@@ -132,7 +139,17 @@ class ProgressMonitoringAgent:
             system_prompt=self.system_prompt
         )
         
-        return llm_response
+        # Parse the response
+        analysis, classification, operation = self.parse_monitoring_response(llm_response)
+        
+        # You can now use these parsed components as needed
+        # For example, return just the operation for other agents to use
+        return {
+            "raw_response": llm_response,
+            "analysis": analysis,
+            "classification": classification,
+            "operation": operation
+        }
     
     def set_monitoring_prompt(self, new_prompt):
         """
@@ -143,10 +160,89 @@ class ProgressMonitoringAgent:
         """
         self.monitoring_prompt_template = new_prompt
 
+    def parse_monitoring_response(self, response):
+        """
+        Parse the LLM's monitoring response into analysis, classification, and operation.
+        
+        Args:
+            response (str): The raw response from the LLM.
+            
+        Returns:
+            tuple: (analysis, classification, operation) as strings.
+                If any section is not found, its value will be an empty string.
+        """
+        # Initialize default values
+        analysis = ""
+        classification = ""
+        operation = ""
+        
+        # Split the response into lines for processing
+        lines = response.strip().split('\n')
+        
+        # Track which section we're currently parsing
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Check for section headers
+            if line.lower().startswith("**analysis"):
+                current_section = "analysis"
+                # Extract content if it's on the same line (e.g., "**Analysis**: content")
+                colon_pos = line.find(':')
+                if colon_pos != -1:
+                    analysis = line[colon_pos + 1:].strip()
+                continue
+                
+            elif line.lower().startswith("**classification"):
+                current_section = "classification"
+                colon_pos = line.find(':')
+                if colon_pos != -1:
+                    classification = line[colon_pos + 1:].strip()
+                continue
+                
+            elif line.lower().startswith("**operation"):
+                current_section = "operation"
+                colon_pos = line.find(':')
+                if colon_pos != -1:
+                    operation = line[colon_pos + 1:].strip()
+                continue
+            
+            # Add content to the current section
+            if current_section == "analysis" and line:
+                if analysis and not line.startswith("**"):
+                    analysis += " " + line
+                elif not analysis and not line.startswith("**"):
+                    analysis = line
+                    
+            elif current_section == "classification" and line:
+                if not classification and not line.startswith("**"):
+                    classification = line
+                    
+            elif current_section == "operation" and line:
+                if not operation and not line.startswith("**"):
+                    operation = line
+        
+        # Clean up the outputs - remove quotes if present
+        classification = classification.strip('"\'')
+        operation = operation.strip('"\'')
+        
+        # Validate classification is one of the expected values
+        valid_classifications = ["executing", "finished", "failed", "collision"]
+        if classification.lower() not in valid_classifications:
+            classification = ""
+        
+        # Validate operation is one of the expected values
+        valid_operations = ["continue", "stop"]
+        if operation.lower() not in valid_operations:
+            operation = ""
+        
+        return analysis, classification, operation
+
 
 if __name__ == "__main__":
     # Example usage
     agent = ProgressMonitoringAgent()
-    image_paths = {'cam0':'/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/assortment-delicious-healthy-food_23-2149043057.jpg'}
-    feedback = agent.monitor_progress("Preparing a sandwich",image_paths=image_paths)
+    image_paths = {'cam0':'/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/workflow/captured_image_cam_0.jpg'}
+    feedback = agent.monitor_progress("grasp the cup and put it on the plate",image_paths=image_paths)
     print(f"Progress Feedback: {feedback}")
