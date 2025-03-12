@@ -508,20 +508,52 @@ class Kinova_Dataset(Dataset):
                         if remaining_length <= 0:
                             continue
                         current_start = start_offset
-                        while current_start < n_timesteps:
-                            actual_length = min(self.seq_length, n_timesteps - current_start)
-                            is_padded = (actual_length < self.seq_length)
-                            if not self.pad_seq_length and is_padded:
-                                break
+                        processed_segments = []
+                        
+                        while current_start + self.seq_length <= n_timesteps:
+                            # This is a full-length segment
+                            segment = (
+                                file_path,
+                                demo_key,
+                                task_name,
+                                current_start,
+                                False,  # is_padded
+                                self.seq_length
+                            )
+                            processed_segments.append(segment)
+                            self.segment_map.append(segment)
+                            
+                            # Move to next sequence start, considering overlap
+                            current_start += (self.seq_length - self.overlap)
+                        
+                        # Handle remaining frames
+                        remaining_frames = n_timesteps - current_start
+                        if not self.pad_seq_length and remaining_frames > 0:
+                            # Create a segment that starts earlier to maintain seq_length
+                            # This will overlap with previously processed frames
+                            overlap_start = n_timesteps - self.seq_length
+                            
+                            # Add the overlapping segment
+                            segment = (
+                                file_path,
+                                demo_key,
+                                task_name,
+                                overlap_start,
+                                False,  # is_padded
+                                self.seq_length
+                            )
+                            self.segment_map.append(segment)
+                        elif self.pad_seq_length and remaining_frames > 0:
+                            # Original padding logic
+                            is_padded = True
                             self.segment_map.append((
                                 file_path,
                                 demo_key,
                                 task_name,
                                 current_start,
                                 is_padded,
-                                actual_length
+                                remaining_frames
                             ))
-                            current_start += (self.seq_length - self.overlap)
         
         split_type = "training" if is_train else "validation"
         print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks")
