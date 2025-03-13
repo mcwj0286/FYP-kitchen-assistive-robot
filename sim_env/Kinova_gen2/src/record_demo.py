@@ -10,13 +10,14 @@ import numpy as np
 import os
 
 class DataRecorder:
-    def __init__(self, task_name):
+    def __init__(self, task_name, control_mode='joint'):
         self.task_name = task_name
         self.file_path = f"data/{task_name}.hdf5"
         self.current_demo = None
         self.demo_idx = 0
         self.frame_idx = 0
         self.h5_file = None
+        self.control_mode = control_mode
         
         # Initialize or open the HDF5 file
         self._initialize_hdf5()
@@ -50,12 +51,19 @@ class DataRecorder:
         # Create images subgroup
         images_group = self.current_demo.create_group('images')
         
-        # Create resizable datasets for joint angles and actions
-        # Joint angles: 6 joints + 3 fingers = 9 values
-        self.current_demo.create_dataset('joint_angles', 
-                                       shape=(0, 9),
-                                       maxshape=(None, 9),
-                                       dtype='float32')
+        # Create different state representations based on control mode
+        if self.control_mode == 'cartesian':
+            # Cartesian pose: position (X,Y,Z) + orientation (X,Y,Z,W) = 7 values
+            self.current_demo.create_dataset('cartesian_pose', 
+                                           shape=(0, 7),
+                                           maxshape=(None, 7),
+                                           dtype='float32')
+        else:
+            # Joint angles: 6 joints + 3 fingers = 9 values
+            self.current_demo.create_dataset('joint_angles', 
+                                           shape=(0, 9),
+                                           maxshape=(None, 9),
+                                           dtype='float32')
         
         # Actions: 7 values (6 joint velocities + 1 gripper)
         self.current_demo.create_dataset('actions',
@@ -66,44 +74,54 @@ class DataRecorder:
         self.frame_idx = 0
         return demo_name
     
-    def add_frame(self, frames_dict, joint_angles, action):
+    def add_frame(self, frames_dict, state_data, action):
         """Add a new frame of data to the current demo
         
         Args:
             frames_dict: Dictionary of camera frames {cam_id: frame}
-            joint_angles: Array of current joint angles (9 values)
-            action: Array of joint velocities (7 values)
+            state_data: Either joint angles (9 values) or cartesian pose (7 values)
+            action: Array of velocities (7 values)
         """
         if self.current_demo is None:
             raise RuntimeError("No active demo. Call start_new_demo() first.")
         
-        # Add frames for each camera
-        for cam_id, frame in frames_dict.items():
-            ds_name = f'cam_{cam_id}'
-            if ds_name not in self.current_demo['images']:
-                # Create new dataset for this camera
-                self.current_demo['images'].create_dataset(
-                    ds_name,
-                    shape=(0, *frame.shape),
-                    maxshape=(None, *frame.shape),
-                    dtype=frame.dtype)
+        try:
+            # Add frames for each camera
+            for cam_id, frame in frames_dict.items():
+                ds_name = f'cam_{cam_id}'
+                if ds_name not in self.current_demo['images']:
+                    # Create new dataset for this camera
+                    self.current_demo['images'].create_dataset(
+                        ds_name,
+                        shape=(0, *frame.shape),
+                        maxshape=(None, *frame.shape),
+                        dtype=frame.dtype)
+                
+                # Resize dataset and add new frame
+                dataset = self.current_demo['images'][ds_name]
+                dataset.resize(self.frame_idx + 1, axis=0)
+                dataset[self.frame_idx] = frame
             
-            # Resize dataset and add new frame
-            dataset = self.current_demo['images'][ds_name]
-            dataset.resize(self.frame_idx + 1, axis=0)
-            dataset[self.frame_idx] = frame
-        
-        # Add joint angles
-        joint_angles_dataset = self.current_demo['joint_angles']
-        joint_angles_dataset.resize(self.frame_idx + 1, axis=0)
-        joint_angles_dataset[self.frame_idx] = joint_angles
-        
-        # Add action
-        actions_dataset = self.current_demo['actions']
-        actions_dataset.resize(self.frame_idx + 1, axis=0)
-        actions_dataset[self.frame_idx] = action
-        
-        self.frame_idx += 1
+            # Add state data (either joint angles or cartesian pose)
+            if self.control_mode == 'cartesian':
+                state_dataset = self.current_demo['cartesian_pose']
+            else:
+                state_dataset = self.current_demo['joint_angles']
+                
+            state_dataset.resize(self.frame_idx + 1, axis=0)
+            state_dataset[self.frame_idx] = state_data
+            
+            # Add action
+            actions_dataset = self.current_demo['actions']
+            actions_dataset.resize(self.frame_idx + 1, axis=0)
+            actions_dataset[self.frame_idx] = action
+            
+            self.frame_idx += 1
+        except Exception as e:
+            print(f"ERROR in add_frame: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def end_demo(self):
         """End the current demo and prepare for the next one"""
@@ -122,7 +140,7 @@ class record_demo:
     def __init__(self, debug_mode=False, camera_width=224, camera_height=224, 
                  record_modular_demo=False, control_mode='joint'):
         self.velocity_scale = 20.0  # Maximum joint velocity in degrees/second (reduced for safety)
-        self.gripper_scale = 5000  # Scale factor for gripper control
+        self.gripper_scale = 6000  # Scale factor for gripper control
         self.cartesian_linear_scale = 0.20  # Maximum Cartesian linear velocity in m/s
         self.cartesian_angular_scale = 40.0  # Maximum Cartesian angular velocity in degrees/s
         self.running = False
@@ -251,8 +269,8 @@ class record_demo:
                 # Map controller inputs to Cartesian velocities
                 # Linear velocities (X, Y, Z) in m/s
                 linear_velocity = [0.0, 0.0, 0.0]
-                linear_velocity[0] = -self.controller.left_stick_y * self.cartesian_linear_scale  # X axis
-                linear_velocity[1] = -self.controller.left_stick_x * self.cartesian_linear_scale  # Y axis
+                linear_velocity[1] = -self.controller.left_stick_y * self.cartesian_linear_scale  # X axis
+                linear_velocity[0] = self.controller.left_stick_x * self.cartesian_linear_scale  # Y axis
                 
                 # Use L2/R2 triggers for Z axis movement
                 z_velocity = 0.0
@@ -310,7 +328,7 @@ class record_demo:
                                 # Advance to the next modular action cyclically
                                 self.data_recorder.close()  # Close current modular action's file
                                 self.current_modular_idx = (self.current_modular_idx + 1) % len(self.modular_names)
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx], self.control_mode)
                         else:
                             if self.record_modular_demo:
                                 demo_name = self.data_recorder.current_demo.name.split('/')[-1]
@@ -322,7 +340,7 @@ class record_demo:
                                 print("Demo discarded. Resetting to first modular action.")
                                 self.data_recorder.close()
                                 self.current_modular_idx = 0
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx], self.control_mode)
                             else:
                                 demo_name = self.data_recorder.current_demo.name.split('/')[-1]
                                 print(f"Discarding demo {demo_name}...")
@@ -347,16 +365,22 @@ class record_demo:
                 
                 # Get current joint angles if recording
                 if self.recording:
-                    # Assuming get_joint_angles returns a 9-element array (6 joints + 3 fingers)
-                    joint_angles = self.arm.get_joint_angles()
-                    
-                    # For recording data, we need to construct an action vector
-                    # In the case of cartesian control, we'll convert our cartesian commands 
-                    # to something compatible with the existing dataset format
-                    cartesian_action = list(linear_velocity) + list(angular_velocity) + [gripper_velocity]
-                    
-                    # Record the frame (using cartesian_action as the action data)
-                    self.data_recorder.add_frame(frames_dict, joint_angles, cartesian_action)
+                    try:
+                        # Get cartesian pose for cartesian control mode
+                        cartesian_pose = self.arm.get_cartesian_position()
+                        # print(f'cartesian_pose: {cartesian_pose}')
+                        
+                        # For recording data, construct action vector
+                        cartesian_action = list(linear_velocity) + list(angular_velocity) + [gripper_velocity]
+                        
+                        # Record the frame with cartesian pose
+                        self.data_recorder.add_frame(frames_dict, cartesian_pose, cartesian_action)
+                    except Exception as e:
+                        print(f"ERROR during recording: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.recording = False
+                        print("Recording stopped due to error")
                 
                 # Send Cartesian velocity commands to the arm
                 self.arm.send_cartesian_velocity(
@@ -467,7 +491,7 @@ class record_demo:
                                 # Advance to the next modular action cyclically
                                 self.data_recorder.close()  # Close current modular action's file
                                 self.current_modular_idx = (self.current_modular_idx + 1) % len(self.modular_names)
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx], self.control_mode)
                         else:
                             if self.record_modular_demo:
                                 demo_name = self.data_recorder.current_demo.name.split('/')[-1]
@@ -479,7 +503,7 @@ class record_demo:
                                 print("Demo discarded. Resetting to first modular action.")
                                 self.data_recorder.close()
                                 self.current_modular_idx = 0
-                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+                                self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx], self.control_mode)
                             else:
                                 demo_name = self.data_recorder.current_demo.name.split('/')[-1]
                                 print(f"Discarding demo {demo_name}...")
@@ -504,9 +528,9 @@ class record_demo:
                 
                 # Get current joint angles if recording
                 if self.recording:
-                    # Assuming get_joint_angles returns a 9-element array (6 joints + 3 fingers)
+                    # Get joint angles for joint control mode
                     joint_angles = self.arm.get_joint_angles()
-                    # Record the frame
+                    # Record the frame with joint angles
                     self.data_recorder.add_frame(frames_dict, joint_angles, joint_velocities)
                 
                 # Send velocity commands to the arm
@@ -540,11 +564,11 @@ class record_demo:
                 self.modular_names.append(task)
             self.current_modular_idx = 0
             # Create the DataRecorder for the first modular action
-            self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx])
+            self.data_recorder = DataRecorder(self.modular_names[self.current_modular_idx], control_mode=self.control_mode)
         else:
             # Original behavior: single task name for recording
             task_name = input("Enter task name for recording: ")
-            self.data_recorder = DataRecorder(task_name)
+            self.data_recorder = DataRecorder(task_name, control_mode=self.control_mode)
         
         if not self.initialize_devices():
             return False
