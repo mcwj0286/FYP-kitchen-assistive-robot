@@ -356,13 +356,14 @@ class Kinova_Dataset(Dataset):
            │      ├── images
            │      │      ├── cam_0
            │      │      └── cam_1
-           │      ├── joint_angles    (dataset of shape (T, 9))
+           │      ├── joint_angles    (dataset of shape (T, 9)) - When in 'joint' control mode
+           │      ├── cartesian_pose  (dataset of shape (T, 7)) - When in 'cartesian' control mode
            │      └── actions         (dataset of shape (T, 7))
            ├── demo_01
            │      ├── images
            │      │      ├── cam_0
            │      │      └── cam_1
-           │      ├── joint_angles
+           │      ├── joint_angles    or cartesian_pose
            │      └── actions
            └── ...
     
@@ -372,8 +373,12 @@ class Kinova_Dataset(Dataset):
     The following modalities are returned (as torch.Tensors):
       - For each camera defined in camera_mapping, images are loaded, normalized to [0,1],
         resized to `image_shape`, and permuted to (T, C, H, W).
-      - "proprioceptive": loaded from "joint_angles" (T, 9) and normalized using linear normalization:
+      - "proprioceptive": 
+         * In 'joint' mode: loaded from "joint_angles" (T, 9) and normalized using linear normalization:
              (angle - 180)/180, mapping the original range [0, 360] to [-1, 1].
+         * In 'cartesian' mode: loaded from "cartesian_pose" (T, 7):
+             - position XYZ: normalized to [-1, 1] 
+             - orientation XYZW: quaternion values (already normalized)
       - "actions": processed actions with future concatenation if requested (T, 7*num_queries),
              where the first 6 elements (joint velocities, originally in [-30, 30]) are normalized by dividing by 30,
              and the 7th element (gripper velocity, originally in [-3000, 3000]) is normalized by dividing by 3000.
@@ -395,10 +400,13 @@ class Kinova_Dataset(Dataset):
         image_shape: Tuple[int, int] = (128, 128),  # desired output image size (height, width)
         action_velocity_scale: float = 30.0,       # scale for joint velocities normalization
         gripper_scale: float = 3000.0,             # scale for gripper velocity normalization
+        linear_velocity_scale: float = 0.2,        # scale for cartesian linear velocity normalization
+        angular_velocity_scale: float = 40.0,      # scale for cartesian angular velocity normalization
         load_task_emb: bool = True,                # whether to encode task embedding from HDF5 filename
         max_word_len: int = 25,                    # maximum word length for task encoding
         train_ratio: float = 0.8,                  # ratio of demonstrations to use for training
-        is_train: bool = True                      # whether this is a training or validation dataset
+        is_train: bool = True,                     # whether this is a training or validation dataset
+        control_mode: str = 'joint'                # control mode: 'joint' or 'cartesian'
     ):
         """
         Args:
@@ -414,12 +422,15 @@ class Kinova_Dataset(Dataset):
             camera_mapping (dict): Mapping of output image key to dataset key within the "images" group.
                                    Default is {"pixels": "cam_0", "pixels_egocentric": "cam_1"}.
             image_shape (tuple): The target image size (height, width). Default is (128, 128).
-            action_velocity_scale (float): Scale for joint velocities normalization.
+            action_velocity_scale (float): Scale for joint velocities normalization (for joint control mode).
             gripper_scale (float): Scale for gripper velocity normalization.
+            linear_velocity_scale (float): Scale for cartesian linear velocity (for cartesian control mode).
+            angular_velocity_scale (float): Scale for cartesian angular velocity (for cartesian control mode).
             load_task_emb (bool): Whether to encode task embedding from HDF5 filename.
             max_word_len (int): Maximum word length for task encoding.
             train_ratio (float): Ratio of demonstrations to use for training (0.0 to 1.0).
             is_train (bool): Whether this dataset instance is for training (True) or validation (False).
+            control_mode (str): Control mode used for data recording: 'joint' or 'cartesian'.
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -434,10 +445,17 @@ class Kinova_Dataset(Dataset):
         self.image_shape = image_shape
         self.action_velocity_scale = action_velocity_scale
         self.gripper_scale = gripper_scale
+        self.linear_velocity_scale = linear_velocity_scale
+        self.angular_velocity_scale = angular_velocity_scale
         self.load_task_emb = load_task_emb
         self.max_word_len = max_word_len
         self.train_ratio = train_ratio
         self.is_train = is_train
+        self.control_mode = control_mode
+        
+        # Validate control mode
+        if self.control_mode not in ['joint', 'cartesian']:
+            raise ValueError(f"control_mode must be 'joint' or 'cartesian', got {self.control_mode}")
         
         if not (0.0 <= train_ratio <= 1.0):
             raise ValueError(f"train_ratio must be between 0.0 and 1.0, got {train_ratio}")
@@ -476,8 +494,15 @@ class Kinova_Dataset(Dataset):
                         if not demo_key.startswith('demo_'):
                             continue
                         demo = f[demo_key]
+                        
+                        # Check if data has the required format based on control mode
+                        if self.control_mode == 'joint' and "joint_angles" not in demo:
+                            continue
+                        elif self.control_mode == 'cartesian' and "cartesian_pose" not in demo:
+                            continue
                         if "actions" not in demo:
                             continue
+                            
                         valid_demos.append(demo_key)
                     
                     # Split demos into train and validation sets
@@ -498,7 +523,14 @@ class Kinova_Dataset(Dataset):
                     # Process the selected demonstrations
                     for demo_key in selected_demos:
                         demo = f[demo_key]
-                        n_timesteps = demo["actions"].shape[0]
+                        
+                        # Get appropriate dataset based on control mode
+                        if self.control_mode == 'joint':
+                            state_dataset = demo["joint_angles"]
+                        else:  # cartesian mode
+                            state_dataset = demo["cartesian_pose"]
+                            
+                        n_timesteps = state_dataset.shape[0]
                         
                         # Determine offset based on frame stacking
                         start_offset = 0 if self.pad_frame_stack else (self.frame_stack - 1)
@@ -556,7 +588,7 @@ class Kinova_Dataset(Dataset):
                             ))
         
         split_type = "training" if is_train else "validation"
-        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks")
+        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks in {control_mode} mode")
         self.file_cache = {}
     
     def _get_file(self, file_path: str) -> h5py.File:
@@ -614,7 +646,7 @@ class Kinova_Dataset(Dataset):
                 for i in range(frame_stack_pad):
                     img_array[i] = img_array[frame_stack_pad]
             
-            # NEW: Resize each frame to the desired resize_shape (e.g., 128x128)
+            # Resize each frame to the desired resize_shape
             if self.image_shape is not None:
                 H_target, W_target = self.image_shape
                 # Create an empty container for resized images.
@@ -633,23 +665,58 @@ class Kinova_Dataset(Dataset):
             img_tensor = torch.from_numpy(img_array).permute(0, 3, 1, 2)
             data['images'][out_key] = img_tensor
         
-        # Process proprioceptive data from joint_angles.
-        if "joint_angles" not in demo:
-            raise ValueError(f"Demo {demo_key} in file {file_path} does not contain 'joint_angles'")
-        ja_ds = demo["joint_angles"]
-        T_ja, feat_dim = ja_ds.shape
-        ja_array = np.zeros((self.seq_length, feat_dim), dtype=ja_ds.dtype)
-        ja_array[:actual_length] = ja_ds[start_idx:start_idx + actual_length]
-        frame_stack_pad = 0
-        if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
-            frame_stack_pad = self.frame_stack - 1 - start_idx
-            for i in range(frame_stack_pad):
-                ja_array[i] = ja_array[frame_stack_pad]
-        
-        # NEW: Normalize proprioceptive joint angles
-        ja_array = ja_array.astype(np.float32)
-        ja_array = (ja_array - 180.0) / 180.0
-        data["proprioceptive"] = torch.from_numpy(ja_array)
+        # Process proprioceptive data based on control mode
+        if self.control_mode == 'joint':
+            # Process joint angles
+            if "joint_angles" not in demo:
+                raise ValueError(f"Demo {demo_key} in file {file_path} does not contain 'joint_angles'")
+            ja_ds = demo["joint_angles"]
+            T_ja, feat_dim = ja_ds.shape
+            ja_array = np.zeros((self.seq_length, feat_dim), dtype=ja_ds.dtype)
+            ja_array[:actual_length] = ja_ds[start_idx:start_idx + actual_length]
+            
+            # Apply frame stack padding if needed
+            frame_stack_pad = 0
+            if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
+                frame_stack_pad = self.frame_stack - 1 - start_idx
+                for i in range(frame_stack_pad):
+                    ja_array[i] = ja_array[frame_stack_pad]
+            
+            # Normalize joint angles from [0, 360] to [-1, 1]
+            ja_array = ja_array.astype(np.float32)
+            ja_array = (ja_array - 180.0) / 180.0
+            data["proprioceptive"] = torch.from_numpy(ja_array)
+        else:
+            # Process cartesian pose
+            if "cartesian_pose" not in demo:
+                raise ValueError(f"Demo {demo_key} in file {file_path} does not contain 'cartesian_pose'")
+            cp_ds = demo["cartesian_pose"]
+            T_cp, feat_dim = cp_ds.shape
+            cp_array = np.zeros((self.seq_length, feat_dim), dtype=cp_ds.dtype)
+            cp_array[:actual_length] = cp_ds[start_idx:start_idx + actual_length]
+            
+            # Apply frame stack padding if needed
+            frame_stack_pad = 0
+            if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
+                frame_stack_pad = self.frame_stack - 1 - start_idx
+                for i in range(frame_stack_pad):
+                    cp_array[i] = cp_array[frame_stack_pad]
+            
+            # Normalize cartesian pose
+            # - Position (XYZ): first 3 values
+            # - Orientation (XYZ): next 3 values (Euler angles in radians)
+            # - Gripper: last value
+            cp_array = cp_array.astype(np.float32)
+            
+            # Apply normalization using our static method
+            cp_array = Kinova_Dataset.normalize_cartesian_pose(
+                cp_array, 
+                position_scale=1.0, 
+                gripper_min=-6.0, 
+                gripper_max=7020.0
+            )
+            
+            data["proprioceptive"] = torch.from_numpy(cp_array)
         
         # Process actions.
         if "actions" not in demo:
@@ -659,9 +726,21 @@ class Kinova_Dataset(Dataset):
         act_array = np.zeros((self.seq_length, act_dim), dtype=act_ds.dtype)
         act_array[:actual_length] = act_ds[start_idx:start_idx + actual_length]
         
-        # NEW: Normalize actions
+        # Normalize actions based on control mode
         act_array = act_array.astype(np.float32)
-        norm_factors = np.array([self.action_velocity_scale]*6 + [self.gripper_scale], dtype=np.float32)
+        if self.control_mode == 'joint':
+            # For joint control, all joint velocities use the same scale (30.0)
+            norm_factors = np.array([self.action_velocity_scale]*6 + [self.gripper_scale], dtype=np.float32)
+        else:
+            # For cartesian control, action is (linear vel x,y,z, angular vel x,y,z, gripper)
+            norm_factors = np.array(
+                [self.linear_velocity_scale] * 3 +  # Linear velocity (x, y, z)
+                [self.angular_velocity_scale] * 3 +  # Angular velocity (x, y, z) 
+                [self.gripper_scale],           # Gripper velocity
+                dtype=np.float32
+            )
+        
+        # Apply normalization
         act_array = act_array / norm_factors
         
         if self.get_action_padding:
@@ -683,7 +762,7 @@ class Kinova_Dataset(Dataset):
         if self.load_task_emb:
             data["task_emb"] = self.task_embeddings[task_name]
         
-        # --- Minimal change: Flatten observations to match LIBERODataset format ---
+        # Flatten observations to match LIBERODataset format
         data["pixels"] = data["images"].get("pixels")
         data["pixels_egocentric"] = data["images"].get("pixels_egocentric")
         del data["images"]
@@ -697,202 +776,365 @@ class Kinova_Dataset(Dataset):
         self.file_cache.clear()
     
     def __del__(self):
-        self.close() 
+        self.close()
+
+    @staticmethod
+    def analyze_data_ranges(data_path: str, verbose: bool = True) -> Dict[str, Dict[str, np.ndarray]]:
+        """
+        Analyzes the min/max values for proprioceptive and action data across all demonstrations.
+        
+        Args:
+            data_path (str): Path to the directory containing HDF5 files
+            verbose (bool): Whether to print analysis results
+            
+        Returns:
+            Dict containing statistics for each data type:
+            {
+                'joint_angles': {
+                    'min': array of min values per dimension,
+                    'max': array of max values per dimension,
+                    'mean': array of mean values per dimension,
+                    'std': array of standard deviation values per dimension
+                },
+                'cartesian_pose': { ... same structure ... },
+                'actions': { ... same structure ... }
+            }
+        """
+        # Initialize storage for min/max values
+        stats = {
+            'joint_angles': {
+                'min': None, 'max': None, 
+                'mean': None, 'std': None,
+                'count': 0
+            },
+            'cartesian_pose': {
+                'min': None, 'max': None, 
+                'mean': None, 'std': None,
+                'count': 0
+            },
+            'actions': {
+                'min': None, 'max': None, 
+                'mean': None, 'std': None,
+                'count': 0
+            }
+        }
+        
+        # Running sum for mean calculation
+        sums = {
+            'joint_angles': None,
+            'cartesian_pose': None,
+            'actions': None
+        }
+        
+        # Running sum of squares for std calculation
+        sum_squares = {
+            'joint_angles': None,
+            'cartesian_pose': None, 
+            'actions': None
+        }
+        
+        # Collect all files
+        num_files = 0
+        for file in os.listdir(data_path):
+            if not file.endswith('.hdf5'):
+                continue
+                
+            num_files += 1
+            file_path = os.path.join(data_path, file)
+            
+            try:
+                with h5py.File(file_path, 'r') as f:
+                    # Process each demo in the file
+                    for demo_key in f.keys():
+                        if not demo_key.startswith('demo_'):
+                            continue
+                            
+                        demo = f[demo_key]
+                        
+                        # Process joint angles if available
+                        if 'joint_angles' in demo:
+                            data = demo['joint_angles'][:]
+                            stats['joint_angles']['count'] += len(data)
+                            
+                            if stats['joint_angles']['min'] is None:
+                                stats['joint_angles']['min'] = np.min(data, axis=0)
+                                stats['joint_angles']['max'] = np.max(data, axis=0)
+                                sums['joint_angles'] = np.sum(data, axis=0)
+                                sum_squares['joint_angles'] = np.sum(data**2, axis=0)
+                            else:
+                                stats['joint_angles']['min'] = np.minimum(stats['joint_angles']['min'], np.min(data, axis=0))
+                                stats['joint_angles']['max'] = np.maximum(stats['joint_angles']['max'], np.max(data, axis=0))
+                                sums['joint_angles'] += np.sum(data, axis=0)
+                                sum_squares['joint_angles'] += np.sum(data**2, axis=0)
+                        
+                        # Process cartesian pose if available
+                        if 'cartesian_pose' in demo:
+                            data = demo['cartesian_pose'][:]
+                            stats['cartesian_pose']['count'] += len(data)
+                            
+                            if stats['cartesian_pose']['min'] is None:
+                                stats['cartesian_pose']['min'] = np.min(data, axis=0)
+                                stats['cartesian_pose']['max'] = np.max(data, axis=0)
+                                sums['cartesian_pose'] = np.sum(data, axis=0)
+                                sum_squares['cartesian_pose'] = np.sum(data**2, axis=0)
+                            else:
+                                stats['cartesian_pose']['min'] = np.minimum(stats['cartesian_pose']['min'], np.min(data, axis=0))
+                                stats['cartesian_pose']['max'] = np.maximum(stats['cartesian_pose']['max'], np.max(data, axis=0))
+                                sums['cartesian_pose'] += np.sum(data, axis=0)
+                                sum_squares['cartesian_pose'] += np.sum(data**2, axis=0)
+                        
+                        # Process actions if available
+                        if 'actions' in demo:
+                            data = demo['actions'][:]
+                            stats['actions']['count'] += len(data)
+                            
+                            if stats['actions']['min'] is None:
+                                stats['actions']['min'] = np.min(data, axis=0)
+                                stats['actions']['max'] = np.max(data, axis=0)
+                                sums['actions'] = np.sum(data, axis=0)
+                                sum_squares['actions'] = np.sum(data**2, axis=0)
+                            else:
+                                stats['actions']['min'] = np.minimum(stats['actions']['min'], np.min(data, axis=0))
+                                stats['actions']['max'] = np.maximum(stats['actions']['max'], np.max(data, axis=0))
+                                sums['actions'] += np.sum(data, axis=0)
+                                sum_squares['actions'] += np.sum(data**2, axis=0)
+            except Exception as e:
+                print(f"Error processing file {file}: {e}")
+        
+        # Calculate mean and std for each data type
+        for data_type in stats:
+            if stats[data_type]['count'] > 0:
+                stats[data_type]['mean'] = sums[data_type] / stats[data_type]['count']
+                # Calculate standard deviation: sqrt(E[X^2] - E[X]^2)
+                mean_squares = sum_squares[data_type] / stats[data_type]['count']
+                stats[data_type]['std'] = np.sqrt(mean_squares - stats[data_type]['mean']**2)
+        
+        # Print results if verbose
+        if verbose:
+            print(f"Analyzed {num_files} files")
+            
+            # Print joint angles stats
+            if stats['joint_angles']['count'] > 0:
+                print("\n=== Joint Angles Statistics (9 dimensions) ===")
+                print(f"Total samples: {stats['joint_angles']['count']}")
+                print("Min values:")
+                for i, val in enumerate(stats['joint_angles']['min']):
+                    print(f"  Dim {i}: {val:.4f}")
+                print("Max values:")
+                for i, val in enumerate(stats['joint_angles']['max']):
+                    print(f"  Dim {i}: {val:.4f}")
+                print("Mean values:")
+                for i, val in enumerate(stats['joint_angles']['mean']):
+                    print(f"  Dim {i}: {val:.4f}")
+                print("Std values:")
+                for i, val in enumerate(stats['joint_angles']['std']):
+                    print(f"  Dim {i}: {val:.4f}")
+                    
+                # Normalized range for joint angles
+                print("\nJoint Angles Normalized Range (min-180)/180 to (max-180)/180:")
+                for i in range(len(stats['joint_angles']['min'])):
+                    min_norm = (stats['joint_angles']['min'][i] - 180.0) / 180.0
+                    max_norm = (stats['joint_angles']['max'][i] - 180.0) / 180.0
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}]")
+            
+            # Print cartesian pose stats
+            if stats['cartesian_pose']['count'] > 0:
+                print("\n=== Cartesian Pose Statistics (7 dimensions) ===")
+                print(f"Total samples: {stats['cartesian_pose']['count']}")
+                print("Min values:")
+                for i, val in enumerate(stats['cartesian_pose']['min']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (position)" if i < 3 else " (gripper)" if i == 6 else " (orientation)"))
+                print("Max values:")
+                for i, val in enumerate(stats['cartesian_pose']['max']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (position)" if i < 3 else " (gripper)" if i == 6 else " (orientation)"))
+                print("Mean values:")
+                for i, val in enumerate(stats['cartesian_pose']['mean']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (position)" if i < 3 else " (gripper)" if i == 6 else " (orientation)"))
+                print("Std values:")
+                for i, val in enumerate(stats['cartesian_pose']['std']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (position)" if i < 3 else " (gripper)" if i == 6 else " (orientation)"))
+                
+                # Range for position values after normalization
+                print("\nCartesian Pose Normalized Range:")
+                # Position values normalized by 1.0
+                for i in range(3):
+                    min_norm = stats['cartesian_pose']['min'][i] / 1.0
+                    max_norm = stats['cartesian_pose']['max'][i] / 1.0
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (position/1.0)")
+                
+                # Orientation values normalized by dividing by pi
+                for i in range(3, 6):
+                    min_norm = stats['cartesian_pose']['min'][i] / np.pi
+                    max_norm = stats['cartesian_pose']['max'][i] / np.pi
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (orientation/π)")
+                
+                # Gripper value normalized by min-max scaling
+                i = 6
+                gripper_min, gripper_max = -6.0, 7020.0
+                min_norm = 2.0 * (stats['cartesian_pose']['min'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                max_norm = 2.0 * (stats['cartesian_pose']['max'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (gripper, min-max scaled from {gripper_min} to {gripper_max})")
+            
+            # Print actions stats
+            if stats['actions']['count'] > 0:
+                print("\n=== Actions Statistics (7 dimensions) ===")
+                print(f"Total samples: {stats['actions']['count']}")
+                print("Min values:")
+                for i, val in enumerate(stats['actions']['min']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (joint velocity)" if i < 6 else " (gripper)"))
+                print("Max values:")
+                for i, val in enumerate(stats['actions']['max']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (joint velocity)" if i < 6 else " (gripper)"))
+                print("Mean values:")
+                for i, val in enumerate(stats['actions']['mean']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (joint velocity)" if i < 6 else " (gripper)"))
+                print("Std values:")
+                for i, val in enumerate(stats['actions']['std']):
+                    print(f"  Dim {i}: {val:.4f}" + (" (joint velocity)" if i < 6 else " (gripper)"))
+                
+                # Range for normalized values
+                print("\nActions Normalized Range:")
+                
+                # Check if actions appear to be cartesian or joint velocities
+                # If action dimensions 0-2 have similar ranges around ±0.2 and dims 3-5 around ±40, assume cartesian
+                is_cartesian = (
+                    abs(stats['actions']['max'][0]) <= 0.3 and
+                    abs(stats['actions']['max'][1]) <= 0.3 and
+                    abs(stats['actions']['max'][2]) <= 0.3 and
+                    abs(stats['actions']['max'][3]) >= 10.0 and 
+                    abs(stats['actions']['max'][4]) >= 10.0 and
+                    abs(stats['actions']['max'][5]) >= 10.0
+                )
+                
+                if is_cartesian:
+                    print("Detected cartesian velocity actions")
+                    # For cartesian control mode
+                    for i in range(7):
+                        if i < 3:  # Linear velocities (x,y,z)
+                            scale = 0.2  # Linear velocity scale
+                            component = "linear velocity"
+                        elif i < 6:  # Angular velocities (x,y,z)
+                            scale = 40.0  # Angular velocity scale
+                            component = "angular velocity"
+                        else:  # Gripper
+                            scale = 3000.0  # Gripper scale
+                            component = "gripper"
+                        
+                        min_norm = stats['actions']['min'][i] / scale
+                        max_norm = stats['actions']['max'][i] / scale
+                        print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] ({component}, scale={scale})")
+                else:
+                    print("Detected joint velocity actions")
+                    # For joint control mode
+                    for i in range(7):
+                        if i < 6:  # Joint velocities
+                            scale = 30.0  # Joint velocity scale
+                            component = "joint velocity"
+                        else:  # Gripper
+                            scale = 3000.0  # Gripper scale
+                            component = "gripper"
+                        
+                        min_norm = stats['actions']['min'][i] / scale
+                        max_norm = stats['actions']['max'][i] / scale
+                        print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] ({component}, scale={scale})")
+        
+        # Remove count from returned stats
+        for data_type in stats:
+            if 'count' in stats[data_type]:
+                del stats[data_type]['count']
+                
+        return stats
+
+    @staticmethod
+    def normalize_cartesian_pose(cp_data, position_scale=1.0, gripper_min=-6.0, gripper_max=7020.0):
+        """
+        Normalize cartesian pose data using the recommended approach:
+        - Position (X,Y,Z): Divide by position_scale (typically 1.0 meter)
+        - Orientation (Euler angles): Divide by π to normalize to [-1, 1] range
+        - Gripper: Min-max scaling to [-1, 1] range using provided min/max values
+        
+        Args:
+            cp_data: numpy array of cartesian pose data with shape (..., 7)
+            position_scale: scaling factor for position dimensions
+            gripper_min: minimum value for gripper dimension
+            gripper_max: maximum value for gripper dimension
+        
+        Returns:
+            Normalized cartesian pose data with same shape as input
+        """
+        # Create a copy to avoid modifying the original data
+        normalized = cp_data.copy().astype(np.float32)
+        
+        # 1. Position normalization (first 3 dimensions)
+        normalized[..., :3] = normalized[..., :3] / position_scale
+        
+        # 2. Orientation normalization (next 3 dimensions)
+        normalized[..., 3:6] = normalized[..., 3:6] / np.pi
+        
+        # 3. Gripper normalization (last dimension)
+        normalized[..., 6] = 2.0 * (normalized[..., 6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+        
+        return normalized
 
 
 if __name__ == "__main__":
-    # Test RealDataset and visualize a resized image sequence as a video
-    # Create training dataset (80% of demos)
-    # train_dataset = Kinova_Dataset(
-    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
-    #     seq_length=10,
-    #     frame_stack=4,
-    #     overlap=2,
-    #     pad_frame_stack=True,
-    #     pad_seq_length=True,
-    #     get_pad_mask=True,
-    #     get_action_padding=True,
-    #     num_queries=10,
-    #     image_shape=(128, 128),  # Target image size: 128x128
-    #     action_velocity_scale=30.0,
-    #     gripper_scale=3000.0,
-    #     train_ratio=0.9,
-    #     is_train=True
-    # )
+    # Example usage for analyzing data ranges in cartesian mode
+    print("\n=== Analyzing Cartesian Mode Dataset ===")
+    cartesian_dataset = Kinova_Dataset(
+        data_path="/Volumes/Untitled/fyp/dataset/cartesain_position_dataset",
+        seq_length=10,
+        frame_stack=1,
+        pad_frame_stack=False,
+        get_pad_mask=False,
+        get_action_padding=False,
+        linear_velocity_scale=0.2,      # Cartesian specific parameter
+        angular_velocity_scale=40.0,    # Cartesian specific parameter
+        control_mode='cartesian'        # Specify cartesian mode
+    )
+    cartesian_dataset.analyze_data_ranges(
+        data_path="/Volumes/Untitled/fyp/dataset/cartesain_position_dataset", 
+        verbose=True
+    )
+    cartesian_dataset.close()
     
-    # # Create validation dataset (20% of demos)
-    # val_dataset = Kinova_Dataset(
-    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
-    #     seq_length=10,
-    #     frame_stack=4,
-    #     overlap=2,
-    #     pad_frame_stack=True,
-    #     pad_seq_length=True,
-    #     get_pad_mask=True,
-    #     get_action_padding=True,
-    #     num_queries=10,
-    #     image_shape=(128, 128),  # Target image size: 128x128
-    #     action_velocity_scale=30.0,
-    #     gripper_scale=3000.0,
-    #     train_ratio=0.8,
-    #     is_train=False
-    # )
-    
-    # print(f"Training dataset: {len(train_dataset)} segments")
-    # print(f"Validation dataset: {len(val_dataset)} segments")
-    
-    # # Sample from training dataset
-    # train_sample = train_dataset[0]
-    
-    # # Print shapes in the sample for verification
-    # print("\n--- Training Sample Details ---")
-    # for key, value in train_sample.items():
-    #     if isinstance(value, torch.Tensor):
-    #         print(f"{key} shape:", value.shape)
-    #     elif isinstance(value, dict):
-    #         print(f"{key}:")
-    #         for sub_key, sub_value in value.items():
-    #             if isinstance(sub_value, torch.Tensor):
-    #                 print(f"  {sub_key} shape:", sub_value.shape)
-    
-    # # Clean up resources
-    # train_dataset.close()
-    # val_dataset.close()
-    
-    # Example of using LIBERODataset with train/validation split
-    # print("\n\n--- LIBERO Dataset Examples ---")
-    
-    # # Create training dataset (80% of demos)
-    # libero_train_dataset = LIBERODataset(
-    #     data_path="/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets",
-    #     benchmark="libero_90",
-    #     seq_length=10,
-    #     frame_stack=1,
-    #     overlap=0,
-    #     pad_frame_stack=True,
-    #     pad_seq_length=True,
-    #     get_pad_mask=True,
-    #     get_action_padding=True,
-    #     num_queries=10,
-    #     max_word_len=77,
-    #     load_task_emb=True,
-    #     train_ratio=0.8,
-    #     is_train=True
-    # )
-
-    # Test case for comparing padded vs. non-padded approaches
-    def test_remaining_frames_handling():
-        print("\n\n--- Testing Remaining Frames Handling ---")
-        data_path = "/home/john/project/FYP-kitchen-assistive-robot/sim_env/LIBERO/libero/datasets"
-        
-        # Parameters for testing
-        seq_length = 8
-        overlap = 2
-        
-        # 1. Dataset with padding enabled (original approach)
-        padding_dataset = LIBERODataset(
-            data_path=data_path,
-            benchmark="libero_90",
-            seq_length=seq_length,
-            frame_stack=1,  # Simplified for testing
-            overlap=overlap,
-            pad_frame_stack=True,
-            pad_seq_length=True,  # Padding enabled
-            get_pad_mask=True,
-            train_ratio=0.8,
-            is_train=True
+    # Example usage for analyzing data ranges in joint mode (if available)
+    print("\n=== Analyzing Joint Mode Dataset ===")
+    try:
+        joint_dataset = Kinova_Dataset(
+            data_path="/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+            seq_length=10,
+            frame_stack=1,
+            pad_frame_stack=False,
+            get_pad_mask=False,
+            get_action_padding=False,
+            action_velocity_scale=30.0,  # Joint specific parameter
+            control_mode='joint'         # Specify joint mode
         )
-        
-        # 2. Dataset with our new overlapping approach (padding disabled)
-        overlap_dataset = LIBERODataset(
-            data_path=data_path,
-            benchmark="libero_90",
-            seq_length=seq_length,
-            frame_stack=1,  # Simplified for testing
-            overlap=overlap,
-            pad_frame_stack=True,
-            pad_seq_length=False,  # Padding disabled - use our new approach
-            get_pad_mask=True,
-            train_ratio=0.8,
-            is_train=True
+        joint_dataset.analyze_data_ranges(
+            data_path="/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data", 
+            verbose=True
         )
+        joint_dataset.close()
+    except FileNotFoundError:
+        print("Joint mode dataset directory not found. Skipping joint analysis.")
         
-        print(f"Padding dataset segments: {len(padding_dataset.segment_map)}")
-        print(f"Overlapping approach segments: {len(overlap_dataset.segment_map)}")
-        
-        # Analyze sequences from a specific demonstration
-        def analyze_demo_coverage(dataset, name):
-            # Dictionary to track frame coverage
-            frame_coverage = {}
-            
-            # Count segments and frames for each demo
-            demo_segments = {}
-            
-            # Analyze each segment
-            for file_path, demo_key, task_name, start_idx, is_padded, actual_length in dataset.segment_map:
-                # Initialize tracking for this demo if not seen before
-                if demo_key not in demo_segments:
-                    demo_segments[demo_key] = []
-                    
-                # Add segment info
-                demo_segments[demo_key].append((start_idx, start_idx + actual_length - 1, is_padded))
-                
-                # Open the file to get total frame count for this demo
-                if demo_key not in frame_coverage:
-                    with h5py.File(file_path, 'r') as f:
-                        total_frames = len(f['data'][demo_key]['actions'])
-                        frame_coverage[demo_key] = [False] * total_frames
-                
-                # Mark frames as covered
-                for i in range(start_idx, min(start_idx + actual_length, len(frame_coverage[demo_key]))):
-                    frame_coverage[demo_key][i] = True
-            
-            # Randomly select 5 demos to analyze in detail
-            import random
-            demo_keys = list(frame_coverage.keys())
-            sample_size = min(5, len(demo_keys))
-            selected_demos = random.sample(demo_keys, sample_size)
-            
-            print(f"\n{name} Analysis:")
-            print(f"Total demonstrations: {len(demo_segments)}")
-            
-            # Report on selected demos
-            for demo_key in selected_demos:
-                total_frames = len(frame_coverage[demo_key])
-                covered_frames = sum(frame_coverage[demo_key])
-                coverage_pct = (covered_frames / total_frames) * 100
-                
-                print(f"\nDemo {demo_key}:")
-                print(f"  Total frames: {total_frames}")
-                print(f"  Covered frames: {covered_frames} ({coverage_pct:.2f}%)")
-                print(f"  Segments: {len(demo_segments[demo_key])}")
-                
-                # Print segments details (first 3 and last 3)
-                segments = demo_segments[demo_key]
-                print("  Segments details (start, end, is_padded):")
-                if len(segments) <= 6:
-                    for seg in segments:
-                        print(f"    {seg}")
-                else:
-                    for seg in segments[:3]:
-                        print(f"    {seg}")
-                    print("    ...")
-                    for seg in segments[-3:]:
-                        print(f"    {seg}")
-        
-        # Run analysis on both datasets
-        analyze_demo_coverage(padding_dataset, "Padding Approach")
-        analyze_demo_coverage(overlap_dataset, "Overlapping Approach")
-        
-        # Cleanup
-        padding_dataset.close()
-        overlap_dataset.close()
-        
-        print("\nTest completed.")
+    print("\n=== Dataset Analysis Complete ===")
     
-    # Run the test function
-    test_remaining_frames_handling()
+    # Example of loading dataset for training with correct parameters
+    print("\nExample of initializing dataset for training:")
+    print("- For Cartesian mode:")
+    print("cartesian_train_dataset = Kinova_Dataset(")
+    print("    data_path='path/to/data',")
+    print("    control_mode='cartesian',")
+    print("    linear_velocity_scale=0.2,")
+    print("    angular_velocity_scale=40.0,")
+    print("    # other parameters...")
+    print(")")
     
-    # Cleanup
-    # libero_train_dataset.close()
-    
+    print("\n- For Joint mode:")
+    print("joint_train_dataset = Kinova_Dataset(")
+    print("    data_path='path/to/data',")
+    print("    control_mode='joint',")
+    print("    action_velocity_scale=30.0,")
+    print("    # other parameters...")
+    print(")")
