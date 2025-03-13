@@ -51,6 +51,17 @@ class AngularPosition(ctypes.Structure):
         ("Fingers", FingersPosition)
     ]
 
+class CartesianPosition(ctypes.Structure):
+    _fields_ = [
+        ("X", ctypes.c_float),
+        ("Y", ctypes.c_float),
+        ("Z", ctypes.c_float),
+        ("ThetaX", ctypes.c_float),
+        ("ThetaY", ctypes.c_float),
+        ("ThetaZ", ctypes.c_float),
+        ("Fingers", FingersPosition)
+    ]
+
 # Define CartesianInfo structure (6 floats)
 class CartesianInfo(ctypes.Structure):
     _fields_ = [
@@ -445,26 +456,21 @@ class KinovaArmInterface:
     def get_cartesian_position(self):
         """Get the current Cartesian position of the robot end-effector and actual finger positions."""
         # Get Cartesian position from GetCartesianCommand
-        cartesian_position = CartesianInfo()
-        fingers_command = FingersPosition()
-        ret = self.lib.GetCartesianCommand(ctypes.byref(cartesian_position), ctypes.byref(fingers_command))
+        # cartesian_position = CartesianInfo()
+        # fingers_command = FingersPosition()
+        cartesian_position = CartesianPosition()
+        ret = self.lib.GetCartesianPosition(ctypes.byref(cartesian_position))
         if ret != self.NO_ERROR:
-            print(f"GetCartesianCommand failed with error code: {ret}")
+            print(f"GetCartesianPosition failed with error code: {ret}")
             return None
         
-        angular_position = AngularPosition()
-        ret_pos = self.lib.GetAngularPosition(ctypes.byref(angular_position))
-        if ret_pos != self.NO_ERROR:
-            print(f"GetAngularPosition failed with error code: {ret_pos}")
-            # Still return cartesian position with commanded finger values
-            return cartesian_position, fingers_command
         cartesian_position = [cartesian_position.X,
                             cartesian_position.Y,
                             cartesian_position.Z, 
                             cartesian_position.ThetaX, 
                             cartesian_position.ThetaY,
                               cartesian_position.ThetaZ,
-                              angular_position.Fingers.Finger1]
+                              cartesian_position.Fingers.Finger1]
       
         
         # Return cartesian position and actual finger positions
