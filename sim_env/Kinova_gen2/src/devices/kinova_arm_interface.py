@@ -300,14 +300,16 @@ class KinovaArmInterface:
             time.sleep(period)
         # print("Angular velocity command issued successfully.")
 
-    def send_cartesian_position(self, position, rotation, fingers=(0.0, 0.0, 0.0)):
+    def send_cartesian_position(self, position, rotation, fingers=(0.0, 0.0, 0.0), duration=5.0, period=0.05):
         """
-        Send a Cartesian position command to the arm.
+        Send a Cartesian position command to the arm with proper trajectory planning.
         
         Args:
             position: Tuple of (x, y, z) position in meters
             rotation: Tuple of (theta_x, theta_y, theta_z) rotation in degrees/radians
             fingers: Tuple of finger positions
+            duration: Duration to keep sending the command (seconds)
+            period: Update period in seconds
         """
         point = TrajectoryPoint()
         
@@ -324,16 +326,37 @@ class KinovaArmInterface:
         # Set fingers
         point.Position.Fingers = FingersPosition(*fingers)
         
-        # Disable trajectory limitations
-        point.LimitationsActive = 0
+        # Enable trajectory limitations with reasonable values
+        point.LimitationsActive = 1
         point.SynchroType = 0
-        point.Limitations = Limitation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         
-        ret = self.lib.SendBasicTrajectory(point)
-        if ret != self.NO_ERROR:
-            print(f"SendBasicTrajectory (Cartesian) failed with error code: {ret}")
-        else:
-            print("Cartesian position command issued successfully.")
+        # Set appropriate limitation values for safe movement
+        max_speed = 20.0       # Maximum linear speed
+        max_accel = 10.0       # Maximum acceleration
+        point.Limitations = Limitation(
+            max_speed, max_speed, max_speed,   # Speed parameters
+            50.0, 50.0, 50.0,                  # Force parameters 
+            max_accel, max_accel, max_accel    # Acceleration parameters
+        )
+        
+        # Send command repeatedly for the specified duration
+        end_time = time.time() + duration
+        success = False
+        
+        while time.time() < end_time:
+            ret = self.lib.SendBasicTrajectory(point)
+            if ret != self.NO_ERROR:
+                print(f"SendBasicTrajectory (Cartesian) failed with error code: {ret}")
+                break
+            elif not success:
+                print("Cartesian position command issued successfully. Continuing to send...")
+                success = True
+            
+            # Wait before sending the command again
+            time.sleep(period)
+        
+        if success:
+            print("Finished sending Cartesian position commands")
 
     def send_cartesian_velocity(self, linear_velocity, angular_velocity, 
                                fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005, hand_mode=1):
@@ -519,6 +542,33 @@ class KinovaArmInterface:
         except Exception as e:
             print(f"Error closing API: {e}")
 
+    def monitor_position_change(self, target_position, timeout=10.0):
+        start_time = time.time()
+        initial_pos = self.get_cartesian_position()
+        if initial_pos is None:
+            return False
+        
+        print(f"Starting position: {initial_pos}")
+        print(f"Target position: {target_position}")
+        
+        while time.time() - start_time < timeout:
+            current_pos = self.get_cartesian_position()
+            if current_pos is None:
+                continue
+            
+            distance = sum((c - t)**2 for c, t in zip(current_pos[:3], target_position[:3]))**0.5
+            print(f"Current position: {current_pos[:3]}, Distance to target: {distance:.4f}m")
+            
+            # Check if we've reached the target (within tolerance)
+            if distance < 0.02:  # 2cm tolerance
+                print("Target position reached!")
+                return True
+            
+            time.sleep(0.5)
+        
+        print("Failed to reach target position within timeout")
+        return False
+
 def main():
     # Create arm interface instance
     arm = KinovaArmInterface()
@@ -526,7 +576,8 @@ def main():
     try:
         # Initialize the connection first
         arm.connect()
-        
+        arm.move_home()
+        time.sleep(3)
         # Get current cartesian position
         cartesian_pos_data = arm.get_cartesian_position()
         
@@ -537,6 +588,32 @@ def main():
             # Print actual finger positions using GetAngularPosition
             print("\nDetailed Finger Information:")
             arm.print_finger_info()
+            
+            # Set the arm to Cartesian control mode
+            arm.set_cartesian_control()
+            
+            # Test sending a specific Cartesian position
+            # Values from user: ['0.2518', '0.0191', '0.4252', '1.9647', '0.3992', '0.0389', '0.0000']
+            position = (0.2518, 0.0191, 0.4252)  # X, Y, Z in meters
+            rotation = (1.9647, 0.3992, 0.0389)  # ThetaX, ThetaY, ThetaZ in radians
+            fingers = (0.0, 0.0, 0.0)  # Finger positions
+            
+            print("\nSending Cartesian position command:")
+            print(f"Position (X,Y,Z): {position}")
+            print(f"Rotation (ThetaX,ThetaY,ThetaZ): {rotation}")
+            
+            # Send the Cartesian position command with longer duration
+            arm.send_cartesian_position(position, rotation, fingers, duration=10.0)
+            
+            # Wait for movement to complete
+            print("Waiting for movement to complete...")
+            time.sleep(5)
+            
+            # Get the new position after movement
+            new_pos = arm.get_cartesian_position()
+            if new_pos is not None:
+                print("\nNew Cartesian Position after movement:")
+                print(new_pos)
         else:
             print("Failed to get cartesian position")
             
