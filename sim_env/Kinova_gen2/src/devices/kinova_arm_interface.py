@@ -569,6 +569,55 @@ class KinovaArmInterface:
         print("Failed to reach target position within timeout")
         return False
 
+    def move_default(self, duration=10.0, monitor=False):
+        """
+        Move the arm to a predefined default position.
+        
+        Args:
+            duration: Duration to keep sending the command (seconds)
+            monitor: Whether to monitor the position change
+            
+        Returns:
+            Boolean indicating whether the arm reached the target position
+        """
+        try:
+            # Set cartesian control mode first
+            self.set_cartesian_control()
+            
+            # Define default position - hardcoded
+            default_position = (0.2518, 0.0191, 0.4252)  # X, Y, Z in meters
+            default_rotation = (1.9647, 0.3992, 0.0389)   # ThetaX, ThetaY, ThetaZ in radians
+            fingers = (0.0, 0.0, 0.0)             # Open fingers
+            
+            # print(f"\nMoving to default position: {default_position}, rotation: {default_rotation}")
+            
+            # Send the position command
+            self.send_cartesian_position(default_position, default_rotation, fingers, duration=duration)
+            
+            # Monitor position change if requested
+            if monitor:
+                reached_target = self.monitor_position_change(default_position, timeout=duration + 5.0)
+                if reached_target:
+                    print("Successfully moved to default position")
+                else:
+                    print("Warning: May not have reached default position exactly")
+                return reached_target
+            
+            # Wait for movement to complete if not monitoring
+            print("Waiting for movement to complete...")
+            time.sleep(duration + 2.0)
+            
+            # Get the final position
+            # final_pos = self.get_cartesian_position()
+            # if final_pos is not None:
+            #     print(f"Final position: {final_pos[:3]}")
+            
+            return True
+        
+        except Exception as e:
+            print(f"Error moving to default position: {e}")
+            return False
+
 def main():
     # Create arm interface instance
     arm = KinovaArmInterface()
@@ -576,47 +625,17 @@ def main():
     try:
         # Initialize the connection first
         arm.connect()
+        
+        # First move to home, then test the new default position function
+        print("\nMoving to home position first...")
         arm.move_home()
         time.sleep(3)
-        # Get current cartesian position
-        cartesian_pos_data = arm.get_cartesian_position()
         
-        if cartesian_pos_data is not None:
-            cartesian_pos = cartesian_pos_data
-            print("\nCurrent Cartesian Position:")
-            print(cartesian_pos)
-            # Print actual finger positions using GetAngularPosition
-            print("\nDetailed Finger Information:")
-            arm.print_finger_info()
-            
-            # Set the arm to Cartesian control mode
-            arm.set_cartesian_control()
-            
-            # Test sending a specific Cartesian position
-            # Values from user: ['0.2518', '0.0191', '0.4252', '1.9647', '0.3992', '0.0389', '0.0000']
-            position = (0.2518, 0.0191, 0.4252)  # X, Y, Z in meters
-            rotation = (1.9647, 0.3992, 0.0389)  # ThetaX, ThetaY, ThetaZ in radians
-            fingers = (0.0, 0.0, 0.0)  # Finger positions
-            
-            print("\nSending Cartesian position command:")
-            print(f"Position (X,Y,Z): {position}")
-            print(f"Rotation (ThetaX,ThetaY,ThetaZ): {rotation}")
-            
-            # Send the Cartesian position command with longer duration
-            arm.send_cartesian_position(position, rotation, fingers, duration=10.0)
-            
-            # Wait for movement to complete
-            print("Waiting for movement to complete...")
-            time.sleep(5)
-            
-            # Get the new position after movement
-            new_pos = arm.get_cartesian_position()
-            if new_pos is not None:
-                print("\nNew Cartesian Position after movement:")
-                print(new_pos)
-        else:
-            print("Failed to get cartesian position")
-            
+        print("\nTesting move_default function...")
+        arm.move_default()
+        
+        # Rest of your existing code...
+        
     except Exception as e:
         print(f"Error testing cartesian position: {e}")
     finally:
