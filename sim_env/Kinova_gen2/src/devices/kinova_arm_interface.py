@@ -300,7 +300,7 @@ class KinovaArmInterface:
             time.sleep(period)
         # print("Angular velocity command issued successfully.")
 
-    def send_cartesian_position(self, position, rotation, fingers=(0.0, 0.0, 0.0), duration=5.0, period=0.05):
+    def send_cartesian_position(self, position, rotation, hand_mode=1,fingers=(0.0, 0.0, 0.0), duration=5.0, period=0.05):
         """
         Send a Cartesian position command to the arm with proper trajectory planning.
         
@@ -324,6 +324,7 @@ class KinovaArmInterface:
         )
         
         # Set fingers
+        point.Position.HandMode = hand_mode
         point.Position.Fingers = FingersPosition(*fingers)
         
         # Enable trajectory limitations with reasonable values
@@ -587,12 +588,17 @@ class KinovaArmInterface:
             # Define default position - hardcoded
             default_position = (0.2518, 0.0191, 0.4252)  # X, Y, Z in meters
             default_rotation = (1.9647, 0.3992, 0.0389)   # ThetaX, ThetaY, ThetaZ in radians
-            fingers = (0.0, 0.0, 0.0)             # Open fingers
+            fingers_position = (0.0, 0.0, 0.0)             # Open fingers
             
             # print(f"\nMoving to default position: {default_position}, rotation: {default_rotation}")
             
             # Send the position command
-            self.send_cartesian_position(default_position, default_rotation, fingers, duration=duration)
+            self.send_cartesian_position(
+                position=default_position, 
+                rotation=default_rotation, 
+                fingers=fingers_position, 
+                duration=duration
+            )
             
             # Monitor position change if requested
             if monitor:
@@ -633,6 +639,16 @@ def main():
         
         print("\nTesting move_default function...")
         arm.move_default()
+
+        time.sleep(3)
+        open_jar_position=['0.2795', '-0.1953', '0.3392', '-3.0256', '0.3381', '-1.3524', '2544.0000']
+
+        # Parse position and rotation from open_jar_position
+        position = (float(open_jar_position[0]), float(open_jar_position[1]), float(open_jar_position[2]))
+        rotation = (float(open_jar_position[3]), float(open_jar_position[4]), float(open_jar_position[5]))
+        fingers = (float(open_jar_position[6]), float(open_jar_position[6]), float(open_jar_position[6]))
+
+        arm.send_cartesian_position(position=position,rotation=rotation,fingers=fingers)
         
         # Rest of your existing code...
         
