@@ -51,19 +51,18 @@ class DataRecorder:
         # Create images subgroup
         images_group = self.current_demo.create_group('images')
         
-        # Create different state representations based on control mode
-        if self.control_mode == 'cartesian':
-            # Cartesian pose: position (X,Y,Z) + orientation (X,Y,Z,W) = 7 values
-            self.current_demo.create_dataset('cartesian_pose', 
-                                           shape=(0, 7),
-                                           maxshape=(None, 7),
-                                           dtype='float32')
-        else:
-            # Joint angles: 6 joints + 3 fingers = 9 values
-            self.current_demo.create_dataset('joint_angles', 
-                                           shape=(0, 9),
-                                           maxshape=(None, 9),
-                                           dtype='float32')
+        # Create datasets for both state representations regardless of control mode
+        # Joint angles: 6 joints + 3 fingers = 9 values
+        self.current_demo.create_dataset('joint_angles', 
+                                       shape=(0, 9),
+                                       maxshape=(None, 9),
+                                       dtype='float32')
+        
+        # Cartesian pose: position (X,Y,Z) + orientation (X,Y,Z,W) = 7 values
+        self.current_demo.create_dataset('cartesian_pose', 
+                                       shape=(0, 7),
+                                       maxshape=(None, 7),
+                                       dtype='float32')
         
         # Actions: 7 values (6 joint velocities + 1 gripper)
         self.current_demo.create_dataset('actions',
@@ -74,12 +73,13 @@ class DataRecorder:
         self.frame_idx = 0
         return demo_name
     
-    def add_frame(self, frames_dict, state_data, action):
+    def add_frame(self, frames_dict, joint_data, cartesian_data, action):
         """Add a new frame of data to the current demo
         
         Args:
             frames_dict: Dictionary of camera frames {cam_id: frame}
-            state_data: Either joint angles (9 values) or cartesian pose (7 values)
+            joint_data: Joint angles (9 values)
+            cartesian_data: Cartesian pose (7 values)
             action: Array of velocities (7 values)
         """
         if self.current_demo is None:
@@ -102,14 +102,15 @@ class DataRecorder:
                 dataset.resize(self.frame_idx + 1, axis=0)
                 dataset[self.frame_idx] = frame
             
-            # Add state data (either joint angles or cartesian pose)
-            if self.control_mode == 'cartesian':
-                state_dataset = self.current_demo['cartesian_pose']
-            else:
-                state_dataset = self.current_demo['joint_angles']
-                
-            state_dataset.resize(self.frame_idx + 1, axis=0)
-            state_dataset[self.frame_idx] = state_data
+            # Add joint angles
+            joint_dataset = self.current_demo['joint_angles']
+            joint_dataset.resize(self.frame_idx + 1, axis=0)
+            joint_dataset[self.frame_idx] = joint_data
+            
+            # Add cartesian pose
+            cartesian_dataset = self.current_demo['cartesian_pose']
+            cartesian_dataset.resize(self.frame_idx + 1, axis=0)
+            cartesian_dataset[self.frame_idx] = cartesian_data
             
             # Add action
             actions_dataset = self.current_demo['actions']
@@ -368,13 +369,14 @@ class record_demo:
                     try:
                         # Get cartesian pose for cartesian control mode
                         cartesian_pose = self.arm.get_cartesian_position()
-                        # print(f'cartesian_pose: {cartesian_pose}')
+                        # Get joint angles too
+                        joint_angles = self.arm.get_joint_angles()
                         
                         # For recording data, construct action vector
                         cartesian_action = list(linear_velocity) + list(angular_velocity) + [gripper_velocity]
                         
-                        # Record the frame with cartesian pose
-                        self.data_recorder.add_frame(frames_dict, cartesian_pose, cartesian_action)
+                        # Record the frame with both joint angles and cartesian pose
+                        self.data_recorder.add_frame(frames_dict, joint_angles, cartesian_pose, cartesian_action)
                     except Exception as e:
                         print(f"ERROR during recording: {e}")
                         import traceback
@@ -530,8 +532,10 @@ class record_demo:
                 if self.recording:
                     # Get joint angles for joint control mode
                     joint_angles = self.arm.get_joint_angles()
-                    # Record the frame with joint angles
-                    self.data_recorder.add_frame(frames_dict, joint_angles, joint_velocities)
+                    # Get cartesian pose too
+                    cartesian_pose = self.arm.get_cartesian_position()
+                    # Record the frame with both joint angles and cartesian pose
+                    self.data_recorder.add_frame(frames_dict, joint_angles, cartesian_pose, joint_velocities)
                 
                 # Send velocity commands to the arm
                 self.arm.send_angular_velocity(
