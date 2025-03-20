@@ -1,49 +1,195 @@
-### LLM API Workflow
+# AI Agent System for Robot Control
 
-1. Get prompt from User
-2. Get image from Kitchen's Camera 
-3. Upload image to Cloudinary
-4. Pass User prompt and image URL to LLM to generate action plan
-5. Save action plan to database
-6. Display action plan to User
+This package provides a comprehensive AI agent system that can control hardware devices and make API calls. The system includes a base agent architecture, hardware interfaces, and a robust logging system.
 
+## Overview
 
-### System Prompt (choose one)
+The system consists of the following main components:
 
-1.You are a smart task planner. When given a user goal (e.g., "clean the table") along with real-time environmental data captured by a camera, generate a concise step-by-step action plan. Present your plan as a numbered list of clear, actionable steps without any extra commentary.
+1. **BaseAgent**: Core AI agent that can process natural language inputs, make API calls, and use tools
+2. **Hardware Tools**: Interfaces for controlling physical devices (robot arm, cameras, speaker)
+3. **API Tools**: Interfaces for making web API calls (search, weather, stock prices, etc.)
+4. **Logging System**: Comprehensive logging of all LLM API interactions
 
-2.You are an action planning assistant. Your task is to convert the user's stated goal and the provided visual context into an ordered list of precise and actionable steps. Ensure your response is strictly formatted as a numbered list (e.g., 1. Pick up the bowl, 2. Place it into the cabinet) with no additional explanation.
+## Installation
 
-3.Act as a robotic task planner. Given the user's goal and the camera-provided environmental context, output an efficient, step-by-step action plan. List each action numerically, ensuring each step is specific, brief, and directly contributes to achieving the goal.
+### Requirements
 
-4.Assume the role of an efficient operations assistant. When provided with a user's goal and a corresponding image of the current environment, generate a sequential and clear action plan. Your output must be a numbered list that includes only the necessary, actionable steps to accomplish the task.
+```bash
+pip install -r requirements.txt
+```
 
-5.You are an expert in tactical planning. Using the provided user goal and the environmental context from a live camera feed, devise a well-organized action plan in numbered steps. Each step should describe a concrete action (e.g., "1. Pick up the bowl", "2. Place it in the cabinet", "3. Clean the table with a towel") with no extraneous details.
+### Environment Setup
 
----
+Create a `.env` file with the following variables:
 
-1. Action Planning Agent
-   Responsibility:
-   - Takes user prompts and camera images as input
-   - Analyzes the current scene and understands user requirements
-   - Generates a detailed, step-by-step action plan
-   - Considers spatial reasoning, object identification, and task feasibility
-   - Outputs a structured action plan that can be executed by the robot
+```
+# OpenRouter API Configuration
+OPENROUTER_API_KEY=your_openrouter_api_key
+MODEL_NAME=anthropic/claude-3-opus-20240229
+SYSTEM_PROMPT="You are a helpful assistant that can control hardware devices."
 
-2. Action Execution Agent
-   Responsibility:
-   - Takes the action plan as input
-   - Translates high-level actions into specific robot commands
-   - Provides real-time guidance during execution
-   - Handles error cases and unexpected situations
-   - May need to adapt the plan based on execution constraints
-   - Outputs execution status and results
+# Optional API keys for tools
+OPENWEATHER_API_KEY=your_openweather_api_key  # For weather tool
+ALPHA_VANTAGE_API_KEY=your_alphavantage_api_key  # For stock price tool
+SEARCH_API_KEY=your_search_api_key  # For Google search tool
+GOOGLE_CSE_ID=your_google_cse_id  # For Google search tool
+```
 
-3. Progress Monitoring/Review Agent (what we've just implemented)
-   Responsibility:
-   - Takes the action execution results and camera images as input
-   - Evaluates the success of the executed actions
-   - Identifies any issues or incomplete tasks
-   - Provides feedback on what went well and what didn't
-   - Suggests improvements for future actions
-   - Determines if the overall task is complete or requires additional actions
+## Hardware Integration
+
+The system can interface with the following hardware:
+
+1. **Kinova Robot Arm**: Controlled via the `RobotArmTool`
+2. **Cameras**: Accessed through the `CameraTool`
+3. **Speaker**: Text-to-speech and audio playback via `SpeakerTool`
+
+All hardware interfaces are managed by the `HardwareToolManager` which handles initialization and cleanup.
+
+## LLM API Integration
+
+The agent uses OpenRouter to access powerful language models. Key features include:
+
+- Text-based prompt processing
+- Image analysis capabilities
+- Tool use for extending functionality
+- Robust error handling
+- Comprehensive logging
+
+## Logging System
+
+The system includes a comprehensive logging framework that records all interactions with the LLM API:
+
+- All requests and responses are logged to `llm_api_calls.log`
+- Log entries include unique request IDs for tracking
+- Image data is summarized to avoid huge logs
+- Response times are recorded
+- Tool usage is tracked
+
+## Action Plan Execution
+
+The system includes an action plan execution feature that allows you to define structured steps for the robot to follow. This is useful for creating repeatable tasks that require a sequence of operations.
+
+### Running Action Plans
+
+To run the system in action plan execution mode:
+
+```bash
+python -m llm_agent.hardware_agent_example --action-plan
+```
+
+This will list available action plans defined in the configuration files and allow you to select one to execute.
+
+### Defining Action Plans
+
+Action plans are defined in YAML files located in the `actions_config` directory:
+
+- `action_plan.yaml`: Contains the definitions of action plans, including goals and step sequences
+- `predefined_loaction.yaml`: Contains predefined locations for robot arm movements
+
+Example action plan for opening a jar:
+
+```yaml
+open_jar_assistance:
+  goal: "Open a jar for the user"
+  steps:
+    - step_num: 1
+      description: "Move to open jar position"
+    - step_num: 2
+      description: "Announce user to put the jar on the gripper"
+    - step_num: 3
+      description: "Wait for user to put the jar on the gripper"
+    - step_num: 4
+      description: "Close the gripper"
+    - step_num: 5
+      description: "Roll left to open the jar"
+```
+
+For more details, see the [Action Plan Execution System documentation](actions_config/README.md).
+
+## Usage Examples
+
+### Basic Usage
+
+```python
+from llm_agent.ai_agent import BaseAgent
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Initialize the agent
+agent = BaseAgent()
+
+# Process a text prompt
+response = agent.process("What's the weather like in New York?")
+print(response)
+
+# Process an image
+image_response = agent.process_with_image(
+    prompt="What can you see in this image?",
+    image_path="path/to/image.jpg"
+)
+print(image_response)
+```
+
+### Using Hardware Tools
+
+```python
+from llm_agent.ai_agent import BaseAgent
+from llm_agent.hardware_tools import HardwareToolManager
+
+# Initialize the hardware tool manager
+tool_manager = HardwareToolManager()
+
+# Initialize the agent
+agent = BaseAgent()
+
+# Add hardware tools to the agent
+tools = tool_manager.get_all_tools()
+for tool in tools:
+    agent.add_tool(tool)
+
+# Process a prompt that might use hardware tools
+response = agent.process(
+    "Take a picture and tell me what you see.",
+    use_tools=True
+)
+print(response)
+
+# Clean up
+tool_manager.close_all()
+```
+
+## Testing
+
+You can test the system using the provided test script:
+
+```bash
+./test_hardware_tools.py
+```
+
+This script tests:
+- The speaker functionality
+- LLM API call logging
+
+## Troubleshooting
+
+### Speaker Issues
+
+If the speaker is not working:
+
+- On macOS, check available voices with `say -v '?'`
+- Ensure volume is not muted
+- Check for proper permissions
+
+### LLM API Issues
+
+If experiencing issues with the LLM API:
+
+- Check your API key in the .env file
+- Review the logs in `llm_api_calls.log`
+- Ensure you have an active internet connection
+
+## License
+
+MIT License

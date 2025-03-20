@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env variables
 
 import os
+import base64
+import json
+import requests
 workspace_path = os.getenv("WORKSPACE_PATH")
 model_name = os.getenv("MODEL_NAME")
 system_prompt = os.getenv("SYSTEM_PROMPT")
@@ -92,41 +95,77 @@ def upload_image_to_server(server_url, image_path):
     except Exception:
         return None
     
-def call_llm_with_images(user_prompt, uploaded_urls, model_name=model_name, system_prompt=system_prompt, debug=False):
-    from openai import OpenAI
-    # Prepare list of image objects for the API call.
-    image_objects = []
-    for cam_id, url in uploaded_urls.items():
-        image_objects.append({"type": "image_url", "image_url": {"url": url}})
-        
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-    )
- 
-    try:
-        response = client.chat.completions.create(
-            extra_headers={
-                "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Replace with your site URL.
-                "X-Title": "<YOUR_SITE_NAME>",      # Optional. Replace with your site name.
-            },
-            extra_body={},
-            model=model_name,
-            messages=[
+def llm_api_call(user_prompt: str, system_prompt: str, image_path: str, max_tokens: int = 256, debug=False) -> str:
+    """
+    Calls the OpenRouter LLM API with a text prompt, system prompt, and an image file.
+
+    Parameters:
+        user_prompt (str): The user text prompt.
+        system_prompt (str): The system prompt (instructions/context).
+        image_path (str): The file path to the JPEG image.
+        max_tokens (int, optional): Maximum number of tokens for the response. Defaults to 256.
+        debug (bool, optional): Whether to print debug information. Defaults to False.
+
+    Returns:
+        str: The text response from the LLM.
+    """
+    # Encode the image as a Base64 data URI
+    with open(image_path, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+    # Make sure the data URI includes the proper MIME type for JPEG images.
+    image_data_uri = f"data:image/jpeg;base64,{encoded_string}"
+
+    # Construct the messages payload.
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": [
                 {
-                    "role": "system",
-                    "content": system_prompt
+                    "type": "text",
+                    "text": user_prompt
                 },
                 {
-                    "role": "user",
-                    "content": [{"type": "text", "text": user_prompt}] + image_objects
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_uri
+                    }
                 }
             ]
-        )
+        }
+    ]
+
+    payload = {
+        "model": os.getenv('MODEL_NAME') or model_name,
+        "messages": messages,
+        "max_tokens": max_tokens
+    }
+
+    # Define the API endpoint and headers.
+    api_endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "<YOUR_SITE_URL>",  # Optional. Replace with your site URL.
+        "X-Title": "<YOUR_SITE_NAME>",      # Optional. Replace with your site name.
+    }
+
+    try:
+        # Make the POST request to the OpenRouter API.
+        response = requests.post(api_endpoint, headers=headers, json=payload)
         
-        if response is not None and getattr(response, "choices", None):
-            output = response.choices[0].message.content.strip()
-            token_usage = response.usage.total_tokens if getattr(response, "usage", None) else "n/a"
+        # Raise an exception if the request failed.
+        response.raise_for_status()
+        
+        # Parse the JSON response
+        result = response.json()
+        
+        if result and "choices" in result and len(result["choices"]) > 0:
+            output = result["choices"][0]["message"]["content"].strip()
+            token_usage = result["usage"]["total_tokens"] if "usage" in result else "n/a"
             if debug:
                 print("LLM Output:", output)
                 print("Total tokens used:", token_usage)
@@ -178,57 +217,46 @@ def get_prompt(user_prompt: str):
 
     captured_image_paths = save_images(frames)
 
-    # Use modular functions to upload images and perform the API call.
-    # uploaded_image_urls = upload_images_to_cloudinary(captured_image_paths)
-    uploaded_image_urls = upload_image_to_server(captured_image_paths)
-    llm_response =call_llm_with_images(user_prompt, uploaded_image_urls, model_name=model_name, system_prompt=system_prompt)
-    return llm_response
+    # Use the first captured image for LLM call (modify as needed to handle multiple images)
+    if captured_image_paths:
+        first_image_path = next(iter(captured_image_paths.values()))
+        llm_response = llm_api_call(
+            user_prompt, 
+            system_prompt, 
+            first_image_path
+        )
+        return llm_response
+    else:
+        return "Error: No images captured"
 
 
 
 if __name__ == "__main__":
 
     # Testing image upload time and LLM response time 
-    # Upload the image
-    server_url = 'http://3.25.67.65:8000/images/'
-    image_path = '/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/workflow/assortment-delicious-healthy-food_23-2149043057.jpg'
+    image_path = '/Users/johnmok/Documents/GitHub/AI_monitor/backend_server/sustainable_inner.jpg'
     
     # Record start time
     start_time = time.time()
     
-    image_url = upload_image_to_server(server_url, image_path)
+    # Test with LLM
+    print("\n=== Testing LLM with image ===")
+    user_prompt = "where is the table?"
     
-    # Calculate and print upload time
-    upload_time = time.time() - start_time
-    print(f"Image upload took {upload_time:.2f} seconds")
-    if image_url:
-        print(f"Image uploaded successfully: {image_url}")
-        
-        # Test with LLM
-        print("\n=== Testing LLM with uploaded image ===")
-        user_prompt = "clean the table?"
-        uploaded_image_urls = {'test_cam': image_url}
-        model_name = os.getenv("MODEL_NAME")
-        print("MODEL_NAME: ", model_name)
-        llm_response = call_llm_with_images(
-            user_prompt, 
-            uploaded_image_urls, 
-            model_name=model_name, 
-            # system_prompt='you are helpful assistant. Answer the question in a short way.'
-        )
-        print(f"LLM Response: {llm_response}")
-    else:
-        print("Image upload failed")
+    llm_response = llm_api_call(
+        user_prompt, 
+        system_prompt=os.getenv("SYSTEM_PROMPT") or "You are a helpful assistant. Answer the question in a short way.",
+        image_path=image_path,
+        debug=False
+    )
     
-    response_time = time.time() - start_time - upload_time
-    print(f"LLM Response time: {response_time:.2f} seconds")
-    total_time = upload_time + response_time
+    print(f"LLM Response: {llm_response}")
+    
+    total_time = time.time() - start_time
     print(f"Total time: {total_time:.2f} seconds")
-    # ~6 seconds
 #####################
 # New helper functions
 #####################
 
 
 # %%
-
