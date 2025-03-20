@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import requests
@@ -177,17 +178,15 @@ class BaseAgent:
         ]
         
         log_data = {
-            'model': self.model_name,
             'messages': log_messages,
-            'max_tokens': max_tokens,
-            'temperature': temperature
+            'total_tokens': max_tokens
         }
         
         logger.info(f"LLM API Request [{request_id}]: {json.dumps(log_data, indent=2)}")
         
         # Implement retry mechanism with exponential backoff for rate limits
         max_retries = 3
-        retry_delay = 2  # Base delay in seconds
+        retry_delay = 2
         
         for retry in range(max_retries):
             try:
@@ -205,8 +204,15 @@ class BaseAgent:
                 response.raise_for_status()
                 response_json = response.json()
                 
-                # Log the API response
-                logger.info(f"LLM API Response [{request_id}] (took {response_time:.2f}s):\n{json.dumps(response_json, indent=2)}")
+                # Log only role, content, and total tokens
+                if "choices" in response_json and len(response_json["choices"]) > 0:
+                    message = response_json["choices"][0]["message"]
+                    log_data = {
+                        "role": message.get("role"),
+                        "content": message.get("content"),
+                        "total_tokens": response_json.get("usage", {}).get("total_tokens", "n/a")
+                    }
+                    logger.info(f"LLM API Response [{request_id}] (took {response_time:.2f}s):\n{json.dumps(log_data, indent=2)}")
                 
                 return response_json
                 
@@ -244,21 +250,38 @@ class BaseAgent:
         max_tokens: int = 1000
     ) -> str:
         """
-        Process a prompt with an image attachment.
+        Process a prompt with an attached image for multimodal analysis.
         
         Args:
-            prompt (str): The user's text prompt.
-            image_path (str, optional): Path to the image file.
-            image_data_uri (str, optional): Direct data URI for the image. 
-                                           If provided, image_path is ignored.
-            system_prompt (str, optional): System prompt to override the default.
-            max_tokens (int, optional): Maximum tokens for the response.
+            prompt (str): The text prompt to accompany the image
+            image_path (str, optional): Path to the image file
+            image_data_uri (str, optional): Data URI of the image
+            system_prompt (str, optional): Custom system prompt
+            max_tokens (int): Maximum number of tokens to generate
             
         Returns:
-            str: The model's response text.
+            str: The model's response
         """
-        # Log the image processing request
-        logger.info(f"Processing image request with prompt: '{prompt}'")
+        # Generate a process ID for logging
+        process_id = f"img_{int(time.time())}"
+        logger.info(f"[{process_id}] Starting image processing with prompt: {prompt}")
+        
+        # Enhanced default system prompt for image analysis if none provided
+        default_image_system_prompt = """
+        You are a helpful AI assistant with advanced vision capabilities. 
+        When analyzing images:
+        
+        1. First describe what you see in the image comprehensively
+        2. Identify key objects, people, text, and their relationships
+        3. Note any relevant details about the environment or context
+        4. If there are any tasks or actions suggested by the image, mention them
+        5. Be specific and detailed in your observations
+        6. If the image is unclear or has limitations, acknowledge them
+        
+        Provide a thorough, organized analysis that gives the user useful information about what's in the image.
+        """
+        
+        enhanced_system_prompt = system_prompt or default_image_system_prompt
         
         try:
             # Get image data
@@ -293,7 +316,7 @@ class BaseAgent:
             messages = [
                 {
                     "role": "system",
-                    "content": system_prompt or self.system_prompt
+                    "content": enhanced_system_prompt
                 },
                 {
                     "role": "user",
@@ -313,13 +336,22 @@ class BaseAgent:
             ]
             
             # Call API with retry for rate limits
-            logger.info("Making API call with image data...")
+            logger.info(f"[{process_id}] Making API call with image data...")
+            
+            @backoff.on_exception(backoff.expo, 
+                                 (Exception), 
+                                 max_tries=3, 
+                                 giveup=lambda e: "429" not in str(e) and "rate limit" not in str(e).lower())
+            def call_vision_api():
+                return self.call_api(messages, max_tokens=max_tokens)
+            
             try:
-                response = self.call_api(messages, max_tokens=max_tokens)
+                # Use the backoff-enabled function for retrying API calls
+                response = call_vision_api()
                 
                 if response and "choices" in response and len(response["choices"]) > 0:
                     result = response["choices"][0]["message"]["content"].strip()
-                    logger.info(f"Received successful response (length: {len(result)} chars)")
+                    logger.info(f"[{process_id}] Received successful vision response (length: {len(result)} chars)")
                     return result
                 else:
                     # Check if there's an error field in the response
@@ -328,24 +360,32 @@ class BaseAgent:
                         error_message = error_info.get("message", "Unknown error")
                         error_code = error_info.get("code", "")
                         
-                        logger.error(f"API error: {error_message} (code: {error_code})")
+                        logger.error(f"[{process_id}] Vision API error: {error_message} (code: {error_code})")
                         
-                        if error_code == 429:
+                        if error_code == 429 or "rate limit" in error_message.lower():
                             # Rate limit error
-                            raise Exception(f"Rate limit exceeded (429): {error_message}")
+                            return "I can see the image, but the vision API has reached its rate limit. Please try again in a few moments."
+                        elif "image" in error_message.lower() and ("invalid" in error_message.lower() or "format" in error_message.lower()):
+                            # Image format issue
+                            return "There seems to be an issue with the image format. The system couldn't process it correctly."
                         else:
-                            return f"Error from API: {error_message}"
+                            return f"I can see that an image was captured, but there was an error analyzing it: {error_message}"
                     else:
-                        logger.error("Invalid or empty response structure from API")
-                        return "Error: No valid response received"
+                        logger.error(f"[{process_id}] Invalid or empty response structure from Vision API")
+                        return "I can see that an image was captured, but I encountered an error while analyzing it. The vision system returned an invalid response format."
+            
             except Exception as e:
-                logger.error(f"API call failed: {str(e)}")
+                logger.error(f"[{process_id}] Vision API call failed: {str(e)}")
                 
-                # Reraise if it's a rate limit error so it can be caught by the analyze_captured_image method
+                # Format a user-friendly error message based on the type of error
                 if "429" in str(e) or "rate limit" in str(e).lower():
-                    raise
-                    
-                return f"Error: API call failed - {str(e)}"
+                    return "I can see that an image was captured, but I'm unable to analyze it at this moment due to API rate limits. Please try again in a few moments."
+                elif "timeout" in str(e).lower():
+                    return "I can see that an image was captured, but the vision analysis timed out. This might be due to a large or complex image. Please try again, possibly with a simpler scene."
+                elif "connection" in str(e).lower():
+                    return "I can see that an image was captured, but I had trouble connecting to the vision analysis service. Please check your internet connection and try again."
+                
+                return f"I can see that an image was captured, but I encountered an error while analyzing it: {str(e)}"
                 
         except Exception as e:
             logger.error(f"Image processing error: {str(e)}")
@@ -469,9 +509,37 @@ class BaseAgent:
                     # If all tool calls were successful camera captures, we don't need to send the results back to LLM
                     # This will be handled directly by the hardware_agent_example.py
                     if all_camera_captures and len(tool_calls) > 0 and tool_results:
-                        logger.info(f"[{process_id}] All tool calls were camera captures, finishing process")
-                        final_response = "Camera capture successful. Images are ready for analysis."
-                        break
+                        logger.info(f"[{process_id}] All tool calls were camera captures, directly analyzing images with vision...")
+                        
+                        # Find the camera tool and get the image path
+                        camera_tool = None
+                        for tool_name in self.tools:
+                            if tool_name == "camera":
+                                camera_tool = self.tools[tool_name]
+                                break
+                        
+                        if camera_tool and hasattr(camera_tool, "get_last_image_path"):
+                            # Use the analyze_captured_image method which properly sends the image to the LLM
+                            analysis_prompt = "Describe what you see in this image in detail. Include objects, people, text, and the overall scene."
+                            try:
+                                final_response = self.analyze_captured_image(
+                                    camera_tool=camera_tool,
+                                    prompt=analysis_prompt,
+                                    max_tokens=max_tokens
+                                )
+                                # Successfully analyzed the image, we can break the loop now
+                                break
+                            except Exception as e:
+                                logger.error(f"[{process_id}] Error analyzing image: {str(e)}")
+                                # Continue with the normal text-based approach as fallback
+                                tool_results_text = "\n\n".join(tool_results)
+                                conversation.append({"role": "user", "content": f"Here are the results of the tool calls:\n\n{tool_results_text}\n\nI have successfully captured images with the camera but failed to analyze them directly due to an error: {str(e)}. Please provide instructions on what to do next."})
+                                continue
+                        else:
+                            # No camera tool or no method to get the image path, fallback to text-based approach
+                            tool_results_text = "\n\n".join(tool_results)
+                            conversation.append({"role": "user", "content": f"Here are the results of the tool calls:\n\n{tool_results_text}\n\nI have successfully captured images with the camera but couldn't analyze them directly. Please provide instructions on what to do next."})
+                            continue
                     
                     # For other tools, add tool results to conversation
                     if tool_results:
@@ -562,51 +630,77 @@ class BaseAgent:
         Returns:
             str: The model's analysis of the image
         """
+        # Enhanced logging with a unique process ID
+        process_id = f"img_analysis_{int(time.time())}"
+        logger.info(f"[{process_id}] Starting image analysis with prompt: {prompt}")
+        
+        # Custom system prompt specifically for image analysis if none provided
+        vision_system_prompt = system_prompt or """
+        You are an AI assistant with advanced vision capabilities analyzing images from a kitchen assistant robot.
+        When analyzing images:
+        1. Start with a comprehensive description of what you see in the image
+        2. Identify key objects, people, and their relationships in the scene
+        3. Note details about the environment, especially kitchen-related elements
+        4. If you see food items, cooking tools, or kitchen appliances, describe them in detail
+        5. Mention any potential tasks or assistance the robot could provide based on the scene
+        6. Be specific and clear in your observations
+        
+        Provide a thorough analysis that would be helpful for a person using a kitchen assistant robot.
+        """
+        
         # Check if the camera tool has a saved image
         image_path = camera_tool.get_last_image_path()
         
         if image_path and os.path.exists(image_path):
-            logger.info(f"Analyzing image from path: {image_path}")
+            logger.info(f"[{process_id}] Analyzing image from path: {image_path}")
+            logger.info(f"[{process_id}] Image file size: {os.path.getsize(image_path) / 1024:.2f} KB")
+            
             try:
                 return self.process_with_image(
                     prompt=prompt,
                     image_path=image_path,
-                    system_prompt=system_prompt,
+                    system_prompt=vision_system_prompt,
                     max_tokens=max_tokens
                 )
             except Exception as e:
                 error_msg = f"Error analyzing image: {str(e)}"
-                logger.error(error_msg)
+                logger.error(f"[{process_id}] {error_msg}")
+                logger.error(f"[{process_id}] Exception type: {type(e).__name__}")
                 
                 # If it's a rate limit error, provide a more user-friendly message
                 if "429" in str(e) or "rate limit" in str(e).lower():
-                    return "I'm unable to analyze the image at this moment due to API rate limits. The image has been saved at " + \
-                           f"{image_path}. Please try again in a few moments."
+                    return "I've captured the image, but I'm unable to analyze it at this moment due to API rate limits. The image has been saved at " + \
+                           f"{image_path}. Please try asking me to analyze it again in a few moments."
                 
-                return f"Error analyzing image: {str(e)}"
+                # Check if it might be an image encoding issue
+                if "invalid" in str(e).lower() and "image" in str(e).lower():
+                    return f"I was able to capture an image, but there seems to be an issue with the image format. The image was saved at {image_path}. You might want to try capturing another image."
+                
+                return f"I captured an image (saved at {image_path}), but encountered an error during analysis: {str(e)}. Please try again or check the image manually."
         
         # If no image path, try to get the image data directly
         image_data_uri = camera_tool.get_b64_image()
         if image_data_uri:
-            logger.info("Analyzing image from direct data URI")
+            logger.info(f"[{process_id}] Analyzing image from direct data URI (length: {len(image_data_uri)} chars)")
             try:
                 return self.process_with_image(
                     prompt=prompt,
                     image_data_uri=image_data_uri,
-                    system_prompt=system_prompt,
+                    system_prompt=vision_system_prompt,
                     max_tokens=max_tokens
                 )
             except Exception as e:
-                error_msg = f"Error analyzing image: {str(e)}"
-                logger.error(error_msg)
+                error_msg = f"Error analyzing image data: {str(e)}"
+                logger.error(f"[{process_id}] {error_msg}")
                 
                 # If it's a rate limit error, provide a more user-friendly message
                 if "429" in str(e) or "rate limit" in str(e).lower():
                     return "I'm unable to analyze the image at this moment due to API rate limits. Please try again in a few moments."
                 
-                return f"Error analyzing image: {str(e)}"
+                return f"Error analyzing the captured image: {str(e)}"
         
-        return "Error: No image available for analysis"
+        logger.error(f"[{process_id}] No image available for analysis")
+        return "I couldn't find any recently captured images to analyze. Please try capturing an image again."
 
 
 # Example usage:

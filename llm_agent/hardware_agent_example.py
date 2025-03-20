@@ -43,7 +43,16 @@ def main():
             
             # Handle special case for image capture and analysis
             if "camera" in user_input.lower() and "capture" in user_input.lower():
-                handle_camera_capture(agent, tool_manager, user_input)
+                # Let the agent process handle it through the updated natural workflow
+                # which now directly analyzes the image with vision capabilities
+                print("🤖 Agent: Processing camera capture and analysis request...")
+                response = agent.process(
+                    prompt=user_input,
+                    max_tokens=1500,  # Increase max tokens for detailed image analysis
+                    use_tools=True,
+                    max_iterations=5
+                )
+                print(f"🤖 Agent: {response}")
                 continue
                 
             elif user_input.lower().startswith("speak "):
@@ -90,39 +99,14 @@ def handle_camera_capture(agent, tool_manager, user_input):
     
     # Check if the image capture was successful
     if "Successfully captured" in result:
-        # Immediately analyze the captured image instead of sending result to LLM
-        print("🔍 Analyzing image...")
-        
-        # Determine the appropriate prompt based on user request
-        if "describe" in user_input.lower():
-            analysis_prompt = "Describe this image in detail. What do you see?"
-        elif "analyze" in user_input.lower():
-            analysis_prompt = "Analyze this image and identify key objects, people, and details. What's happening in this scene?"
-        elif "identify" in user_input.lower() or "recognize" in user_input.lower():
-            analysis_prompt = "Identify the objects and items visible in this image. What can you recognize?"
-        else:
-            analysis_prompt = "Describe what you see in this image in detail. What elements are present and what's happening in the scene?"
-        
-        # Add request for task suggestions if mentioned
-        if "task" in user_input.lower() or "help" in user_input.lower() or "assist" in user_input.lower():
-            analysis_prompt += " What tasks could I help with based on this scene?"
-        
-        # Analyze the image directly
-        image_analysis = agent.analyze_captured_image(
-            camera_tool=tool_manager.camera_tool,
-            prompt=analysis_prompt,
-            max_tokens=800
-        )
-        print(f"🤖 Image Analysis: {image_analysis}")
-        
-        # Speak the analysis if requested
-        if "speak" in user_input.lower() or "voice" in user_input.lower() or "tell" in user_input.lower():
-            if tool_manager.speaker_tool:
-                print("🔊 Speaking image analysis...")
-                speak_result = tool_manager.speaker_tool(f"speak {image_analysis}")
-                print(f"🤖 Speaker: {speak_result}")
+        # With the updated BaseAgent.process method, we no longer need to manually analyze
+        # the image here as the agent will automatically continue the conversation and
+        # analyze the image in the next iteration.
+        print("🔍 Image captured successfully. The AI will automatically analyze it in the conversation.")
+        return result
     else:
-        print("🤖 Agent: Failed to capture a valid image")
+        print("❌ Failed to capture image")
+        return result
 
 def demo_sequence():
     """Run a demo sequence to showcase the agent's capabilities."""

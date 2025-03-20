@@ -4,16 +4,20 @@ import os
 import time
 import yaml
 import logging
+import threading
+import re
+import json
 from typing import Dict, List, Tuple, Optional, Any
 import cv2
+
+from llm_agent.monitoring_agent import MonitoringAgent
 
 logger = logging.getLogger("llm_agent")
 
 class ActionPlanExecutor:
     """
     An agent that executes predefined action plans from YAML files.
-    It coordinates robot arm movements, camera captures, and speech
-    based on the steps in the action plan.
+    It uses AI to interpret and execute steps dynamically based on their descriptions.
     """
     
     def __init__(self, agent, tool_manager):
@@ -26,6 +30,9 @@ class ActionPlanExecutor:
         """
         self.agent = agent
         self.tool_manager = tool_manager
+        
+        # Initialize the monitoring agent
+        self.monitoring_agent = MonitoringAgent(agent, tool_manager.camera_tool)
         
         # Load plans and locations
         self.plans = self.load_action_plans()
@@ -102,6 +109,199 @@ class ActionPlanExecutor:
             
         return steps[self.current_step_index]
     
+    def interpret_step(self, step_description: str) -> Dict[str, Any]:
+        """
+        Use the AI agent to interpret a step description and determine how to execute it.
+        
+        Args:
+            step_description: The description of the step to interpret
+            
+        Returns:
+            Dict with instructions for executing the step
+        """
+        # Special case for step 1 which is consistently problematic
+        current_step = self.get_current_step()
+        if current_step and current_step.get('step_num') == 1 and "move to open jar position" in step_description.lower():
+            logger.info("Using special fallback for step 1 (move to open jar position)")
+            return {
+                "action_type": "movement",
+                "location_name": "open_jar_position",  # Use exact location name as in YAML file
+                "parameters": ["open_jar_position"]
+            }
+            
+        # Capture current environment to provide context
+        if self.tool_manager.camera_tool:
+            self.tool_manager.camera_tool("capture")
+        
+        # Create a prompt for the AI to interpret the step
+        prompt = f"""
+        As an AI controlling a kitchen robot, interpret the following action step and provide 
+        execution instructions in a structured format:
+        
+        Step description: "{step_description}"
+        
+        Based on this description, determine:
+        1. What type of action is needed (movement, announcement, waiting for condition, gripper action, etc.)
+        2. The specific parameters or context needed to execute this action
+        
+        Return your interpretation in the following JSON format without any markdown formatting or backticks:
+        
+        {{
+            "ACTION_TYPE": "movement|announcement|wait_for_condition|gripper_action|other",
+            "PARAMETERS": ["specific parameters needed for this action"],
+            "DETECTION_CRITERIA": "if waiting for a condition, describe what to detect",
+            "LOCATION_NAME": "if movement, the name of the location",
+            "MESSAGE": "if announcement, the message to speak",
+            "GRIPPER_ACTION": "if gripper action, what to do: open, close, roll_left, etc.",
+            "SYSTEM_PROMPT": "if waiting for a condition, specialized prompt for the monitoring agent",
+            "TIMEOUT": "if waiting for a condition, how long to wait in seconds"
+        }}
+        
+        IMPORTANT: For location names, use underscores instead of spaces (for example, use "open_jar_position" not "open jar position").
+        
+        Only include fields that are relevant to the action type. Return ONLY the JSON object without any markdown formatting or backticks.
+        """
+        
+        # Ask the AI to interpret the step
+        interpretation = self.agent.process(
+            prompt=prompt,
+            system_prompt="You are a helpful assistant specialized in robotics task planning. When asked to return JSON, provide only the raw JSON without any markdown formatting or backticks.",
+            max_tokens=500,
+            use_tools=False
+        )
+        
+        logger.info(f"Raw interpretation from LLM: {interpretation}")
+        
+        # Parse the JSON response
+        try:
+            # Clean up the response to ensure it's valid JSON
+            interpretation = interpretation.strip()
+            if interpretation.startswith('```json'):
+                interpretation = interpretation[7:]
+            elif interpretation.startswith('```'):
+                interpretation = interpretation[3:]
+            if interpretation.endswith('```'):
+                interpretation = interpretation[:-3]
+            
+            # Special fallback for very short responses that are likely erroneous
+            if len(interpretation) < 10:
+                # Try to determine action type from step description
+                if "move to" in step_description.lower() or "move the" in step_description.lower():
+                    location_name = step_description.lower().replace("move to", "").replace("move the", "").strip()
+                    location_name = location_name.replace(" ", "_")  # Convert spaces to underscores
+                    logger.info(f"LLM response too short, using fallback with location: {location_name}")
+                    return {
+                        "action_type": "movement",
+                        "location_name": location_name,
+                        "parameters": [location_name]
+                    }
+                elif "announce" in step_description.lower() or "speak" in step_description.lower():
+                    message = step_description.lower().replace("announce", "").replace("speak", "").strip()
+                    logger.info(f"LLM response too short, using fallback with message: {message}")
+                    return {
+                        "action_type": "announcement",
+                        "message": message
+                    }
+                elif "wait" in step_description.lower():
+                    criteria = step_description.lower().replace("wait for", "").replace("wait until", "").strip()
+                    logger.info(f"LLM response too short, using fallback with criteria: {criteria}")
+                    return {
+                        "action_type": "wait_for_condition",
+                        "detection_criteria": criteria,
+                        "system_prompt": f"You are monitoring a kitchen environment. Check if: {criteria}",
+                        "timeout": 60
+                    }
+                elif "gripper" in step_description.lower():
+                    action = "open" if "open" in step_description.lower() else "close"
+                    if "roll" in step_description.lower() or "twist" in step_description.lower():
+                        action = "roll_left" if "left" in step_description.lower() else "roll_right"
+                    logger.info(f"LLM response too short, using fallback with gripper action: {action}")
+                    return {
+                        "action_type": "gripper_action",
+                        "gripper_action": action
+                    }
+            
+            # Parse the JSON
+            result = json.loads(interpretation)
+            logger.info(f"Parsed JSON result: {result}")
+            
+            # Convert keys to lowercase for consistency
+            result = {k.lower(): v for k, v in result.items()}
+            
+            # Ensure action_type is present and lowercase
+            if "action_type" not in result:
+                logger.error("No action_type found in parsed result")
+                return {"action_type": "unknown"}
+            
+            # Normalize location name for movements (replace spaces with underscores)
+            if result["action_type"].lower() == "movement" and "location_name" in result:
+                original_name = result["location_name"]
+                result["location_name"] = original_name.replace(" ", "_")
+                if original_name != result["location_name"]:
+                    logger.info(f"Normalized location name from '{original_name}' to '{result['location_name']}'")
+                    
+                    # Also update the parameters if they contain the location
+                    if "parameters" in result and isinstance(result["parameters"], list):
+                        for i, param in enumerate(result["parameters"]):
+                            if isinstance(param, str) and param == original_name:
+                                result["parameters"][i] = result["location_name"]
+            
+            result["action_type"] = result["action_type"].lower()
+            logger.info(f"Final interpreted result: {result}")
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.error(f"Raw response: {interpretation}")
+            
+            # Fallback pattern matching
+            current_step_num = current_step.get('step_num') if current_step else None
+            logger.info(f"Attempting fallback for step {current_step_num}: {step_description}")
+            
+            # Try to determine action type from step description
+            if "move to" in step_description.lower() or "move the" in step_description.lower():
+                location_name = step_description.lower().replace("move to", "").replace("move the", "").strip()
+                # Convert spaces to underscores in location name
+                location_name = location_name.replace(" ", "_")
+                logger.info(f"Using fallback with location: {location_name}")
+                return {
+                    "action_type": "movement",
+                    "location_name": location_name,
+                    "parameters": [location_name]
+                }
+            elif "announce" in step_description.lower() or "speak" in step_description.lower():
+                message = step_description.lower().replace("announce", "").replace("speak", "").strip()
+                logger.info(f"Using fallback with message: {message}")
+                return {
+                    "action_type": "announcement",
+                    "message": message
+                }
+            elif "wait for" in step_description.lower():
+                criteria = step_description.lower().replace("wait for", "").replace("wait until", "").strip()
+                logger.info(f"Using fallback with criteria: {criteria}")
+                return {
+                    "action_type": "wait_for_condition",
+                    "detection_criteria": criteria,
+                    "system_prompt": f"You are monitoring a kitchen environment. Check if: {criteria}",
+                    "timeout": 60
+                }
+            elif "gripper" in step_description.lower():
+                action = "open" if "open" in step_description.lower() else "close"
+                if "roll" in step_description.lower() or "twist" in step_description.lower():
+                    action = "roll_left" if "left" in step_description.lower() else "roll_right"
+                logger.info(f"Using fallback with gripper action: {action}")
+                return {
+                    "action_type": "gripper_action",
+                    "gripper_action": action
+                }
+            
+            return {"action_type": "unknown"}
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in interpret_step: {e}")
+            return {"action_type": "unknown"}
+    
     def execute_current_step(self, environment_image: Optional[str] = None) -> Tuple[bool, str]:
         """
         Execute the current step in the action plan.
@@ -127,29 +327,52 @@ class ActionPlanExecutor:
             if "Successfully captured" not in result:
                 logger.warning(f"Failed to capture environment image: {result}")
         
-        # Execute step based on description content
-        success, result = False, "Step execution not implemented"
+        # Use AI to interpret the step
+        interpretation = self.interpret_step(description)
+        action_type = interpretation.get("action_type", "unknown")
         
-        # Step 1: Move to open jar position
-        if "move to open jar position" in description.lower():
-            success, result = self._execute_move_to_location("open_jar_position")
+        logger.info(f"Step {step_num} interpreted as action type: {action_type}")
         
-        # Step 2: Announce user to put the jar on the gripper
-        elif "announce" in description.lower() and "jar" in description.lower():
-            message = "Please put the jar on the gripper."
-            success, result = self._execute_announcement(message)
+        # Execute based on the interpreted action type
+        success, result = False, "Action type not supported"
         
-        # Step 3: Wait for user to put the jar on the gripper
-        elif "wait for user" in description.lower() and "jar" in description.lower():
-            success, result = self._wait_for_jar_placement()
+        if action_type == "movement":
+            location_name = interpretation.get("location_name")
+            if location_name:
+                success, result = self._execute_movement(location_name)
+            else:
+                result = "Movement action missing location name"
+                
+        elif action_type == "announcement":
+            message = interpretation.get("message")
+            if message:
+                success, result = self._execute_announcement(message)
+            else:
+                result = "Announcement action missing message"
+                
+        elif action_type == "wait_for_condition":
+            criteria = interpretation.get("detection_criteria")
+            system_prompt = interpretation.get("system_prompt")
+            timeout = interpretation.get("timeout", 60)
+            
+            if criteria and system_prompt:
+                success, result = self._wait_for_condition(
+                    detection_criteria=criteria,
+                    system_prompt=system_prompt,
+                    timeout=timeout
+                )
+            else:
+                result = "Wait for condition action missing criteria or system prompt"
+                
+        elif action_type == "gripper_action":
+            gripper_action = interpretation.get("gripper_action")
+            if gripper_action:
+                success, result = self._execute_gripper_action(gripper_action)
+            else:
+                result = "Gripper action missing specific action"
         
-        # Step 4: Close the gripper
-        elif "close the gripper" in description.lower():
-            success, result = self._execute_gripper_action("close")
-        
-        # Step 5: Roll left to open the jar
-        elif "roll left" in description.lower() and "open the jar" in description.lower():
-            success, result = self._execute_gripper_action("roll_left")
+        else:
+            result = f"Unsupported action type: {action_type}"
         
         # Log the result
         if success:
@@ -161,6 +384,7 @@ class ActionPlanExecutor:
         self.execution_history.append({
             "step_num": step_num,
             "description": description,
+            "action_type": action_type,
             "success": success,
             "result": result,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -172,7 +396,7 @@ class ActionPlanExecutor:
         
         return success, result
     
-    def _execute_move_to_location(self, location_name: str) -> Tuple[bool, str]:
+    def _execute_movement(self, location_name: str) -> Tuple[bool, str]:
         """
         Move the robot arm to a predefined location.
         
@@ -193,7 +417,8 @@ class ActionPlanExecutor:
         logger.info(f"Moving to location: {location_name} - {location}")
         
         # Capture initial image for reference
-        self.tool_manager.camera_tool("capture")
+        if self.tool_manager.camera_tool:
+            self.tool_manager.camera_tool("capture")
         
         # Determine if the location has a gripper position
         if len(location) >= 7:
@@ -251,14 +476,15 @@ class ActionPlanExecutor:
             
         return True, f"Announcement made: {message}"
     
-    def _wait_for_jar_placement(self, timeout: int = 60, check_interval: int = 3) -> Tuple[bool, str]:
+    def _wait_for_condition(self, detection_criteria: str, system_prompt: str, timeout: int = 60) -> Tuple[bool, str]:
         """
-        Wait for the user to place the jar on the gripper.
-        Uses both image analysis and optional user confirmation.
+        Generic method to wait for any condition to be met.
+        This uses the monitoring agent to continuously check for the condition.
         
         Args:
+            detection_criteria: Description of what to detect
+            system_prompt: System instructions for the monitoring LLM
             timeout: Maximum time to wait in seconds
-            check_interval: How often to check in seconds
             
         Returns:
             Tuple[bool, str]: (success, message)
@@ -266,65 +492,128 @@ class ActionPlanExecutor:
         if not self.tool_manager.camera_tool:
             return False, "Camera tool not available"
         
-        # Announce instructions
-        if self.tool_manager.speaker_tool:
-            self.tool_manager.speaker_tool("speak Please place the jar on the gripper and say ready when done.")
-        
-        start_time = time.time()
-        
-        # Check if we're running in mock mode
-        is_mock_mode = os.getenv("MOCK_CAMERA_SCENARIO") is not None
-        
-        # Wait loop
-        while time.time() - start_time < timeout:
-            # Capture image
-            capture_result = self.tool_manager.camera_tool("capture")
-            if "Successfully captured" not in capture_result:
-                logger.warning(f"Failed to capture image: {capture_result}")
-                time.sleep(check_interval)
-                continue
+        try:
+            # Ensure timeout is an integer
+            try:
+                timeout = int(float(timeout))  # Handle both string and float inputs
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid timeout value '{timeout}', using default of 60 seconds")
+                timeout = 60
             
-            # If we're in mock mode, can optionally ask for user confirmation to advance mock scenario
-            if is_mock_mode:
-                print("\n🔧 MOCK MODE: Would you like to simulate the jar being placed on the gripper?")
-                user_input = input("Type 'y' to simulate jar placement or anything else to continue waiting: ")
-                if user_input.lower() == 'y':
-                    # Change the mock scenario to show jar on gripper
-                    os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_gripper"
-                    logger.info("Mock scenario changed to 'jar_on_gripper'")
-                    print("🔧 Mock scenario changed to show jar on gripper")
-                    
-                    # Take a new capture with the updated scenario
-                    self.tool_manager.camera_tool("capture")
-                    return True, "Jar detected on gripper (mock simulation)"
-            
-            # Analyze image with LLM
-            analysis = self.agent.analyze_captured_image(
-                camera_tool=self.tool_manager.camera_tool,
-                prompt="Is there a jar placed on the robot gripper? Answer only 'yes' or 'no' and explain briefly why.",
-                max_tokens=100
+            # Start the monitoring agent
+            self.monitoring_agent.start_monitoring(
+                detection_criteria=detection_criteria,
+                system_prompt=system_prompt,
+                confidence_threshold=75  # Require 75% confidence
             )
             
-            logger.info(f"Jar detection analysis: {analysis}")
+            # Initial announcement
+            condition_summary = detection_criteria.lower()
+            if self.tool_manager.speaker_tool:
+                self.tool_manager.speaker_tool(f"speak I am waiting for: {condition_summary}")
             
-            # Check if jar is detected
-            if "yes" in analysis.lower():
-                # If in mock mode, make sure to update the scenario
-                if is_mock_mode:
-                    os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_gripper"
-                return True, "Jar detected on gripper"
+            # Variables for status tracking
+            start_time = time.time()
+            status_interval = 10  # Give status updates every 10 seconds
+            last_status_time = 0
+            check_interval = 1  # How often to check for condition (seconds)
             
-            # Wait before checking again
-            time.sleep(check_interval)
-        
-        return False, f"Timeout waiting for jar placement after {timeout} seconds"
+            # Check if we're running in mock mode
+            is_mock_mode = os.getenv("MOCK_CAMERA_SCENARIO") is not None
+            
+            # Wait loop
+            while time.time() - start_time < timeout:
+                current_time = time.time()
+                
+                # Check if condition has been detected
+                if self.monitoring_agent.is_detection_successful():
+                    analysis = self.monitoring_agent.get_latest_analysis()
+                    
+                    # Announce success
+                    if self.tool_manager.speaker_tool:
+                        self.tool_manager.speaker_tool("speak Thank you, condition detected successfully.")
+                    
+                    # Stop monitoring and return success
+                    try:
+                        logger.info("Condition detected successfully! Stopping monitoring.")
+                        self.monitoring_agent.stop_monitoring()
+                    except Exception as e:
+                        logger.error(f"Error stopping monitoring agent: {e}")
+                    
+                    return True, f"Condition detected with {analysis.get('confidence', 0)}% confidence after {int(current_time - start_time)} seconds"
+                
+                # In mock mode, offer option to manually advance - but only once every few seconds to prevent UI spam
+                if is_mock_mode and (current_time - last_status_time >= 5):
+                    last_status_time = current_time
+                    print(f"\n🔧 MOCK MODE: Would you like to simulate the condition being met? ({detection_criteria})")
+                    print("Type 'y' to simulate condition being met or press Enter to continue waiting.")
+                    
+                    # Use select to wait for input with timeout
+                    import select
+                    import sys
+                    
+                    # Wait for input with a timeout
+                    ready, _, _ = select.select([sys.stdin], [], [], 1)
+                    if ready:
+                        user_input = sys.stdin.readline().strip().lower()
+                        if user_input == 'y':
+                            # Acknowledge mock success
+                            if self.tool_manager.speaker_tool:
+                                self.tool_manager.speaker_tool("speak Condition successfully detected (mock mode).")
+                            # Stop monitoring and return success
+                            self.monitoring_agent.stop_monitoring()
+                            return True, f"Condition detected (mock simulation): {detection_criteria}"
+                
+                # Provide periodic status updates
+                if current_time - last_status_time > status_interval:
+                    latest = self.monitoring_agent.get_latest_analysis()
+                    
+                    if latest and "confidence" in latest:
+                        confidence = latest["confidence"]
+                        
+                        if confidence > 50:
+                            msg = f"I might see what I'm looking for. Confidence is {confidence}%. Please adjust if needed."
+                        elif confidence > 30:
+                            msg = f"I see something, but I'm not confident yet. Confidence is {confidence}%."
+                        else:
+                            msg = f"Still waiting for the condition to be met: {condition_summary}"
+                        
+                        if self.tool_manager.speaker_tool:
+                            self.tool_manager.speaker_tool(f"speak {msg}")
+                    
+                    last_status_time = current_time
+                
+                # Brief sleep to prevent CPU hogging
+                time.sleep(check_interval)
+            
+            # Timeout occurred
+            if self.tool_manager.speaker_tool:
+                self.tool_manager.speaker_tool("speak I've waited too long and the condition wasn't met. Let's try again.")
+            
+            # Stop monitoring and return failure
+            try:
+                self.monitoring_agent.stop_monitoring()
+            except Exception as e:
+                logger.error(f"Error stopping monitoring agent on timeout: {e}")
+                
+            return False, f"Timeout after {timeout} seconds waiting for condition: {detection_criteria}"
+            
+        except Exception as e:
+            logger.error(f"Error in _wait_for_condition: {e}")
+            # Ensure monitoring is stopped even if there's an error
+            try:
+                self.monitoring_agent.stop_monitoring()
+            except Exception as stop_error:
+                logger.error(f"Error stopping monitoring agent: {stop_error}")
+                
+            return False, f"Error waiting for condition: {str(e)}"
     
     def _execute_gripper_action(self, action: str) -> Tuple[bool, str]:
         """
         Execute a gripper action.
         
         Args:
-            action (str): The action to execute (open, close, etc.)
+            action (str): The action to execute (open, close, roll_left, etc.)
             
         Returns:
             Tuple[bool, str]: (success, message)
@@ -336,18 +625,18 @@ class ActionPlanExecutor:
         is_mock_mode = os.getenv("MOCK_CAMERA_SCENARIO") is not None
         
         # Handle different actions
-        if "close" in action.lower():
+        if action == "close":
             # Close the gripper
             response = self.tool_manager.robot_arm_tool("gripper close")
             success = "successfully" in response.lower()
             
             # Announce the action
             if success and self.tool_manager.speaker_tool:
-                self.tool_manager.speaker_tool("speak Gripper closed. Holding jar firmly.")
+                self.tool_manager.speaker_tool("speak Gripper closed.")
                 
             return success, response
             
-        elif "open" in action.lower():
+        elif action == "open":
             # Open the gripper
             response = self.tool_manager.robot_arm_tool("gripper open")
             success = "successfully" in response.lower()
@@ -358,22 +647,14 @@ class ActionPlanExecutor:
                 
             return success, response
             
-        elif "roll left" in action.lower() or "roll" in action.lower() or "twist" in action.lower():
-            # This is a special action for opening the jar by rolling the arm
+        elif action == "roll_left" or action == "twist_left":
+            # Execute roll movement
             
-            # Get current joints
-            joint_response = self.tool_manager.robot_arm_tool("get_joints")
-            logger.info(f"Current joints before roll: {joint_response}")
-            
-            # Execute roll movement for opening jar
-            # Here we would typically move a specific joint to twist the jar
-            # For now, we'll simply use a preset movement
-            
-            # Announce start of twist
+            # Announce action
             if self.tool_manager.speaker_tool:
-                self.tool_manager.speaker_tool("speak Opening the jar now. Hold steady please.")
+                self.tool_manager.speaker_tool("speak Executing twist motion.")
             
-            # Start with a slight movement (adjust based on robot capabilities)
+            # Start with a slight movement
             response1 = self.tool_manager.robot_arm_tool("move_joint 0.0 0.0 0.0 0.0 0.0 -30.0")
             success1 = "successfully" in response1.lower()
             
@@ -390,22 +671,45 @@ class ActionPlanExecutor:
             if not success2:
                 return False, f"Failed to execute second twist: {response2}"
                 
-            # If in mock mode, update the scenario to show jar opened
-            if is_mock_mode:
-                os.environ["MOCK_CAMERA_SCENARIO"] = "jar_opened"
-                logger.info("Mock scenario changed to 'jar_opened'")
-                print("🔧 Mock scenario changed to show jar opened")
-                
-                if self.tool_manager.camera_tool:
+            # Update mock scenario if in mock mode
+            if is_mock_mode and self.tool_manager.camera_tool:
+                # Update scenario for testing
+                if "jar" in os.environ.get("MOCK_CAMERA_SCENARIO", ""):
+                    os.environ["MOCK_CAMERA_SCENARIO"] = "jar_opened"
+                    logger.info("Mock scenario changed to 'jar_opened'")
+                    print("🔧 Mock scenario changed to show jar opened")
+                    
                     # Take a new capture with the updated scenario
                     self.tool_manager.camera_tool("capture")
             
-            # Announce success
-            if self.tool_manager.speaker_tool:
-                self.tool_manager.speaker_tool("speak Jar opened successfully!")
-                
-            return True, "Successfully executed roll left movement to open jar"
+            return True, f"Successfully executed {action} movement"
             
+        elif action == "roll_right" or action == "twist_right":
+            # Execute opposite roll movement
+            
+            # Announce action
+            if self.tool_manager.speaker_tool:
+                self.tool_manager.speaker_tool("speak Executing twist motion in opposite direction.")
+            
+            # Start with a slight movement
+            response1 = self.tool_manager.robot_arm_tool("move_joint 0.0 0.0 0.0 0.0 0.0 30.0")
+            success1 = "successfully" in response1.lower()
+            
+            if not success1:
+                return False, f"Failed to execute first twist: {response1}"
+                
+            # Short pause
+            time.sleep(1)
+            
+            # More pronounced twist
+            response2 = self.tool_manager.robot_arm_tool("move_joint 0.0 0.0 0.0 0.0 0.0 60.0")
+            success2 = "successfully" in response2.lower()
+            
+            if not success2:
+                return False, f"Failed to execute second twist: {response2}"
+                
+            return True, f"Successfully executed {action} movement"
+        
         else:
             return False, f"Unknown gripper action: {action}"
     
