@@ -165,12 +165,74 @@ tool_manager.close_all()
 You can test the system using the provided test script:
 
 ```bash
-./test_hardware_tools.py
+python -m test_hardware_tools
 ```
 
 This script tests:
 - The speaker functionality
 - LLM API call logging
+
+### Mock Tools for Testing
+
+The system includes a mock tools mode for testing without physical hardware. This allows you to test the logic and workflows without connecting to actual cameras, robot arms, or speakers.
+
+#### Running in Mock Mode
+
+To use the mock tools:
+
+```bash
+python -m llm_agent.hardware_agent_example --mock
+```
+
+You can also combine this with other modes:
+
+```bash
+# Run action plan execution with mock tools
+python -m llm_agent.hardware_agent_example --action-plan --mock
+
+# Run demo sequence with mock tools
+python -m llm_agent.hardware_agent_example --demo --mock
+```
+
+#### Testing with Mock Tools
+
+A dedicated test script is available to verify mock tool functionality:
+
+```bash
+python -m test_mock_tools
+
+# Or run specific test groups
+python -m test_mock_tools --hardware  # Test only mock hardware tools
+python -m test_mock_tools --agent     # Test agent with mock tools
+python -m test_mock_tools --action-plan # Test action plan execution
+```
+
+#### Mock Implementation Features
+
+The mock tools provide realistic simulations:
+
+1. **Robot Arm**: Simulates movements, gripper actions, and provides visual representations of the arm state.
+2. **Camera**: Generates test images for different scenarios (empty scene, jar on table, jar on gripper, etc.) and handles image analysis.
+3. **Speaker**: Simulates text-to-speech functionality with different voices and speech parameters.
+
+Mock tools store debug images in the `debug_mock/` and `debug_images/` directories for inspection.
+
+#### Switching Mock Scenarios
+
+For testing image detection flows, you can control which scenario the mock camera shows:
+
+```python
+# Change the camera view to show a jar on the table
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_table"
+
+# Switch to jar on gripper
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_gripper"
+
+# Switch to opened jar
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_opened"
+```
+
+The action plan executor will automatically prompt for scenario changes during interactive testing.
 
 ## Troubleshooting
 
