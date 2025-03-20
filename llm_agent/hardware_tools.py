@@ -211,135 +211,143 @@ class RobotArmTool(Tool):
                 self._initialized = False
 
 class CameraTool(Tool):
-    """Tool for accessing camera feeds."""
+    """Tool for capturing and processing images from cameras."""
     
     def __init__(self, cameras: Optional[MultiCameraInterface] = None):
         """
         Initialize the camera tool.
         
         Args:
-            cameras (MultiCameraInterface, optional): Camera interface. If None, will be initialized on first use.
+            cameras (MultiCameraInterface, optional): An existing camera interface instance.
+                If None, a new instance will be created when needed.
         """
         super().__init__(
             name="camera",
-            description="Access camera feeds. Commands:\n- capture: Capture images from all cameras\n- capture <camera_id>: Capture image from a specific camera\n- list: List available cameras",
+            description=(
+                "Camera interface for capturing images. Commands:\n"
+                "- capture: Capture images from all available cameras\n"
+                "- list: List available cameras"
+            ),
             function=self._process_camera_command
         )
         self._cameras = cameras
-        self._last_images = {}  # Store last captured images
-        
-        # Create debug directory if it doesn't exist
-        os.makedirs("debug_images", exist_ok=True)
+        self._initialized = False
+        self._last_images = {}  # Dictionary mapping camera IDs to frames
+        self._last_image_path = None  # Path to the last saved image
     
     def _ensure_initialized(self):
-        """Make sure the camera interface is initialized."""
+        """Ensure the camera interface is initialized."""
         if self._cameras is None:
-            # Add retry mechanism for camera initialization
-            max_retries = 3
-            for attempt in range(max_retries):
+            max_attempts = 3
+            attempt = 1
+            last_error = None
+            
+            while attempt <= max_attempts:
                 try:
-                    print(f"Initializing camera (attempt {attempt+1}/{max_retries})...")
+                    print(f"Initializing camera (attempt {attempt}/{max_attempts})...")
                     self._cameras = MultiCameraInterface()
-                    
-                    # Test if initialization was successful
-                    time.sleep(1)  # Give the camera time to stabilize
-                    test_frames = self._cameras.capture_frames()
-                    success_count = sum(1 for _, (success, _) in test_frames.items() if success)
-                    
-                    if success_count > 0:
-                        print(f"Camera initialized successfully with {success_count} cameras on attempt {attempt+1}")
-                        return
-                    else:
-                        print(f"Camera initialization attempt {attempt+1} failed (no working cameras), retrying...")
-                        if self._cameras:
-                            self._cameras.close()
-                        time.sleep(2)  # Wait before retrying
+                    time.sleep(1)  # Give cameras time to initialize
+                    print(f"Camera initialized successfully with {self._cameras.num_cameras} cameras on attempt {attempt}")
+                    self._initialized = True
+                    return
                 except Exception as e:
-                    error_msg = f"Error during camera init attempt {attempt+1}: {str(e)}"
-                    print(error_msg)
-                    logger.error(error_msg)
-                    
-                    if attempt < max_retries - 1:
-                        time.sleep(2)
-                    else:
-                        raise Exception(f"Failed to initialize cameras: {str(e)}")
+                    last_error = e
+                    print(f"Attempt {attempt}/{max_attempts} failed: {e}")
+                    attempt += 1
+                    time.sleep(1)  # Wait before retry
+            
+            # If we reach here, all attempts failed
+            raise RuntimeError(f"Failed to initialize camera after {max_attempts} attempts. Last error: {last_error}")
+    
+    def _capture_images(self) -> Dict[int, str]:
+        """
+        Capture images from all available cameras.
+        
+        Returns:
+            Dict[int, str]: Dictionary mapping camera IDs to file paths of saved images.
+        """
+        # Capture from all cameras
+        frames = self._cameras.capture_frames()
+        if not frames:
+            return {}
+            
+        # Save debug images with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved_paths = {}
+        
+        for cam_id, (success, frame) in frames.items():
+            if success:
+                os.makedirs("debug_images", exist_ok=True)
+                debug_path = f"debug_images/camera_{cam_id}_{timestamp}.jpg"
+                cv2.imwrite(debug_path, frame)
+                saved_paths[cam_id] = debug_path
+        
+        # Store successful captures
+        self._last_images = {k: frame for k, (success, frame) in frames.items() if success}
+        
+        # Set the last image path for convenience
+        if saved_paths:
+            self._last_image_path = next(iter(saved_paths.values()))
+        
+        return saved_paths
     
     def _process_camera_command(self, command_str: str) -> str:
-        """Process a camera command string."""
+        """
+        Process a camera command string.
+        
+        Args:
+            command_str (str): The command string.
+            
+        Returns:
+            str: The result of the command execution.
+        """
         try:
+            # Parse the command
+            command_parts = command_str.strip().split()
+            command = command_parts[0].lower() if command_parts else ""
+            
+            # Ensure camera interface is initialized (should already be initialized at startup)
             self._ensure_initialized()
-        except Exception as e:
-            error_msg = f"Error initializing cameras: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
-        
-        parts = command_str.split()
-        cmd = parts[0] if parts else ""
-        
-        try:
-            if cmd == "capture":
-                camera_id = int(parts[1]) if len(parts) > 1 else None
+            
+            # Execute the command
+            if command == "capture":
+                # Since camera is already initialized, directly capture images
+                captured_paths = self._capture_images()
                 
-                if camera_id is not None:
-                    # Capture from specific camera
-                    success, frame = self._cameras.capture_frame(camera_id)
-                    if success:
-                        # Save debug image with timestamp
+                if not captured_paths:
+                    return "Failed to capture images from any camera"
+                
+                # Debug logging and saving the captured images
+                for camera_id, frame in self._last_images.items():
+                    if frame is not None:
                         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        debug_path = f"debug_images/camera_{camera_id}.jpg"
+                        debug_path = f"debug_images/camera_{camera_id}_{timestamp}.jpg"
+                        os.makedirs("debug_images", exist_ok=True)
                         cv2.imwrite(debug_path, frame)
-                        logger.info(f"Debug image saved to {debug_path}")
+                        logging.info(f"Debug image saved to {debug_path}")
                         print(f"Debug image saved to {debug_path}")
-                        
-                        self._last_images = {camera_id: frame}
-                        return f"Successfully captured image from camera {camera_id}"
-                    else:
-                        return f"Failed to capture image from camera {camera_id}"
-                else:
-                    # Capture from all cameras
-                    frames = self._cameras.capture_frames()
-                    if frames:
-                        # Save debug images with timestamp
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        saved_paths = []
-                        
-                        for cam_id, (success, frame) in frames.items():
-                            if success:
-                                debug_path = f"debug_images/camera_{cam_id}_{timestamp}.jpg"
-                                cv2.imwrite(debug_path, frame)
-                                saved_paths.append(debug_path)
-                                logger.info(f"Debug image saved to {debug_path}")
-                                print(f"Debug image saved to {debug_path}")
-                        
-                        # Filter only successful captures
-                        self._last_images = {k: frame for k, (success, frame) in frames.items() if success}
-                        
-                        if saved_paths:
-                            # Return the path to the first image for easier access
-                            self._last_image_path = saved_paths[0] if saved_paths else None
-                            return f"Successfully captured images from {len(self._last_images)} cameras"
-                        else:
-                            return "No images were captured successfully"
-                    else:
-                        return "No cameras available for capture"
-            
-            elif cmd == "list":
+                
+                camera_count = len(captured_paths)
+                return f"Successfully captured images from {camera_count} cameras"
+                
+            elif command == "list":
                 if not self._cameras:
-                    return "Camera interface not initialized"
-                
-                cameras = self._cameras.list_cameras()
-                if cameras:
-                    return f"Available cameras: {', '.join(map(str, cameras))}"
-                else:
                     return "No cameras available"
-            
-            else:
-                return f"Unknown camera command: {cmd}. Available commands: capture, list"
                 
+                camera_info = []
+                for cam_id in range(self._cameras.num_cameras):
+                    resolution = self._cameras.get_camera_resolution(cam_id)
+                    fps = self._cameras.get_camera_fps(cam_id)
+                    camera_info.append(f"Camera {cam_id}: {resolution[0]}x{resolution[1]} @ {fps}fps")
+                
+                return "Available cameras:\n" + "\n".join(camera_info)
+                
+            else:
+                return f"Unknown camera command: {command}"
+        
         except Exception as e:
-            error_msg = f"Error executing camera command: {str(e)}"
-            logger.error(error_msg)
-            return error_msg
+            logging.error(f"Error processing camera command: {e}")
+            return f"Error: {str(e)}"
     
     def get_last_image(self, camera_id: Optional[int] = None) -> Optional[np.ndarray]:
         """
@@ -549,90 +557,89 @@ class SpeakerTool(Tool):
                 self._initialized = False
 
 class HardwareToolManager:
-    """Manager class for hardware tools."""
+    """Manager for hardware tool interfaces."""
     
     def __init__(self):
         """Initialize the hardware tool manager."""
         self.robot_arm_tool = None
         self.camera_tool = None
         self.speaker_tool = None
-        self._initialized = False
+        self.initialize_tools()
     
     def initialize_tools(self):
-        """Initialize all hardware tools."""
-        if self._initialized:
-            return
-        
-        # Initialize the tools
+        """Initialize all available hardware tools."""
+        # Initialize robot arm tool if available
         try:
             self.robot_arm_tool = RobotArmTool()
             print("Robot arm tool initialized")
+            # Force immediate hardware initialization
+            self.robot_arm_tool._ensure_initialized()
+            print("Robot arm hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize robot arm tool: {e}")
-            self.robot_arm_tool = None
+            print(f"Warning: Could not initialize robot arm tool: {e}")
         
+        # Initialize camera tool if available
         try:
             self.camera_tool = CameraTool()
             print("Camera tool initialized")
+            # Force immediate hardware initialization
+            self.camera_tool._ensure_initialized()
+            print("Camera hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize camera tool: {e}")
-            self.camera_tool = None
+            print(f"Warning: Could not initialize camera tool: {e}")
         
+        # Initialize speaker tool if available
         try:
             self.speaker_tool = SpeakerTool()
             print("Speaker tool initialized")
+            # Force immediate hardware initialization
+            self.speaker_tool._ensure_initialized()
+            print("Speaker hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize speaker tool: {e}")
-            self.speaker_tool = None
-        
-        self._initialized = True
+            print(f"Warning: Could not initialize speaker tool: {e}")
     
     def get_all_tools(self) -> List[Tool]:
         """
-        Get all available hardware tools.
+        Get all initialized hardware tools.
         
         Returns:
-            List[Tool]: List of available hardware tools
+            List[Tool]: List of available hardware tools.
         """
-        self.initialize_tools()
-        
         tools = []
+        
         if self.robot_arm_tool:
             tools.append(self.robot_arm_tool)
+        
         if self.camera_tool:
             tools.append(self.camera_tool)
+        
         if self.speaker_tool:
             tools.append(self.speaker_tool)
         
         return tools
     
     def close_all(self):
-        """Close all hardware tools."""
+        """Close all hardware tool interfaces."""
+        # Close robot arm interface
         if self.robot_arm_tool:
             try:
                 self.robot_arm_tool.close()
             except Exception as e:
                 print(f"Error closing robot arm tool: {e}")
-            finally:
-                self.robot_arm_tool = None
         
+        # Close camera interface
         if self.camera_tool:
             try:
                 self.camera_tool.close()
             except Exception as e:
                 print(f"Error closing camera tool: {e}")
-            finally:
-                self.camera_tool = None
         
+        # Close speaker interface
         if self.speaker_tool:
             try:
                 self.speaker_tool.close()
             except Exception as e:
                 print(f"Error closing speaker tool: {e}")
-            finally:
-                self.speaker_tool = None
-        
-        self._initialized = False
 
 def main():
     """Test the hardware tools."""

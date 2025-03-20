@@ -1,15 +1,31 @@
-# AI Agent System for Robot Control
+# AI Agent System for Kitchen Assistive Robot
 
-This package provides a comprehensive AI agent system that can control hardware devices and make API calls. The system includes a base agent architecture, hardware interfaces, and a robust logging system.
+This package provides a comprehensive AI agent system for controlling a kitchen assistive robot. The system combines language model intelligence with hardware control capabilities to create an interactive robot assistant that can help with kitchen tasks.
 
-## Overview
+## System Overview
 
-The system consists of the following main components:
+The system architecture consists of these main components:
 
-1. **BaseAgent**: Core AI agent that can process natural language inputs, make API calls, and use tools
-2. **Hardware Tools**: Interfaces for controlling physical devices (robot arm, cameras, speaker)
-3. **API Tools**: Interfaces for making web API calls (search, weather, stock prices, etc.)
-4. **Logging System**: Comprehensive logging of all LLM API interactions
+1. **Core Agent System**
+   - **BaseAgent**: LLM-powered AI core that processes natural language, analyzes images, and controls tools
+   - **Hardware Tools**: Interfaces for robot arm, cameras, and speaker
+   - **API Tools**: Web service integrations for search, weather, stock prices, etc.
+   - **Logging System**: Comprehensive tracking of all API interactions and tool usage
+
+2. **Hardware Integration**
+   - **Kinova Robot Arm**: Precise control for kitchen manipulation tasks
+   - **Camera System**: Visual perception for object recognition and environmental awareness
+   - **Speaker System**: Voice feedback and communication with users
+
+3. **Action Plan System**
+   - **Predefined Action Sequences**: YAML-defined workflows for common kitchen tasks
+   - **Execution Engine**: Step-by-step execution with error handling and recovery
+   - **Visual Verification**: Uses cameras and LLM analysis to verify task progress
+
+4. **Mock Tools System**
+   - **Hardware Simulation**: Test robot functionality without physical hardware
+   - **Scenario Generation**: Simulate different kitchen situations for testing
+   - **Visual Debugging**: Generate debug images of simulated hardware states
 
 ## Installation
 
@@ -27,7 +43,7 @@ Create a `.env` file with the following variables:
 # OpenRouter API Configuration
 OPENROUTER_API_KEY=your_openrouter_api_key
 MODEL_NAME=anthropic/claude-3-opus-20240229
-SYSTEM_PROMPT="You are a helpful assistant that can control hardware devices."
+SYSTEM_PROMPT="You are a helpful assistant that can control kitchen hardware devices."
 
 # Optional API keys for tools
 OPENWEATHER_API_KEY=your_openweather_api_key  # For weather tool
@@ -36,203 +52,168 @@ SEARCH_API_KEY=your_search_api_key  # For Google search tool
 GOOGLE_CSE_ID=your_google_cse_id  # For Google search tool
 ```
 
-## Hardware Integration
+## Core Functionality
 
-The system can interface with the following hardware:
+### Hardware Control
 
-1. **Kinova Robot Arm**: Controlled via the `RobotArmTool`
-2. **Cameras**: Accessed through the `CameraTool`
-3. **Speaker**: Text-to-speech and audio playback via `SpeakerTool`
+The system interfaces with the following hardware:
 
-All hardware interfaces are managed by the `HardwareToolManager` which handles initialization and cleanup.
+1. **Kinova Robot Arm**: 
+   - Position control in Cartesian and joint space
+   - Gripper control for grasping objects
+   - Pre-defined movement sequences for common tasks
+   - Safety limits and collision prevention
 
-## LLM API Integration
+2. **Cameras**: 
+   - Multi-camera capture for different views
+   - Real-time image analysis using LLM vision capabilities
+   - Object detection for ingredients, tools, and kitchen items
+   - Task verification through visual feedback
 
-The agent uses OpenRouter to access powerful language models. Key features include:
+3. **Speaker**: 
+   - Text-to-speech for user instructions and feedback
+   - Multiple voice options and control parameters
+   - Volume, rate, and pitch adjustment
+   - Platform-specific optimizations for macOS and Linux
 
-- Text-based prompt processing
-- Image analysis capabilities
-- Tool use for extending functionality
-- Robust error handling
-- Comprehensive logging
+All hardware interfaces are managed by the `HardwareToolManager` which handles initialization and cleanup. **All hardware is fully initialized at startup**, ensuring immediate availability of all devices without delay when they're first used.
 
-## Logging System
+### LLM Intelligence
 
-The system includes a comprehensive logging framework that records all interactions with the LLM API:
+The agent uses OpenRouter to access powerful language models with these capabilities:
 
-- All requests and responses are logged to `llm_api_calls.log`
-- Log entries include unique request IDs for tracking
-- Image data is summarized to avoid huge logs
-- Response times are recorded
-- Tool usage is tracked
+- **Natural Language Understanding**: Process user requests about kitchen tasks
+- **Image Analysis**: Identify objects, assess situations, and verify task completion
+- **Task Planning**: Break down complex requests into executable steps
+- **Tool Usage**: Select and execute appropriate hardware actions
+- **Error Handling**: Detect issues and implement recovery strategies
+- **Contextual Awareness**: Maintain conversation context during complex interactions
 
-## Action Plan Execution
+### Action Plan System
 
-The system includes an action plan execution feature that allows you to define structured steps for the robot to follow. This is useful for creating repeatable tasks that require a sequence of operations.
+The action plan system enables predefined task sequences:
 
-### Running Action Plans
+1. **Action Plan Definition**: YAML configuration specifies goals and step sequences
+2. **Predefined Locations**: Saved positions for robot arm movements
+3. **Step Types**:
+   - Movement commands for robot positioning
+   - Announcements for user instructions
+   - Wait conditions with visual verification
+   - Gripper actions for manipulation
+   - Complex sequences for tasks like opening jars
 
-To run the system in action plan execution mode:
+Example tasks include:
+- Opening jars for users with limited hand strength
+- Retrieving items from shelves
+- Assisting with food preparation
+- Monitoring cooking processes
+
+## Usage Modes
+
+### Interactive Mode
+
+```bash
+python -m llm_agent.hardware_agent_example
+```
+
+This starts an interactive session where you can:
+- Give natural language commands to the robot
+- Request camera captures and analysis
+- Control robot arm and gripper directly
+- Use the speaker for voice output
+
+### Action Plan Mode
 
 ```bash
 python -m llm_agent.hardware_agent_example --action-plan
 ```
 
-This will list available action plans defined in the configuration files and allow you to select one to execute.
+This mode:
+1. Lists available predefined action plans
+2. Allows selection of a plan to execute
+3. Executes steps in sequence with progress updates
+4. Handles errors with retry, skip, or abort options
 
-### Defining Action Plans
-
-Action plans are defined in YAML files located in the `actions_config` directory:
-
-- `action_plan.yaml`: Contains the definitions of action plans, including goals and step sequences
-- `predefined_loaction.yaml`: Contains predefined locations for robot arm movements
-
-Example action plan for opening a jar:
-
-```yaml
-open_jar_assistance:
-  goal: "Open a jar for the user"
-  steps:
-    - step_num: 1
-      description: "Move to open jar position"
-    - step_num: 2
-      description: "Announce user to put the jar on the gripper"
-    - step_num: 3
-      description: "Wait for user to put the jar on the gripper"
-    - step_num: 4
-      description: "Close the gripper"
-    - step_num: 5
-      description: "Roll left to open the jar"
-```
-
-For more details, see the [Action Plan Execution System documentation](actions_config/README.md).
-
-## Usage Examples
-
-### Basic Usage
-
-```python
-from llm_agent.ai_agent import BaseAgent
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Initialize the agent
-agent = BaseAgent()
-
-# Process a text prompt
-response = agent.process("What's the weather like in New York?")
-print(response)
-
-# Process an image
-image_response = agent.process_with_image(
-    prompt="What can you see in this image?",
-    image_path="path/to/image.jpg"
-)
-print(image_response)
-```
-
-### Using Hardware Tools
-
-```python
-from llm_agent.ai_agent import BaseAgent
-from llm_agent.hardware_tools import HardwareToolManager
-
-# Initialize the hardware tool manager
-tool_manager = HardwareToolManager()
-
-# Initialize the agent
-agent = BaseAgent()
-
-# Add hardware tools to the agent
-tools = tool_manager.get_all_tools()
-for tool in tools:
-    agent.add_tool(tool)
-
-# Process a prompt that might use hardware tools
-response = agent.process(
-    "Take a picture and tell me what you see.",
-    use_tools=True
-)
-print(response)
-
-# Clean up
-tool_manager.close_all()
-```
-
-## Testing
-
-You can test the system using the provided test script:
+### Demo Mode
 
 ```bash
-python -m test_hardware_tools
+python -m llm_agent.hardware_agent_example --demo
 ```
 
-This script tests:
-- The speaker functionality
-- LLM API call logging
+Runs a demonstration sequence showing all capabilities:
+1. Speaking introduction
+2. Camera capture and analysis
+3. Robot arm movement
+4. Integration of multiple tools
 
-### Mock Tools for Testing
-
-The system includes a mock tools mode for testing without physical hardware. This allows you to test the logic and workflows without connecting to actual cameras, robot arms, or speakers.
-
-#### Running in Mock Mode
-
-To use the mock tools:
+### Mock Testing Mode
 
 ```bash
 python -m llm_agent.hardware_agent_example --mock
 ```
 
-You can also combine this with other modes:
+The mock mode allows development and testing without physical hardware:
+- Simulates robot arm movements and positions
+- Generates synthetic camera images for different scenarios
+- Emulates speaker functionality
+- Creates debug visualizations for verification
 
+Combine with other modes for comprehensive testing:
 ```bash
-# Run action plan execution with mock tools
+# Test action plans with mock hardware
 python -m llm_agent.hardware_agent_example --action-plan --mock
-
-# Run demo sequence with mock tools
-python -m llm_agent.hardware_agent_example --demo --mock
 ```
 
-#### Testing with Mock Tools
+## Testing
 
-A dedicated test script is available to verify mock tool functionality:
+Comprehensive test scripts verify all system components:
 
 ```bash
+# Test hardware tools (speaker, API logging)
+python -m test_hardware_tools
+
+# Test mock tools functionality
 python -m test_mock_tools
 
-# Or run specific test groups
-python -m test_mock_tools --hardware  # Test only mock hardware tools
+# Test specific mock tool groups
+python -m test_mock_tools --hardware  # Test mock hardware
 python -m test_mock_tools --agent     # Test agent with mock tools
 python -m test_mock_tools --action-plan # Test action plan execution
 ```
 
-#### Mock Implementation Features
+## Development Features
 
-The mock tools provide realistic simulations:
+### Hardware Initialization
 
-1. **Robot Arm**: Simulates movements, gripper actions, and provides visual representations of the arm state.
-2. **Camera**: Generates test images for different scenarios (empty scene, jar on table, jar on gripper, etc.) and handles image analysis.
-3. **Speaker**: Simulates text-to-speech functionality with different voices and speech parameters.
+The system immediately initializes all hardware at startup:
 
-Mock tools store debug images in the `debug_mock/` and `debug_images/` directories for inspection.
+1. **Robot Arm**: Connects and calibrates with the Kinova arm on system launch
+2. **Cameras**: Initializes all camera devices and verifies their functionality 
+3. **Speaker**: Sets up the text-to-speech engine with default voice and parameters
 
-#### Switching Mock Scenarios
+This approach ensures that all hardware is ready for use without delays when commands are issued. The startup sequence includes:
+- Hardware device detection
+- Initialization of all available devices
+- Verification of functionality
+- Detailed status reporting
 
-For testing image detection flows, you can control which scenario the mock camera shows:
+### Mock Scenario Control
+
+For testing image detection, control the mock camera view:
 
 ```python
-# Change the camera view to show a jar on the table
-os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_table"
-
-# Switch to jar on gripper
-os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_gripper"
-
-# Switch to opened jar
-os.environ["MOCK_CAMERA_SCENARIO"] = "jar_opened"
+# Change camera scenario during testing
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_table"  # Shows jar on table
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_on_gripper"  # Shows jar on gripper
+os.environ["MOCK_CAMERA_SCENARIO"] = "jar_opened"  # Shows opened jar
 ```
 
-The action plan executor will automatically prompt for scenario changes during interactive testing.
+### Comprehensive Logging
+
+- **API Call Logging**: All LLM interactions recorded in `llm_api_calls.log`
+- **Response Timing**: Tracking of API response latency
+- **Error Tracking**: Automatic recording of failures with context
+- **Tool Usage Statistics**: Monitor which tools are used most frequently
 
 ## Troubleshooting
 
@@ -241,6 +222,7 @@ The action plan executor will automatically prompt for scenario changes during i
 If the speaker is not working:
 
 - On macOS, check available voices with `say -v '?'`
+- Default voice has been configured to "Samantha" for better reliability
 - Ensure volume is not muted
 - Check for proper permissions
 
@@ -251,7 +233,20 @@ If experiencing issues with the LLM API:
 - Check your API key in the .env file
 - Review the logs in `llm_api_calls.log`
 - Ensure you have an active internet connection
+- The system implements automatic retry with backoff for transient errors
+
+### Camera and Robot Arm Problems
+
+- Verify USB connections and device permissions
+- Check for hardware-specific error messages
+- Mock mode can help isolate whether issues are software or hardware related
+- If devices are not detected at startup, try restarting the application
 
 ## License
 
 MIT License
+
+For more details on specific components:
+- Action Plan System: See [Action Plan Execution System](actions_config/README.md)
+- Mock Tools: See test scripts in `test_mock_tools.py`
+- Hardware Integration: See `hardware_tools.py` and related documentation

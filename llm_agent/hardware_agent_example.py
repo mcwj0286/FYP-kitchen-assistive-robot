@@ -83,7 +83,7 @@ def handle_camera_capture(agent, tool_manager, user_input):
         print("🤖 Agent: Camera tool is not available")
         return
         
-    # Capture image
+    # Capture image (camera is already initialized)
     print("📸 Capturing image...")
     result = tool_manager.camera_tool("capture")
     print(f"🤖 Camera: {result}")
@@ -237,6 +237,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Initialize components based on mode
+    print("\n=== Initializing AI Agent with Hardware ===")
     if args.mock:
         print("🔧 MOCK MODE: Using simulated hardware tools")
         tool_manager = MockHardwareToolManager()
@@ -248,8 +249,10 @@ if __name__ == "__main__":
         # This can be changed programmatically during testing to simulate different scenes
         os.environ["MOCK_CAMERA_SCENARIO"] = "empty"
     else:
+        print("🔧 HARDWARE MODE: Using real hardware tools")
         tool_manager = HardwareToolManager()
     
+    print("\n=== Initializing AI Agent ===")
     agent = BaseAgent(
         api_key=os.getenv("OPENROUTER_API_KEY"),
         model_name=os.getenv("MODEL_NAME", "anthropic/claude-3-opus-20240229"),
@@ -273,10 +276,13 @@ if __name__ == "__main__":
     )
     
     # Add hardware tools to the agent
+    print("\n=== Registering Hardware Tools with Agent ===")
     tools = tool_manager.get_all_tools()
     for tool in tools:
         agent.add_tool(tool)
         print(f"Added {tool.name} tool to agent")
+    
+    print("\n=== System Ready ===")
     
     try:
         if args.action_plan:

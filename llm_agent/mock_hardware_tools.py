@@ -580,7 +580,7 @@ class MockSpeakerTool(Tool):
 
 
 class MockHardwareToolManager:
-    """Manager for mock hardware tools."""
+    """Manager for mock hardware tool interfaces."""
     
     def __init__(self):
         """Initialize the mock hardware tool manager."""
@@ -590,60 +590,78 @@ class MockHardwareToolManager:
         self.initialize_tools()
     
     def initialize_tools(self):
-        """Initialize all mock hardware tools."""
-        print("Initializing mock hardware tools...")
-        
+        """Initialize all available mock hardware tools."""
         # Initialize robot arm tool
         try:
             self.robot_arm_tool = MockRobotArmTool()
             print("Mock robot arm tool initialized")
+            # Force immediate initialization
+            self.robot_arm_tool._update_visualization()
+            print("Mock robot arm hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize mock robot arm tool: {e}")
+            print(f"Warning: Could not initialize mock robot arm tool: {e}")
         
         # Initialize camera tool
         try:
             self.camera_tool = MockCameraTool()
             print("Mock camera tool initialized")
+            # Generate scenarios right away
+            self.camera_tool._generate_mock_scenarios()
+            print("Mock camera hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize mock camera tool: {e}")
+            print(f"Warning: Could not initialize mock camera tool: {e}")
         
         # Initialize speaker tool
         try:
             self.speaker_tool = MockSpeakerTool()
             print("Mock speaker tool initialized")
+            # No special initialization needed for speaker
+            print("Mock speaker hardware fully initialized")
         except Exception as e:
-            print(f"Failed to initialize mock speaker tool: {e}")
+            print(f"Warning: Could not initialize mock speaker tool: {e}")
     
     def get_all_tools(self) -> List[Tool]:
-        """Get all initialized mock tools."""
+        """
+        Get all initialized mock hardware tools.
+        
+        Returns:
+            List[Tool]: List of available mock hardware tools.
+        """
         tools = []
         
         if self.robot_arm_tool:
             tools.append(self.robot_arm_tool)
-            
+        
         if self.camera_tool:
             tools.append(self.camera_tool)
-            
+        
         if self.speaker_tool:
             tools.append(self.speaker_tool)
-            
+        
         return tools
     
     def close_all(self):
-        """Close all mock hardware tools."""
-        print("Closing mock hardware tools...")
-        
+        """Close all mock hardware tool interfaces."""
+        # Close robot arm interface
         if self.robot_arm_tool:
-            self.robot_arm_tool.close()
-            self.robot_arm_tool = None
-            
+            try:
+                self.robot_arm_tool.close()
+            except Exception as e:
+                print(f"Error closing mock robot arm tool: {e}")
+        
+        # Close camera interface
         if self.camera_tool:
-            self.camera_tool.close()
-            self.camera_tool = None
-            
+            try:
+                self.camera_tool.close()
+            except Exception as e:
+                print(f"Error closing mock camera tool: {e}")
+        
+        # Close speaker interface
         if self.speaker_tool:
-            self.speaker_tool.close()
-            self.speaker_tool = None
+            try:
+                self.speaker_tool.close()
+            except Exception as e:
+                print(f"Error closing mock speaker tool: {e}")
 
 
 # For testing the mock tools
