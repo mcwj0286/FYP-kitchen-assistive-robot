@@ -65,6 +65,11 @@ def parse_args():
                         help="Number of frames to stack")
     parser.add_argument("--overlap", type=int, default=2,
                         help="Overlap between consecutive sequences")
+    parser.add_argument("--control_mode", type=str, default="joint", choices=["joint", "cartesian"],
+                        help="Control mode used for data recording (joint or cartesian)")
+    parser.add_argument("--proprioceptive_type", type=str, default="joint", 
+                        choices=["joint", "cartesian", "combined"],
+                        help="Type of proprioceptive data to use (joint, cartesian, or combined)")
     
     # Infrastructure parameters
     parser.add_argument("--output_dir", type=str, default="kinova_experiments",
@@ -203,7 +208,16 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logger = logging.getLogger(__name__)
     logger.info("Starting training on real-world demonstration data with model type: %s", args.model_type)
+    logger.info("Control mode: %s, Proprioceptive type: %s", args.control_mode, args.proprioceptive_type)
 
+    # Configure proprioceptive dimensions based on type
+    if args.proprioceptive_type == 'joint':
+        logger.info("Using joint angles as proprioceptive data (9 dimensions)")
+    elif args.proprioceptive_type == 'cartesian':
+        logger.info("Using cartesian poses as proprioceptive data (7 dimensions)")
+    elif args.proprioceptive_type == 'combined':
+        logger.info("Using combined joint angles and cartesian poses as proprioceptive data (15 dimensions)")
+        
     # Device
     device = args.device
     logger.info(f"Using device: {device}")
@@ -257,9 +271,11 @@ def main():
         "num_queries": args.num_queries,
         "image_shape": (128, 128),
         "action_velocity_scale": 30.0,
-        "gripper_scale": 3000.0,
+        # "gripper_scale": 3000.0,
         "load_task_emb": True,
-        "max_word_len": 25
+        "max_word_len": 25,
+        'control_mode': args.control_mode,
+        'proprioceptive_type': args.proprioceptive_type
     }
 
     # Initialize train and validation datasets
@@ -293,11 +309,20 @@ def main():
     if args.model_type == "bc_act":
         from models.bc_act_policy import bc_act_policy
         # Define a configuration dictionary for bc_act_policy with customizable parameters
+        
+        # Determine proprioceptive shape based on the proprioceptive type
+        if args.proprioceptive_type == 'joint':
+            proprio_shape = (9,)
+        elif args.proprioceptive_type == 'cartesian':
+            proprio_shape = (7,)
+        elif args.proprioceptive_type == 'combined':
+            proprio_shape = (15,)  # 9 from joint angles + 6 from cartesian
+        
         config = {
             "obs_shape": {
                 "pixels": (3, 128, 128),
                 "pixels_egocentric": (3, 128, 128),
-                "proprioceptive": (9,)
+                "proprioceptive": proprio_shape
             },
             "act_dim": 7,
             "policy_head": args.policy_head,
@@ -315,7 +340,20 @@ def main():
     elif args.model_type == "bc_transformer":
         from models.bc_transformer_policy import bc_transformer_policy
         
+        # Determine proprioceptive shape based on the proprioceptive type
+        if args.proprioceptive_type == 'joint':
+            proprio_shape = (9,)
+        elif args.proprioceptive_type == 'cartesian':
+            proprio_shape = (7,)
+        elif args.proprioceptive_type == 'combined':
+            proprio_shape = (15,)  # 9 from joint angles + 6 from cartesian
+        
         model = bc_transformer_policy(
+            obs_shape={
+                "pixels": (3, 128, 128),
+                "pixels_egocentric": (3, 128, 128),
+                "proprioceptive": proprio_shape
+            },
             repr_dim=args.repr_dim,
             hidden_dim=args.hidden_dim,
             policy_head=args.policy_head,
@@ -347,15 +385,14 @@ def main():
         min_lr=1e-6
     )
 
-    # Initialize tracking of best validation loss
-    best_val_loss = float('inf')
-    
     # Prepare for tracking losses
     train_losses = []
     val_losses = []
 
     # Begin training loop
     logger.info("Starting training loop for %d epochs", args.epochs)
+    best_val_loss = float('inf')  # Track best validation loss
+    
     for epoch in range(args.epochs):
         # Training phase
         model.train()
@@ -368,22 +405,21 @@ def main():
                     batch[key] = batch[key].to(device)
 
             # Forward pass and compute loss
-            if args.accumulation_steps > 1:
-                # Gradient accumulation for larger effective batch size
-                optimizer.zero_grad()
-                loss = model.train_step(batch, optimizer=None)  # Don't step optimizer here
-                loss = loss / args.accumulation_steps  # Scale loss
-                loss.backward()
-                
-                # Step optimizer after accumulation or at end of epoch
-                if ((batch_idx + 1) % args.accumulation_steps == 0) or (batch_idx + 1 == len(train_loader)):
-                    optimizer.step()
-            else:
-                # Standard training step
-                optimizer.zero_grad()
-                loss = model.train_step(batch, optimizer=optimizer)
+            loss_output = model.train_step(batch, optimizer=optimizer)
             
-            total_loss += loss.item() * (args.accumulation_steps if args.accumulation_steps > 1 else 1)
+            # Handle different return types from train_step
+            if isinstance(loss_output, dict):
+                loss = loss_output.get("loss", None)
+                if loss is None:
+                    raise KeyError("train_step returned a dict without key 'loss'")
+            else:
+                loss = loss_output
+            
+            # Add loss to total
+            if isinstance(loss, torch.Tensor):
+                total_loss += loss.item()
+            else:
+                total_loss += float(loss)
         
         avg_train_loss = total_loss / len(train_loader)
         train_losses.append(avg_train_loss)
@@ -393,29 +429,37 @@ def main():
         val_loss = validate(model, val_loader, device, logger, args.model_type)
         val_losses.append(val_loss)
         
+        # Update learning rate based on validation loss
+        scheduler.step(val_loss)
+        
         # Log to wandb if enabled
         if args.use_wandb and WANDB_AVAILABLE:
             wandb.log({
                 "epoch": epoch + 1,
-                "train_loss": avg_train_loss,
-                "val_loss": val_loss,
-                "learning_rate": optimizer.param_groups[0]['lr']
+                "train/loss": avg_train_loss,
+                "val/loss": val_loss,
+                "train/learning_rate": optimizer.param_groups[0]['lr']
             })
-        
-        # Update learning rate based on validation loss
-        scheduler.step(val_loss)
         
         # Save model if validation loss improved
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_path = os.path.join(exp_dir, "best_model.pth")
+            best_model_path = os.path.join(exp_dir, "best_model_val.pth")
+            
+            # Get appropriate state dict based on model type and MPI usage
+            if args.model_type == "bc_act" and args.use_mpi:
+                model_state_dict = model.get_filtered_state_dict()
+                logger.info("Saving checkpoint with filtered state dict (excluding MPI weights)")
+            else:
+                model_state_dict = model.state_dict()
+                
             torch.save({
                 'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': avg_train_loss,
                 'val_loss': val_loss,
+                'train_loss': avg_train_loss,
                 'args': vars(args),  # Save configuration
             }, best_model_path)
             logger.info("New best model saved with validation loss: %.4f", val_loss)
@@ -428,9 +472,17 @@ def main():
         # Save regular checkpoints
         if (epoch + 1) % 5 == 0:
             checkpoint_path = os.path.join(exp_dir, f"model_epoch_{epoch+1}.pth")
+            
+            # Get appropriate state dict based on model type and MPI usage
+            if args.model_type == "bc_act" and args.use_mpi:
+                model_state_dict = model.get_filtered_state_dict()
+                logger.info("Saving checkpoint with filtered state dict (excluding MPI weights)")
+            else:
+                model_state_dict = model.state_dict()
+                
             torch.save({
                 'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_train_loss,
@@ -441,9 +493,17 @@ def main():
 
     # Save the final model in the experiment directory
     final_path = os.path.join(exp_dir, "model_final.pth")
+    
+    # Get appropriate state dict based on model type and MPI usage
+    if args.model_type == "bc_act" and args.use_mpi:
+        model_state_dict = model.get_filtered_state_dict()
+        logger.info("Saving final model with filtered state dict (excluding MPI weights)")
+    else:
+        model_state_dict = model.state_dict()
+        
     torch.save({
         'epoch': args.epochs,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': model_state_dict,
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'train_loss': avg_train_loss,
@@ -462,3 +522,34 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
+# Example command usage:
+# 
+# 1. Train a model using joint angles proprioceptive data with joint control:
+#    python kinova_trainer.py --model_type bc_transformer --control_mode joint --proprioceptive_type joint
+#
+# 2. Train a model using cartesian poses proprioceptive data with cartesian control:
+#    python kinova_trainer.py --model_type bc_transformer --control_mode cartesian --proprioceptive_type cartesian
+#
+# 3. Train a model using combined proprioceptive data (both joint angles and cartesian poses):
+#    python kinova_trainer.py --model_type bc_transformer --control_mode joint --proprioceptive_type combined
+#
+# 4. More advanced example with other parameters:
+#    python kinova_trainer.py --model_type bc_transformer --control_mode cartesian --proprioceptive_type combined \
+#           --n_layer 6 --repr_dim 768 --hidden_dim 512 --batch_size 64 --epochs 200 
+#
+# NOTE ON LOADING MODELS WITH MPI:
+# When training with --model_type bc_act --use_mpi, the MPI vision encoder weights (22M parameters)
+# are excluded from checkpoints to reduce file size. To load these models, use the special loading method:
+#
+# Example code for loading:
+# ```python
+# from models.bc_act_policy import bc_act_policy
+# 
+# # Load using the special class method
+# model = bc_act_policy.load_from_checkpoint(
+#     checkpoint_path="path/to/checkpoint.pth",
+#     device="cuda",  # or other device options
+#     use_mpi=True    # Important: must specify use_mpi=True
+# )
+# ``` 
