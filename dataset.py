@@ -374,11 +374,18 @@ class Kinova_Dataset(Dataset):
       - For each camera defined in camera_mapping, images are loaded, normalized to [0,1],
         resized to `image_shape`, and permuted to (T, C, H, W).
       - "proprioceptive": 
-         * In 'joint' mode: loaded from "joint_angles" (T, 9) and normalized using linear normalization:
-             (angle - 180)/180, mapping the original range [0, 360] to [-1, 1].
-         * In 'cartesian' mode: loaded from "cartesian_pose" (T, 7):
+         * If proprioceptive_type='joint': loaded from "joint_angles" (T, 9) and normalized using min-max normalization:
+             2 * (angle - min) / (max - min) - 1, mapping the original range [0, 360] to [-1, 1] for joints
+             and [0, 10000] to [-1, 1] for gripper positions.
+         * If proprioceptive_type='cartesian': loaded from "cartesian_pose" (T, 7):
              - position XYZ: normalized to [-1, 1] 
              - orientation XYZW: quaternion values (already normalized)
+         * If proprioceptive_type='combined': loaded from both joint_angles and cartesian_pose,
+             resulting in a (T, 15) tensor with the following structure:
+             - First 9 elements: All joint angles dimensions (6 joints + 3 gripper elements from joint_angles)
+               normalized using min-max normalization
+             - Next 6 elements: Cartesian position and orientation (excluding gripper)
+               normalized as in the cartesian mode
       - "actions": processed actions with future concatenation if requested (T, 7*num_queries),
              where the first 6 elements (joint velocities, originally in [-30, 30]) are normalized by dividing by 30,
              and the 7th element (gripper velocity, originally in [-3000, 3000]) is normalized by dividing by 3000.
@@ -406,7 +413,8 @@ class Kinova_Dataset(Dataset):
         max_word_len: int = 25,                    # maximum word length for task encoding
         train_ratio: float = 0.8,                  # ratio of demonstrations to use for training
         is_train: bool = True,                     # whether this is a training or validation dataset
-        control_mode: str = 'joint'                # control mode: 'joint' or 'cartesian'
+        control_mode: str = 'cartesian',           # control mode: 'joint' or 'cartesian'
+        proprioceptive_type: str = 'cartesian'     # proprioceptive data type: 'joint', 'cartesian', or 'combined'
     ):
         """
         Args:
@@ -431,6 +439,7 @@ class Kinova_Dataset(Dataset):
             train_ratio (float): Ratio of demonstrations to use for training (0.0 to 1.0).
             is_train (bool): Whether this dataset instance is for training (True) or validation (False).
             control_mode (str): Control mode used for data recording: 'joint' or 'cartesian'.
+            proprioceptive_type (str): Type of proprioceptive data to use: 'joint', 'cartesian', or 'combined'.
         """
         self.data_path = data_path
         self.seq_length = seq_length
@@ -452,10 +461,15 @@ class Kinova_Dataset(Dataset):
         self.train_ratio = train_ratio
         self.is_train = is_train
         self.control_mode = control_mode
+        self.proprioceptive_type = proprioceptive_type
         
         # Validate control mode
         if self.control_mode not in ['joint', 'cartesian']:
             raise ValueError(f"control_mode must be 'joint' or 'cartesian', got {self.control_mode}")
+        
+        # Validate proprioceptive type
+        if self.proprioceptive_type not in ['joint', 'cartesian', 'combined']:
+            raise ValueError(f"proprioceptive_type must be 'joint', 'cartesian', or 'combined', got {self.proprioceptive_type}")
         
         if not (0.0 <= train_ratio <= 1.0):
             raise ValueError(f"train_ratio must be between 0.0 and 1.0, got {train_ratio}")
@@ -495,12 +509,16 @@ class Kinova_Dataset(Dataset):
                             continue
                         demo = f[demo_key]
                         
-                        # Check if data has the required format based on control mode
-                        if self.control_mode == 'joint' and "joint_angles" not in demo:
+                        # Check if data has the required format for proprioceptive type
+                        if self.proprioceptive_type == 'joint' and 'joint_angles' not in demo:
                             continue
-                        elif self.control_mode == 'cartesian' and "cartesian_pose" not in demo:
+                        elif self.proprioceptive_type == 'cartesian' and 'cartesian_pose' not in demo:
                             continue
-                        if "actions" not in demo:
+                        elif self.proprioceptive_type == 'combined' and ('joint_angles' not in demo or 'cartesian_pose' not in demo):
+                            continue
+                        
+                        # Check if actions are available based on control mode
+                        if 'actions' not in demo:
                             continue
                             
                         valid_demos.append(demo_key)
@@ -524,11 +542,13 @@ class Kinova_Dataset(Dataset):
                     for demo_key in selected_demos:
                         demo = f[demo_key]
                         
-                        # Get appropriate dataset based on control mode
-                        if self.control_mode == 'joint':
+                        # Get appropriate dataset based on proprioceptive type
+                        if self.proprioceptive_type == 'joint':
                             state_dataset = demo["joint_angles"]
-                        else:  # cartesian mode
+                        elif self.proprioceptive_type == 'cartesian':
                             state_dataset = demo["cartesian_pose"]
+                        else:  # combined - use joint_angles as reference for length
+                            state_dataset = demo["joint_angles"]
                             
                         n_timesteps = state_dataset.shape[0]
                         
@@ -588,7 +608,8 @@ class Kinova_Dataset(Dataset):
                             ))
         
         split_type = "training" if is_train else "validation"
-        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks in {control_mode} mode")
+        print(f"Loaded {len(self.segment_map)} {split_type} segments from {len(self.task_files)} tasks")
+        print(f"Control mode: {control_mode}, Proprioceptive type: {proprioceptive_type}")
         self.file_cache = {}
     
     def _get_file(self, file_path: str) -> h5py.File:
@@ -665,47 +686,52 @@ class Kinova_Dataset(Dataset):
             img_tensor = torch.from_numpy(img_array).permute(0, 3, 1, 2)
             data['images'][out_key] = img_tensor
         
-        # Process proprioceptive data based on control mode
-        if self.control_mode == 'joint':
+        # Apply frame stack padding common for all data types
+        frame_stack_pad = 0
+        if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
+            frame_stack_pad = self.frame_stack - 1 - start_idx
+        
+        # Process proprioceptive data based on proprioceptive_type
+        if self.proprioceptive_type == 'joint' or self.proprioceptive_type == 'combined':
             # Process joint angles
             if "joint_angles" not in demo:
                 raise ValueError(f"Demo {demo_key} in file {file_path} does not contain 'joint_angles'")
             ja_ds = demo["joint_angles"]
-            T_ja, feat_dim = ja_ds.shape
-            ja_array = np.zeros((self.seq_length, feat_dim), dtype=ja_ds.dtype)
+            T_ja, feat_dim_ja = ja_ds.shape
+            ja_array = np.zeros((self.seq_length, feat_dim_ja), dtype=ja_ds.dtype)
             ja_array[:actual_length] = ja_ds[start_idx:start_idx + actual_length]
             
             # Apply frame stack padding if needed
-            frame_stack_pad = 0
-            if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
-                frame_stack_pad = self.frame_stack - 1 - start_idx
+            if frame_stack_pad > 0:
                 for i in range(frame_stack_pad):
                     ja_array[i] = ja_array[frame_stack_pad]
             
-            # Normalize joint angles from [0, 360] to [-1, 1]
+            # Use min-max normalization for joint angles
             ja_array = ja_array.astype(np.float32)
-            ja_array = (ja_array - 180.0) / 180.0
-            data["proprioceptive"] = torch.from_numpy(ja_array)
-        else:
+            ja_array = Kinova_Dataset.normalize_joint_angles(
+                ja_array,
+                gripper_min=0.0,
+                gripper_max=10000.0
+            )
+            
+            if self.proprioceptive_type == 'joint':
+                data["proprioceptive"] = torch.from_numpy(ja_array)
+        
+        if self.proprioceptive_type == 'cartesian' or self.proprioceptive_type == 'combined':
             # Process cartesian pose
             if "cartesian_pose" not in demo:
                 raise ValueError(f"Demo {demo_key} in file {file_path} does not contain 'cartesian_pose'")
             cp_ds = demo["cartesian_pose"]
-            T_cp, feat_dim = cp_ds.shape
-            cp_array = np.zeros((self.seq_length, feat_dim), dtype=cp_ds.dtype)
+            T_cp, feat_dim_cp = cp_ds.shape
+            cp_array = np.zeros((self.seq_length, feat_dim_cp), dtype=cp_ds.dtype)
             cp_array[:actual_length] = cp_ds[start_idx:start_idx + actual_length]
             
             # Apply frame stack padding if needed
-            frame_stack_pad = 0
-            if self.pad_frame_stack and start_idx < (self.frame_stack - 1):
-                frame_stack_pad = self.frame_stack - 1 - start_idx
+            if frame_stack_pad > 0:
                 for i in range(frame_stack_pad):
                     cp_array[i] = cp_array[frame_stack_pad]
             
             # Normalize cartesian pose
-            # - Position (XYZ): first 3 values
-            # - Orientation (XYZ): next 3 values (Euler angles in radians)
-            # - Gripper: last value
             cp_array = cp_array.astype(np.float32)
             
             # Apply normalization using our static method
@@ -716,7 +742,27 @@ class Kinova_Dataset(Dataset):
                 gripper_max=7020.0
             )
             
-            data["proprioceptive"] = torch.from_numpy(cp_array)
+            if self.proprioceptive_type == 'cartesian':
+                data["proprioceptive"] = torch.from_numpy(cp_array)
+        
+        # If using combined data, concatenate joint angles and cartesian pose
+        if self.proprioceptive_type == 'combined':
+            # Use all 9 dimensions from joint angles - already normalized above
+            joint_part = ja_array  # All 9 dimensions (already normalized)
+            
+            # Check cartesian pose dimensions
+            cp_dims = cp_array.shape[1]
+            if cp_dims < 6:
+                print(f"Warning: Cartesian pose in {demo_key} has only {cp_dims} dimensions, expected at least 6")
+                return data
+            
+            # Use only position and orientation, excluding gripper if present
+            cartesian_part = cp_array[:, :6]  # Position and orientation, excluding gripper
+            
+            # Concatenate to create the combined representation (all 9 joint dims + 6 cartesian dims)
+            combined_data = np.concatenate([joint_part, cartesian_part], axis=1)
+            
+            data["proprioceptive"] = torch.from_numpy(combined_data)
         
         # Process actions.
         if "actions" not in demo:
@@ -731,7 +777,7 @@ class Kinova_Dataset(Dataset):
         if self.control_mode == 'joint':
             # For joint control, all joint velocities use the same scale (30.0)
             norm_factors = np.array([self.action_velocity_scale]*6 + [self.gripper_scale], dtype=np.float32)
-        else:
+        elif self.control_mode == 'cartesian':
             # For cartesian control, action is (linear vel x,y,z, angular vel x,y,z, gripper)
             norm_factors = np.array(
                 [self.linear_velocity_scale] * 3 +  # Linear velocity (x, y, z)
@@ -779,13 +825,14 @@ class Kinova_Dataset(Dataset):
         self.close()
 
     @staticmethod
-    def analyze_data_ranges(data_path: str, verbose: bool = True) -> Dict[str, Dict[str, np.ndarray]]:
+    def analyze_data_ranges(data_path: str, verbose: bool = True, analyze_combined: bool = False) -> Dict[str, Dict[str, np.ndarray]]:
         """
         Analyzes the min/max values for proprioceptive and action data across all demonstrations.
         
         Args:
             data_path (str): Path to the directory containing HDF5 files
             verbose (bool): Whether to print analysis results
+            analyze_combined (bool): Whether to analyze combined proprioceptive representation
             
         Returns:
             Dict containing statistics for each data type:
@@ -797,7 +844,8 @@ class Kinova_Dataset(Dataset):
                     'std': array of standard deviation values per dimension
                 },
                 'cartesian_pose': { ... same structure ... },
-                'actions': { ... same structure ... }
+                'actions': { ... same structure ... },
+                'combined': { ... same structure ... } (only if analyze_combined=True)
             }
         """
         # Initialize storage for min/max values
@@ -819,6 +867,14 @@ class Kinova_Dataset(Dataset):
             }
         }
         
+        # Add combined stats if requested
+        if analyze_combined:
+            stats['combined'] = {
+                'min': None, 'max': None, 
+                'mean': None, 'std': None,
+                'count': 0
+            }
+        
         # Running sum for mean calculation
         sums = {
             'joint_angles': None,
@@ -826,12 +882,18 @@ class Kinova_Dataset(Dataset):
             'actions': None
         }
         
+        if analyze_combined:
+            sums['combined'] = None
+        
         # Running sum of squares for std calculation
         sum_squares = {
             'joint_angles': None,
             'cartesian_pose': None, 
             'actions': None
         }
+        
+        if analyze_combined:
+            sum_squares['combined'] = None
         
         # Collect all files
         num_files = 0
@@ -852,36 +914,84 @@ class Kinova_Dataset(Dataset):
                         demo = f[demo_key]
                         
                         # Process joint angles if available
-                        if 'joint_angles' in demo:
-                            data = demo['joint_angles'][:]
-                            stats['joint_angles']['count'] += len(data)
+                        has_joint_angles = 'joint_angles' in demo
+                        has_cartesian_pose = 'cartesian_pose' in demo
+                        
+                        if has_joint_angles:
+                            joint_data = demo['joint_angles'][:]
+                            stats['joint_angles']['count'] += len(joint_data)
                             
                             if stats['joint_angles']['min'] is None:
-                                stats['joint_angles']['min'] = np.min(data, axis=0)
-                                stats['joint_angles']['max'] = np.max(data, axis=0)
-                                sums['joint_angles'] = np.sum(data, axis=0)
-                                sum_squares['joint_angles'] = np.sum(data**2, axis=0)
+                                stats['joint_angles']['min'] = np.min(joint_data, axis=0)
+                                stats['joint_angles']['max'] = np.max(joint_data, axis=0)
+                                sums['joint_angles'] = np.sum(joint_data, axis=0)
+                                sum_squares['joint_angles'] = np.sum(joint_data**2, axis=0)
                             else:
-                                stats['joint_angles']['min'] = np.minimum(stats['joint_angles']['min'], np.min(data, axis=0))
-                                stats['joint_angles']['max'] = np.maximum(stats['joint_angles']['max'], np.max(data, axis=0))
-                                sums['joint_angles'] += np.sum(data, axis=0)
-                                sum_squares['joint_angles'] += np.sum(data**2, axis=0)
+                                stats['joint_angles']['min'] = np.minimum(stats['joint_angles']['min'], np.min(joint_data, axis=0))
+                                stats['joint_angles']['max'] = np.maximum(stats['joint_angles']['max'], np.max(joint_data, axis=0))
+                                sums['joint_angles'] += np.sum(joint_data, axis=0)
+                                sum_squares['joint_angles'] += np.sum(joint_data**2, axis=0)
                         
                         # Process cartesian pose if available
-                        if 'cartesian_pose' in demo:
-                            data = demo['cartesian_pose'][:]
-                            stats['cartesian_pose']['count'] += len(data)
+                        if has_cartesian_pose:
+                            cartesian_data = demo['cartesian_pose'][:]
+                            stats['cartesian_pose']['count'] += len(cartesian_data)
                             
                             if stats['cartesian_pose']['min'] is None:
-                                stats['cartesian_pose']['min'] = np.min(data, axis=0)
-                                stats['cartesian_pose']['max'] = np.max(data, axis=0)
-                                sums['cartesian_pose'] = np.sum(data, axis=0)
-                                sum_squares['cartesian_pose'] = np.sum(data**2, axis=0)
+                                stats['cartesian_pose']['min'] = np.min(cartesian_data, axis=0)
+                                stats['cartesian_pose']['max'] = np.max(cartesian_data, axis=0)
+                                sums['cartesian_pose'] = np.sum(cartesian_data, axis=0)
+                                sum_squares['cartesian_pose'] = np.sum(cartesian_data**2, axis=0)
                             else:
-                                stats['cartesian_pose']['min'] = np.minimum(stats['cartesian_pose']['min'], np.min(data, axis=0))
-                                stats['cartesian_pose']['max'] = np.maximum(stats['cartesian_pose']['max'], np.max(data, axis=0))
-                                sums['cartesian_pose'] += np.sum(data, axis=0)
-                                sum_squares['cartesian_pose'] += np.sum(data**2, axis=0)
+                                stats['cartesian_pose']['min'] = np.minimum(stats['cartesian_pose']['min'], np.min(cartesian_data, axis=0))
+                                stats['cartesian_pose']['max'] = np.maximum(stats['cartesian_pose']['max'], np.max(cartesian_data, axis=0))
+                                sums['cartesian_pose'] += np.sum(cartesian_data, axis=0)
+                                sum_squares['cartesian_pose'] += np.sum(cartesian_data**2, axis=0)
+                        
+                        # Process combined data if requested and both data types are available
+                        if analyze_combined and has_joint_angles and has_cartesian_pose:
+                            # Create combined representation: all 9 elements from joint_angles, next 6 from cartesian_pose
+                            joint_part = joint_data  # All 9 dimensions
+                            
+                            # Normalize joint angles with the updated method
+                            joint_part_norm = Kinova_Dataset.normalize_joint_angles(
+                                joint_part,
+                                gripper_min=0.0,
+                                gripper_max=10000.0
+                            )
+                            
+                            # Check cartesian pose dimensions
+                            cp_dims = cartesian_data.shape[1]
+                            if cp_dims < 6:
+                                print(f"Warning: Cartesian pose in {demo_key} has only {cp_dims} dimensions, expected at least 6")
+                                continue
+                            
+                            # Use only position and orientation, excluding gripper if present
+                            cartesian_part = cartesian_data[:, :6]  # Position and orientation, excluding gripper
+                            
+                            # Normalize cartesian pose as in the dataset class
+                            cartesian_part_norm = Kinova_Dataset.normalize_cartesian_pose(
+                                cartesian_part, 
+                                position_scale=1.0,
+                                gripper_min=-6.0,
+                                gripper_max=7020.0
+                            )
+                            
+                            # Concatenate to create the combined representation (all 9 joint dims + 6 cartesian dims)
+                            combined_data = np.concatenate([joint_part_norm, cartesian_part_norm], axis=1)
+                            
+                            stats['combined']['count'] += len(combined_data)
+                            
+                            if stats['combined']['min'] is None:
+                                stats['combined']['min'] = np.min(combined_data, axis=0)
+                                stats['combined']['max'] = np.max(combined_data, axis=0)
+                                sums['combined'] = np.sum(combined_data, axis=0)
+                                sum_squares['combined'] = np.sum(combined_data**2, axis=0)
+                            else:
+                                stats['combined']['min'] = np.minimum(stats['combined']['min'], np.min(combined_data, axis=0))
+                                stats['combined']['max'] = np.maximum(stats['combined']['max'], np.max(combined_data, axis=0))
+                                sums['combined'] += np.sum(combined_data, axis=0)
+                                sum_squares['combined'] += np.sum(combined_data**2, axis=0)
                         
                         # Process actions if available
                         if 'actions' in demo:
@@ -931,11 +1041,19 @@ class Kinova_Dataset(Dataset):
                     print(f"  Dim {i}: {val:.4f}")
                     
                 # Normalized range for joint angles
-                print("\nJoint Angles Normalized Range (min-180)/180 to (max-180)/180:")
-                for i in range(len(stats['joint_angles']['min'])):
+                print("\nJoint Angles Normalized Range:")
+                # Joint positions normalized by (angle - 180)/180
+                for i in range(6):
                     min_norm = (stats['joint_angles']['min'][i] - 180.0) / 180.0
                     max_norm = (stats['joint_angles']['max'][i] - 180.0) / 180.0
-                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}]")
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (joint, (angle - 180)/180)")
+                
+                # Gripper positions normalized by min-max scaling
+                gripper_min, gripper_max = 0.0, 10000.0
+                for i in range(6, 9):
+                    min_norm = 2.0 * (stats['joint_angles']['min'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                    max_norm = 2.0 * (stats['joint_angles']['max'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (gripper, min-max scaled)")
             
             # Print cartesian pose stats
             if stats['cartesian_pose']['count'] > 0:
@@ -969,11 +1087,82 @@ class Kinova_Dataset(Dataset):
                     print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (orientation/π)")
                 
                 # Gripper value normalized by min-max scaling
-                i = 6
-                gripper_min, gripper_max = -6.0, 7020.0
-                min_norm = 2.0 * (stats['cartesian_pose']['min'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
-                max_norm = 2.0 * (stats['cartesian_pose']['max'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
-                print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (gripper, min-max scaled from {gripper_min} to {gripper_max})")
+                if len(stats['cartesian_pose']['min']) > 6:  # Only process gripper if it exists
+                    i = 6
+                    gripper_min, gripper_max = -6.0, 7020.0
+                    min_norm = 2.0 * (stats['cartesian_pose']['min'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                    max_norm = 2.0 * (stats['cartesian_pose']['max'][i] - gripper_min) / (gripper_max - gripper_min) - 1.0
+                    print(f"  Dim {i}: [{min_norm:.4f}, {max_norm:.4f}] (gripper, min-max scaled from {gripper_min} to {gripper_max})")
+                else:
+                    print("  Note: Cartesian pose data does not include gripper dimension")
+            
+            # Print combined stats if available
+            if analyze_combined and stats['combined']['count'] > 0:
+                print("\n=== Combined Proprioceptive Statistics (15 dimensions) ===")
+                print(f"Total samples: {stats['combined']['count']}")
+                print("Min values:")
+                for i, val in enumerate(stats['combined']['min']):
+                    if i < 6:
+                        dimension_type = "joint"
+                        normalization = "(angle - 180)/180"
+                    elif i < 9:
+                        dimension_type = "gripper" 
+                        normalization = "min-max scaled"
+                    elif i < 12:
+                        dimension_type = "position"
+                        normalization = "position/1.0"
+                    else:
+                        dimension_type = "orientation"
+                        normalization = "orientation/π"
+                    print(f"  Dim {i}: {val:.4f} ({dimension_type}, {normalization})")
+                
+                print("Max values:")
+                for i, val in enumerate(stats['combined']['max']):
+                    if i < 6:
+                        dimension_type = "joint"
+                        normalization = "(angle - 180)/180"
+                    elif i < 9:
+                        dimension_type = "gripper" 
+                        normalization = "min-max scaled"
+                    elif i < 12:
+                        dimension_type = "position"
+                        normalization = "position/1.0"
+                    else:
+                        dimension_type = "orientation"
+                        normalization = "orientation/π"
+                    print(f"  Dim {i}: {val:.4f} ({dimension_type}, {normalization})")
+                
+                print("Mean values:")
+                for i, val in enumerate(stats['combined']['mean']):
+                    if i < 6:
+                        dimension_type = "joint"
+                        normalization = "(angle - 180)/180"
+                    elif i < 9:
+                        dimension_type = "gripper" 
+                        normalization = "min-max scaled"
+                    elif i < 12:
+                        dimension_type = "position"
+                        normalization = "position/1.0"
+                    else:
+                        dimension_type = "orientation"
+                        normalization = "orientation/π"
+                    print(f"  Dim {i}: {val:.4f} ({dimension_type}, {normalization})")
+                
+                print("Std values:")
+                for i, val in enumerate(stats['combined']['std']):
+                    if i < 6:
+                        dimension_type = "joint"
+                        normalization = "(angle - 180)/180"
+                    elif i < 9:
+                        dimension_type = "gripper" 
+                        normalization = "min-max scaled"
+                    elif i < 12:
+                        dimension_type = "position"
+                        normalization = "position/1.0"
+                    else:
+                        dimension_type = "orientation"
+                        normalization = "orientation/π"
+                    print(f"  Dim {i}: {val:.4f} ({dimension_type}, {normalization})")
             
             # Print actions stats
             if stats['actions']['count'] > 0:
@@ -1051,10 +1240,10 @@ class Kinova_Dataset(Dataset):
         Normalize cartesian pose data using the recommended approach:
         - Position (X,Y,Z): Divide by position_scale (typically 1.0 meter)
         - Orientation (Euler angles): Divide by π to normalize to [-1, 1] range
-        - Gripper: Min-max scaling to [-1, 1] range using provided min/max values
+        - Gripper: Min-max scaling to [-1, 1] range using provided min/max values (if present)
         
         Args:
-            cp_data: numpy array of cartesian pose data with shape (..., 7)
+            cp_data: numpy array of cartesian pose data with shape (..., 6) or (..., 7)
             position_scale: scaling factor for position dimensions
             gripper_min: minimum value for gripper dimension
             gripper_max: maximum value for gripper dimension
@@ -1071,8 +1260,35 @@ class Kinova_Dataset(Dataset):
         # 2. Orientation normalization (next 3 dimensions)
         normalized[..., 3:6] = normalized[..., 3:6] / np.pi
         
-        # 3. Gripper normalization (last dimension)
-        normalized[..., 6] = 2.0 * (normalized[..., 6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+        # 3. Gripper normalization (last dimension, if present)
+        if normalized.shape[-1] > 6:
+            normalized[..., 6] = 2.0 * (normalized[..., 6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+        
+        return normalized
+
+    @staticmethod
+    def normalize_joint_angles(ja_data, gripper_min=0.0, gripper_max=10000.0):
+        """
+        Normalize joint angle data:
+        - Joint positions (first 6 dimensions): (angle - 180)/180, mapping range [0, 360] to [-1, 1]
+        - Gripper positions (last 3 dimensions): Min-max scaled to [-1, 1] range
+        
+        Args:
+            ja_data: numpy array of joint angle data with shape (..., 9)
+            gripper_min: minimum value for gripper dimensions
+            gripper_max: maximum value for gripper dimensions
+        
+        Returns:
+            Normalized joint angle data with same shape as input
+        """
+        # Create a copy to avoid modifying the original data
+        normalized = ja_data.copy().astype(np.float32)
+        
+        # 1. Joint angle normalization (first 6 dimensions) using (angle - 180)/180
+        normalized[..., :6] = (normalized[..., :6] - 180.0) / 180.0
+        
+        # 2. Gripper normalization (last 3 dimensions) using min-max scaling
+        normalized[..., 6:] = 2.0 * (normalized[..., 6:] - gripper_min) / (gripper_max - gripper_min) - 1.0
         
         return normalized
 
@@ -1117,7 +1333,29 @@ if __name__ == "__main__":
         joint_dataset.close()
     except FileNotFoundError:
         print("Joint mode dataset directory not found. Skipping joint analysis.")
-        
+    
+    # Example usage for analyzing combined proprioceptive representation
+    print("\n=== Analyzing Combined Proprioceptive Mode Dataset ===")
+    try:
+        combined_dataset = Kinova_Dataset(
+            data_path="/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data",
+            seq_length=10,
+            frame_stack=1,
+            pad_frame_stack=False,
+            get_pad_mask=False,
+            get_action_padding=False,
+            control_mode='joint',              # Control mode affects action normalization
+            proprioceptive_type='combined'     # Use combined proprioceptive representation
+        )
+        combined_dataset.analyze_data_ranges(
+            data_path="/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/sim_env/Kinova_gen2/data", 
+            verbose=True,
+            analyze_combined=True              # This flag enables combined analysis
+        )
+        combined_dataset.close()
+    except FileNotFoundError:
+        print("Dataset directory not found. Skipping combined analysis.")
+    
     print("\n=== Dataset Analysis Complete ===")
     
     # Example of loading dataset for training with correct parameters
@@ -1126,6 +1364,7 @@ if __name__ == "__main__":
     print("cartesian_train_dataset = Kinova_Dataset(")
     print("    data_path='path/to/data',")
     print("    control_mode='cartesian',")
+    print("    proprioceptive_type='cartesian',  # or 'combined' for both representations")
     print("    linear_velocity_scale=0.2,")
     print("    angular_velocity_scale=40.0,")
     print("    # other parameters...")
@@ -1135,6 +1374,15 @@ if __name__ == "__main__":
     print("joint_train_dataset = Kinova_Dataset(")
     print("    data_path='path/to/data',")
     print("    control_mode='joint',")
+    print("    proprioceptive_type='joint',  # or 'combined' for both representations")
     print("    action_velocity_scale=30.0,")
+    print("    # other parameters...")
+    print(")")
+    
+    print("\n- For Combined proprioceptive representation:")
+    print("combined_train_dataset = Kinova_Dataset(")
+    print("    data_path='path/to/data',")
+    print("    control_mode='joint',  # or 'cartesian' depending on action type")
+    print("    proprioceptive_type='combined',")
     print("    # other parameters...")
     print(")")
