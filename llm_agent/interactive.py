@@ -29,7 +29,12 @@ def main():
         print("Type 'exit' or 'quit' to end the session")
         print("Type 'camera capture' to capture an image from the cameras")
         print("Type 'speak <text>' to make the agent speak")
-        print("Type 'arm <command>' to control the robot arm")
+        print("Type 'arm <command>' to control the robot arm using Cartesian control")
+        print("  - arm move_home: Move arm to home position")
+        print("  - arm move_default: Move arm to default position")
+        print("  - arm move_position x y z rx ry rz: Move arm to Cartesian position")
+        print("  - arm gripper open|close|position: Control the gripper")
+        print("  - arm get_position: Get current position")
         print("="*50 + "\n")
         
         while True:
@@ -245,7 +250,8 @@ if __name__ == "__main__":
             "You have access to cameras, a robot arm, and a speaker. "
             "Use these tools appropriately to help the user accomplish their tasks. "
             "When using hardware tools, be precise and careful. "
-            "For the robot arm, always verify positions before making large movements. "
+            "For the robot arm, always use Cartesian control methods (not joint control). "
+            "Always verify positions before making large movements. "
             "For the speaker, keep responses concise and clear. "
             "For the cameras, use them to gather visual information when needed.\n\n"
             "IMPORTANT: When you want to use a tool, you MUST use the exact format:\n"
@@ -253,7 +259,7 @@ if __name__ == "__main__":
             "For example:\n"
             "- To speak: [TOOL] speaker speak Hello, I am your AI assistant [/TOOL]\n"
             "- To capture an image: [TOOL] camera capture [/TOOL]\n"
-            "- To move the arm: [TOOL] robot_arm move_home [/TOOL]\n\n"
+            "- To move the arm: [TOOL] robot_arm move_position 0.2 0.3 0.4 1.5 1.5 1.5 [/TOOL]\n\n"
             "DO NOT include the tool commands in your regular text. "
             "ALWAYS use the [TOOL] format when you want to execute a tool command."
         )
