@@ -417,12 +417,28 @@ def main():
     parser.add_argument("--base-dir", type=str, default="kinova_experiments", help="Base directory for experiment directories")
     parser.add_argument("--control-mode", type=str, choices=['joint', 'cartesian'], default='cartesian',
                         help="Control mode (joint or cartesian)")
-    parser.add_argument("--proprioceptive-type", type=str, choices=['joint', 'cartesian', 'combined'], default='cartesian',
+    parser.add_argument("--proprioceptive-type", type=str, choices=['joint', 'cartesian', 'combined'], default='combined',
                         help="Type of proprioceptive data to use (joint, cartesian, or combined)")
+    parser.add_argument("--position", type=str, help="Custom cartesian position in format '[x, y, z, rx, ry, rz, rw]'")
     args = parser.parse_args()
     device = args.device
     control_mode = args.control_mode
     proprioceptive_type = args.proprioceptive_type
+
+    # Parse custom cartesian position if provided
+    custom_position = None
+    if args.position:
+        try:
+            # Convert string to list of floats
+            position_list = eval(args.position)
+            if isinstance(position_list, list) and len(position_list) >= 7:
+                # Convert string values to float if necessary
+                custom_position = [float(val) for val in position_list]
+                print(f"Using custom cartesian position: {custom_position}")
+            else:
+                print("Invalid position format. Expected 7 values. Using default home position.")
+        except Exception as e:
+            print(f"Error parsing position: {e}. Using default home position.")
 
     # Initialize variables to None for cleanup
     cameras = None
@@ -552,6 +568,24 @@ def main():
             zero_velocities = [0.0] * 7
             robot_controller.arm.send_angular_velocity(zero_velocities, hand_mode=1, 
                 fingers=(0.0, 0.0, 0.0), duration=0.1, period=0.005)
+                
+            # Move to specified position if provided, otherwise stay in current position
+            if custom_position:
+                print("\nMoving to specified cartesian position before starting evaluation...")
+                # Extract position and rotation from the 7D vector
+                position = custom_position[:3]  # First 3 values (x, y, z)
+                rotation = custom_position[3:6]  # Next 3 values (rx, ry, rz)
+                # Send cartesian position command
+                robot_controller.arm.send_cartesian_position(
+                    position=position,
+                    rotation=rotation,
+                    fingers=(0.0, 0.0, 0.0),  # Open fingers
+                    duration=5.0
+                )
+                # Wait for movement to complete
+                print("Waiting for position movement to complete...")
+                time.sleep(5)
+                print("Position movement completed.")
         except Exception as e:
             print(f"Error initializing robot controller: {e}")
             return
