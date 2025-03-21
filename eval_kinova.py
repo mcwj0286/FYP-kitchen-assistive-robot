@@ -343,25 +343,65 @@ def main():
         # Update device in config
         config["device"] = device
         
-        # Initialize model
-        model = policy_class(**config)
+        # Check if we're using bc_act policy with MPI
+        is_bc_act_mpi = (policy_class == bc_act_policy) and config.get("use_mpi", False)
         
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        # Extract model state dict from the checkpoint
-        if "model_state_dict" in checkpoint:
-            model_state = checkpoint["model_state_dict"]
+        if is_bc_act_mpi:
+            # For bc_act_policy with MPI, use the special loading method
+            print("Using special loading method for BC-ACT policy with MPI")
+            try:
+                model = bc_act_policy.load_from_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    map_location=device,
+                    **config  # Pass all configuration parameters
+                )
+                print("Successfully loaded model with MPI weights")
+            except Exception as e:
+                print(f"Error loading BC-ACT model with MPI: {e}")
+                print("Attempting fallback to standard loading method...")
+                try:
+                    # Try standard loading as fallback
+                    model = policy_class(**config)
+                    checkpoint = torch.load(checkpoint_path, map_location=device)
+                    if "model_state_dict" in checkpoint:
+                        model_state = checkpoint["model_state_dict"]
+                    else:
+                        model_state = checkpoint
+                    model.load_state_dict(model_state, strict=False)
+                    print("Successfully loaded model weights using fallback method (non-strict loading)")
+                except Exception as nested_e:
+                    print(f"Fallback loading also failed: {nested_e}")
+                    return
         else:
-            model_state = checkpoint  # In case it's already just the state dict
-        
-        try:
-            model.load_state_dict(model_state)
-            print("Successfully loaded model weights")
-        except Exception as e:
-            print(f"Error loading model weights: {e}")
-            return
+            # Standard loading for other models
+            # Initialize model
+            model = policy_class(**config)
+            
+            # Load checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            # Extract model state dict from the checkpoint
+            if "model_state_dict" in checkpoint:
+                model_state = checkpoint["model_state_dict"]
+            else:
+                model_state = checkpoint  # In case it's already just the state dict
+            
+            try:
+                model.load_state_dict(model_state)
+                print("Successfully loaded model weights")
+            except Exception as e:
+                print(f"Error loading model weights: {e}")
+                return
+                
         model.eval()
 
+        # Log model info for debugging
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model loaded with {num_params/1e6:.2f}M trainable parameters")
+        
+        # Log if MPI encoder is being used
+        if hasattr(model, 'use_mpi') and model.use_mpi:
+            print("Model is using MPI vision encoder")
+            
         # Get task string from user and encode it
         task = input('\nType the task you want to eval: ')
         task_emb = encode_task(task)
