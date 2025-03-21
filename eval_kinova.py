@@ -481,10 +481,15 @@ def main():
             # For bc_act_policy with MPI, use the special loading method
             print("Using special loading method for BC-ACT policy with MPI")
             try:
+                # Create a copy of the config without 'model_type' to avoid the error
+                filtered_config = config.copy()
+                if 'model_type' in filtered_config:
+                    del filtered_config['model_type']
+                
                 model = bc_act_policy.load_from_checkpoint(
                     checkpoint_path=checkpoint_path,
                     map_location=device,
-                    **config  # Pass all configuration parameters
+                    **filtered_config  # Pass filtered configuration parameters
                 )
                 print("Successfully loaded model with MPI weights")
             except Exception as e:
@@ -579,8 +584,8 @@ def main():
                 robot_controller.arm.send_cartesian_position(
                     position=position,
                     rotation=rotation,
-                    fingers=(0.0, 0.0, 0.0),  # Open fingers
-                    duration=5.0
+                    fingers=(6.0, 6.0, 6.0),  # Open fingers
+                    duration=8.0
                 )
                 # Wait for movement to complete
                 print("Waiting for position movement to complete...")
