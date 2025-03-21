@@ -69,10 +69,16 @@ class WaypointPredictionExperiment:
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
         
+        # Create directory for raw responses
+        self.raw_response_dir = os.path.join(output_dir, "raw_responses")
+        os.makedirs(self.raw_response_dir, exist_ok=True)
+        
         # Will store all known item locations
         self.known_items = {}
         # Will store all prediction results
         self.results = {}
+        # Store raw responses for debugging
+        self.raw_responses = {}
         
         # Check if image exists
         if not os.path.exists(image_path):
@@ -160,6 +166,9 @@ class WaypointPredictionExperiment:
         # Construct the prompt
         known_items_text = ""
         for name, coords in self.known_items.items():
+            # Skip the item we're trying to predict
+            if name == item_name:
+                continue
             known_items_text += f"- {name}: [{coords[0]:.3f}, {coords[1]:.3f}, {coords[2]:.3f}] meters from robot base\n"
         
         # Use custom prompt if provided, otherwise use default
@@ -233,10 +242,34 @@ Analyze the image carefully, and use the known item positions as reference point
         try:
             # Make the request
             response = requests.post(endpoint, headers=headers, json=payload, timeout=60)
+            
+            # Save the raw response for debugging even if there's an error
+            timestamp = int(time.time())
+            raw_response_file = os.path.join(
+                self.raw_response_dir, 
+                f"raw_response_{model_name.replace('/', '_')}_{item_name}_{timestamp}.json"
+            )
+            
+            try:
+                # Try to save the JSON response
+                with open(raw_response_file, 'w') as f:
+                    json.dump(response.json(), f, indent=2)
+            except:
+                # If that fails, save the raw text
+                with open(raw_response_file, 'w') as f:
+                    f.write(response.text)
+                    
             response.raise_for_status()
             
             # Parse the response
             response_data = response.json()
+            
+            # Store raw response in memory
+            if model_name not in self.raw_responses:
+                self.raw_responses[model_name] = {}
+            if item_name not in self.raw_responses[model_name]:
+                self.raw_responses[model_name][item_name] = []
+            self.raw_responses[model_name][item_name].append(response_data)
             
             # Get the response content
             if response_data and "choices" in response_data and len(response_data["choices"]) > 0:
@@ -250,6 +283,17 @@ Analyze the image carefully, and use the known item positions as reference point
                     "total_tokens": token_usage
                 }
                 logger.info(f"Model response: {json.dumps(log_data, indent=2)}")
+                
+                # Log the full response for debugging
+                logger.info(f"Full response content: {content}")
+                
+                # Also save the processed content directly
+                content_file = os.path.join(
+                    self.raw_response_dir, 
+                    f"content_{model_name.replace('/', '_')}_{item_name}_{timestamp}.txt"
+                )
+                with open(content_file, 'w') as f:
+                    f.write(content)
                 
                 # Extract the JSON from the response
                 try:
@@ -275,7 +319,7 @@ Analyze the image carefully, and use the known item positions as reference point
                             result = json.loads(json_match)
                             
                             # Log the exact structure received for debugging
-                            logger.debug(f"Parsed JSON structure: {result}")
+                            logger.info(f"Parsed JSON structure: {result}")
                             
                             coordinates = result.get("coordinates", None)
                             explanation = result.get("explanation", "No explanation provided")
@@ -300,8 +344,8 @@ Analyze the image carefully, and use the known item positions as reference point
                                             coordinates = [x, y, z]
                                             logger.info(f"Successfully extracted coordinates from string: {coordinates}")
                                             return True, coordinates, explanation
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        logger.error(f"Error extracting coordinates from string: {e}")
                                 
                                 # Try to extract coordinates from explanation if they exist there
                                 if explanation and isinstance(explanation, str):
@@ -317,16 +361,17 @@ Analyze the image carefully, and use the known item positions as reference point
                                             # Update explanation to remove the coordinates to avoid duplication
                                             explanation = explanation.replace(coords_match.group(0), "")
                                             return True, coordinates, explanation
-                                        except:
-                                            pass
+                                        except Exception as e:
+                                            logger.error(f"Error extracting coordinates from explanation: {e}")
                                 
                                 # If all else fails, try the fallback method
                                 return self.query_model_fallback(content, item_name)
                             
+                            logger.info(f"Successfully extracted valid coordinates: {coordinates}")
                             return True, coordinates, explanation
-                        except (json.JSONDecodeError, ValueError):
+                        except (json.JSONDecodeError, ValueError) as e:
                             # If JSON parsing fails, try to extract coordinates from text
-                            logger.info("JSON parsing failed, attempting to extract coordinates from text")
+                            logger.warning(f"JSON parsing failed: {e}. Attempting to extract coordinates from text")
                             # Try to extract coordinates as a fallback
                             return self.query_model_fallback(content, item_name)
                     else:
@@ -337,8 +382,9 @@ Analyze the image carefully, and use the known item positions as reference point
                     logger.warning(f"Failed to parse JSON from response: {e}")
                     # Try to extract coordinates as a fallback
                     return self.query_model_fallback(content, item_name)
-                    
-            return False, None, None
+            else:
+                logger.error(f"Invalid response structure: {response_data}")
+                return False, None, None
             
         except Exception as e:
             logger.error(f"Error querying model {model_name}: {e}")
@@ -355,16 +401,18 @@ Analyze the image carefully, and use the known item positions as reference point
         Returns:
             Tuple of (success, coordinates, explanation)
         """
+        logger.info(f"Entering fallback extraction for content: {content[:100]}...")
+        
         # Look for patterns like [x, y, z] or (x, y, z) or x, y, z
         coord_patterns = [
-            r'\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # [x, y, z]
-            r'\(\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)',  # (x, y, z)
-            r'coordinates:\s*\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # coordinates: [x, y, z]
-            r'coordinates\s*=\s*\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # coordinates = [x, y, z]
-            r'coordinates.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # coordinates ... x, y, z
-            r'position.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # position ... x, y, z
-            r'coordinate.*?x\s*=\s*(-?\d+\.?\d*).*?y\s*=\s*(-?\d+\.?\d*).*?z\s*=\s*(-?\d+\.?\d*)',  # x = x, y = y, z = z
-            r'X\s*=\s*(-?\d+\.?\d*).*?Y\s*=\s*(-?\d+\.?\d*).*?Z\s*=\s*(-?\d+\.?\d*)',  # X = x, Y = y, Z = z
+            # r'\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # [x, y, z]
+            # r'\(\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)',  # (x, y, z)
+            # r'coordinates:\s*\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # coordinates: [x, y, z]
+            # r'coordinates\s*=\s*\[\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\]',  # coordinates = [x, y, z]
+            # r'coordinates.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # coordinates ... x, y, z
+            # r'position.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # position ... x, y, z
+            # r'coordinate.*?x\s*=\s*(-?\d+\.?\d*).*?y\s*=\s*(-?\d+\.?\d*).*?z\s*=\s*(-?\d+\.?\d*)',  # x = x, y = y, z = z
+            # r'X\s*=\s*(-?\d+\.?\d*).*?Y\s*=\s*(-?\d+\.?\d*).*?Z\s*=\s*(-?\d+\.?\d*)',  # X = x, Y = y, Z = z
             # Numbers with units
             r'(-?\d+\.?\d*)\s*meters?\s*[,;]\s*(-?\d+\.?\d*)\s*meters?\s*[,;]\s*(-?\d+\.?\d*)\s*meters?',  # x meters, y meters, z meters
             # Final coordinates sentences
@@ -373,6 +421,8 @@ Analyze the image carefully, and use the known item positions as reference point
             r'I estimate the coordinates to be\s*.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # estimate to be
             r'placing it at\s*.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # placing it at
             r'predict the position to be\s*.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # predict the position
+            r'coordinates are\s*.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # coordinates are
+            r'position is\s*.*?(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)',  # position is
         ]
         
         # Add item-specific patterns with the real item name
@@ -392,7 +442,7 @@ Analyze the image carefully, and use the known item positions as reference point
                 try:
                     x, y, z = float(matches.group(1)), float(matches.group(2)), float(matches.group(3))
                     coords = [x, y, z]
-                    logger.info(f"Successfully extracted coordinates from text: {coords}")
+                    logger.info(f"Successfully extracted coordinates from text with pattern '{pattern}': {coords}")
                     
                     # Extract explanation - take the whole response as the explanation
                     explanation = content
@@ -401,8 +451,20 @@ Analyze the image carefully, and use the known item positions as reference point
                     
                     return True, coords, explanation
                 except (ValueError, IndexError) as e:
-                    logger.warning(f"Failed to convert extracted coordinates to float: {e}")
+                    logger.warning(f"Failed to convert extracted coordinates to float using pattern '{pattern}': {e}")
                     continue
+        
+        # For last resort - just look for 3 numbers in sequence
+        simple_pattern = r'(?<!\d)(-?\d+\.?\d*)(?!\d)\D+(?<!\d)(-?\d+\.?\d*)(?!\d)\D+(?<!\d)(-?\d+\.?\d*)(?!\d)'
+        matches = re.search(simple_pattern, content)
+        if matches:
+            try:
+                x, y, z = float(matches.group(1)), float(matches.group(2)), float(matches.group(3))
+                coords = [x, y, z]
+                logger.info(f"Last resort: found 3 numbers in sequence that might be coordinates: {coords}")
+                return True, coords, content
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Failed to extract coordinates with simple pattern: {e}")
         
         logger.warning("Could not extract coordinates from text")
         return False, None, content  # Return the content as the explanation even without coordinates
@@ -510,7 +572,9 @@ Analyze the image carefully, and use the known item positions as reference point
                         "mean_position": None,
                         "std_dev": None,
                         "variance": None,
-                        "mean_euclidean_deviation": None
+                        "mean_euclidean_deviation": None,
+                        "ground_truth": None,
+                        "ground_truth_deviation": None
                     }
                     continue
                 
@@ -530,12 +594,26 @@ Analyze the image carefully, and use the known item positions as reference point
                 distances = [np.linalg.norm(np.array(pred) - np.array(mean_position)) for pred in item_preds]
                 mean_euclidean_deviation = np.mean(distances)
                 
+                # Get ground truth from YAML if available and calculate deviation
+                ground_truth = None
+                ground_truth_deviation = None
+                if item_name in self.known_items:
+                    ground_truth = self.known_items[item_name]
+                    # Calculate Euclidean distance between mean prediction and ground truth
+                    ground_truth_deviation = np.linalg.norm(np.array(mean_position) - np.array(ground_truth))
+                    # Calculate individual deviations from ground truth
+                    individual_deviations = [np.linalg.norm(np.array(pred) - np.array(ground_truth)) for pred in item_preds]
+                    mean_ground_truth_deviation = np.mean(individual_deviations)
+                
                 model_metrics[item_name] = {
                     "num_predictions": len(item_preds),
                     "mean_position": mean_position,
                     "std_dev": std_dev,
                     "variance": variance,
-                    "mean_euclidean_deviation": mean_euclidean_deviation
+                    "mean_euclidean_deviation": mean_euclidean_deviation,
+                    "ground_truth": ground_truth,
+                    "ground_truth_deviation": ground_truth_deviation,
+                    "mean_ground_truth_deviation": mean_ground_truth_deviation if ground_truth else None
                 }
             
             metrics[model_name] = model_metrics
@@ -556,7 +634,12 @@ Analyze the image carefully, and use the known item positions as reference point
             
             # Plot known items
             for known_item, coords in self.known_items.items():
-                ax.scatter(coords[0], coords[1], coords[2], label=f"Known: {known_item}", marker='o', s=100)
+                # Highlight the ground truth for target item if available
+                if known_item == item_name:
+                    ax.scatter(coords[0], coords[1], coords[2], label=f"Ground Truth: {known_item}", 
+                               marker='o', s=200, color='green', edgecolors='black')
+                else:
+                    ax.scatter(coords[0], coords[1], coords[2], label=f"Known: {known_item}", marker='o', s=100)
             
             # Different markers for each model
             markers = ['x', '+', '*', 'D', 'v', '^', '<', '>', 's', 'p']
@@ -650,11 +733,43 @@ Analyze the image carefully, and use the known item positions as reference point
             print(row)
         
         print("\n" + "-"*80)
-        print("PREDICTED MEAN POSITIONS (x, y, z in meters)")
+        print("PREDICTION ACCURACY (Ground Truth Deviation in meters)")
+        print("-"*80)
+        
+        # Table header
+        header = "Model".ljust(30) + " | " + " | ".join([item.ljust(15) for item in self.items_to_predict])
+        print(header)
+        print("-" * len(header))
+        
+        # Table rows
+        for model_name in self.models:
+            model_short = model_name.split('/')[-1].ljust(30)
+            row = model_short + " | "
+            
+            for item_name in self.items_to_predict:
+                if (model_name in self.results["metrics"] and 
+                    item_name in self.results["metrics"][model_name] and 
+                    self.results["metrics"][model_name][item_name]["ground_truth_deviation"] is not None):
+                    
+                    gt_deviation = self.results["metrics"][model_name][item_name]["ground_truth_deviation"]
+                    row += f"{gt_deviation:.4f}".ljust(15) + " | "
+                else:
+                    row += "N/A".ljust(15) + " | "
+            
+            print(row)
+        
+        print("\n" + "-"*80)
+        print("PREDICTED MEAN POSITIONS vs GROUND TRUTH (x, y, z in meters)")
         print("-"*80)
         
         for item_name in self.items_to_predict:
             print(f"\nItem: {item_name}")
+            
+            # Print ground truth if available
+            if item_name in self.known_items:
+                gt = self.known_items[item_name]
+                gt_str = f"[{gt[0]:.4f}, {gt[1]:.4f}, {gt[2]:.4f}]"
+                print(f"  Ground Truth: {gt_str}")
             
             for model_name in self.models:
                 model_short = model_name.split('/')[-1]
@@ -665,7 +780,13 @@ Analyze the image carefully, and use the known item positions as reference point
                     
                     mean_pos = self.results["metrics"][model_name][item_name]["mean_position"]
                     mean_pos_str = f"[{mean_pos[0]:.4f}, {mean_pos[1]:.4f}, {mean_pos[2]:.4f}]"
-                    print(f"  {model_short}: {mean_pos_str}")
+                    
+                    # Add deviation if ground truth is available
+                    if self.results["metrics"][model_name][item_name]["ground_truth_deviation"] is not None:
+                        dev = self.results["metrics"][model_name][item_name]["ground_truth_deviation"]
+                        print(f"  {model_short}: {mean_pos_str} (deviation: {dev:.4f}m)")
+                    else:
+                        print(f"  {model_short}: {mean_pos_str}")
                 else:
                     print(f"  {model_short}: N/A")
         
@@ -793,6 +914,25 @@ Reply with JSON:
     "coordinates": [x, y, z],
     "explanation": "your reasoning"
 }}
+""",
+        "simple": """Look at the image and predict the 3D coordinates of the {item_name}.
+
+Known item coordinates (meters from robot base):
+{known_items_text}
+
+Reasoning process:
+1. Identify the {item_name} in the image
+2. Note its position relative to known items
+3. Use the known coordinates as reference points
+4. Triangulate to determine its position in 3D space
+5. Consider the perspective and scale of objects
+
+Return ONLY a JSON object:
+{{
+    "item": "{item_name}",
+    "explanation": "your reasoning",
+    "coordinates": [x, y, z],
+}}
 """
     }
 
@@ -802,32 +942,31 @@ def main():
     # Set your parameters here for easy customization
     
     # Path to the image
-    image_path = "/Users/johnmok/Downloads/81gCDa78aGL.jpg"
+    image_path = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/debug_images/camera_0_20250321_151203.jpg"
     
     # Path to the YAML file with known item coordinates
-    yaml_path = "/Users/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/actions_config/item_location.yaml"
+    yaml_path = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/actions_config/item_location.yaml"
     
-    # "google/gemma-3-27b-it:free", 
     # Models to test (can specify multiple)
-    models = ["google/gemma-3-27b-it:free","google/gemini-2.0-flash-thinking-exp-1219:free","google/gemini-2.0-flash-thinking-exp:free"]
+    models = ["google/gemma-3-27b-it:free",'mistralai/mistral-small-3.1-24b-instruct:free',"qwen/qwen2.5-vl-72b-instruct:free"]
     # For example, to test multiple models:
     # models = ["qwen/qwen2.5-vl-72b-instruct:free", "anthropic/claude-3-opus-20240229"]
     
     # Items to predict coordinates for
-    items_to_predict = ["microwave"]
+    items_to_predict = ["blender"]
     # For example, to predict multiple items:
     # items_to_predict = ["microwave", "bowl", "cup"]
     
     # Number of predictions to make per model
-    num_predictions = 1
+    num_predictions = 5
     
     # Directory to save experiment results
     output_dir = "experiment_results"
     
     # ===== PROMPT TEMPLATE SELECTION =====
     # Choose a prompt template or set to None to use standard
-    # Options: "standard", "explanation_first", "detailed", "geometric", "minimal", or None
-    prompt_type = "standard"
+    # Options: "standard", "explanation_first", "detailed", "geometric", "minimal", "simple" or None
+    prompt_type = "simple"
     
     # Get prompt template if specified
     prompt_template = None
