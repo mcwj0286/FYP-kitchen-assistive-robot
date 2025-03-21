@@ -139,7 +139,7 @@ class DataRecorder:
 
 class record_demo:
     def __init__(self, debug_mode=False, camera_width=224, camera_height=224, 
-                 record_modular_demo=False, control_mode='joint'):
+                 record_modular_demo=False, control_mode='joint', custom_cartesian_position=None):
         self.velocity_scale = 20.0  # Maximum joint velocity in degrees/second (reduced for safety)
         self.gripper_scale = 6000  # Scale factor for gripper control
         self.cartesian_linear_scale = 0.20  # Maximum Cartesian linear velocity in m/s
@@ -158,6 +158,8 @@ class record_demo:
         self.camera_height = camera_height
         # Control mode (joint or cartesian)
         self.control_mode = control_mode
+        # Store custom cartesian position if provided
+        self.custom_cartesian_position = custom_cartesian_position
 
         # New: Set flag and initialize modular action attributes if enabled
         self.record_modular_demo = record_modular_demo
@@ -184,12 +186,25 @@ class record_demo:
                 print("Setting Angular control mode...")
                 self.arm.set_angular_control()
             
-            # Move to home position first and wait for completion
-            print("\nMoving to home position before starting control...")
-            self.arm.move_home()
+            # Move to specified position or home position
+            if self.custom_cartesian_position:
+                print("\nMoving to specified cartesian position before starting control...")
+                # Extract position and rotation from the 7D vector
+                position = self.custom_cartesian_position[:3]  # First 3 values (x, y, z)
+                rotation = self.custom_cartesian_position[3:6]  # Next 3 values (rx, ry, rz)
+                # Send cartesian position command
+                self.arm.send_cartesian_position(
+                    position=position,
+                    rotation=rotation,
+                    fingers=(0.0, 0.0, 0.0),  # Open fingers
+                    duration=5.0
+                )
+            else:
+                print("\nMoving to home position before starting control...")
+                self.arm.move_home()
                 
             # Wait for movement to complete (5 seconds should be enough)
-            print("Waiting for home position movement to complete...")
+            print("Waiting for position movement to complete...")
             time.sleep(5)
             
             # Initialize PS4 controller
@@ -240,12 +255,18 @@ class record_demo:
         print("Right Stick Y: Rotation around X (Roll)")
         print("L1/R1 Buttons: Rotation around Z (Yaw)")
         print("Square/Circle: Gripper Open/Close")
-        print("Triangle: Move to Home Position")
+        if self.custom_cartesian_position:
+            print("Triangle: Move to Specified Cartesian Position")
+        else:
+            print("Triangle: Move to Home Position")
         print("Share: Emergency Stop")
         print("Options: Start/Stop Recording")
         
         print("\nStarting Cartesian control loop for demo recording...")
-        print("Note: The arm should now be in home position and ready for Cartesian control")
+        if self.custom_cartesian_position:
+            print("Note: The arm should now be in the specified position and ready for Cartesian control")
+        else:
+            print("Note: The arm should now be in home position and ready for Cartesian control")
         
         while self.running and not self.emergency_stop:
             try:
@@ -356,10 +377,23 @@ class record_demo:
                 
                 # Check for home position request
                 if self.controller.triangle_pressed:
-                    print("Moving to home position...")
-                    self.arm.move_home()
+                    if self.custom_cartesian_position:
+                        print("Moving to specified cartesian position...")
+                        # Extract position and rotation from the 7D vector
+                        position = self.custom_cartesian_position[:3]  # First 3 values (x, y, z)
+                        rotation = self.custom_cartesian_position[3:6]  # Next 3 values (rx, ry, rz)
+                        # Send cartesian position command
+                        self.arm.send_cartesian_position(
+                            position=position,
+                            rotation=rotation,
+                            fingers=(0.0, 0.0, 0.0),  # Open fingers
+                            duration=5.0
+                        )
+                    else:
+                        print("Moving to home position...")
+                        self.arm.move_home()
                     # Wait for movement to complete
-                    print("Waiting for home position movement to complete...")
+                    print("Waiting for position movement to complete...")
                     time.sleep(5)
                     print("Ready for Cartesian control again")
                     continue
@@ -369,6 +403,7 @@ class record_demo:
                     try:
                         # Get cartesian pose for cartesian control mode
                         cartesian_pose = self.arm.get_cartesian_position()
+                        print(f"Cartesian pose: {[f'{pose:.2f}' for pose in cartesian_pose]}")
                         # Get joint angles too
                         joint_angles = self.arm.get_joint_angles()
                         
@@ -414,12 +449,18 @@ class record_demo:
         print("L2/R2 Triggers: Joint 5")
         print("L1/R1 Buttons: Joint 6")
         print("Square/Circle: Gripper Open/Close")
-        print("Triangle: Move to Home Position")
+        if self.custom_cartesian_position:
+            print("Triangle: Move to Specified Cartesian Position")
+        else:
+            print("Triangle: Move to Home Position")
         print("Share: Emergency Stop")
         print("Options: Start/Stop Recording")
         
         print("\nStarting joint velocity control loop...")
-        print("Note: The arm should now be in home position and ready for velocity control")
+        if self.custom_cartesian_position:
+            print("Note: The arm should now be in the specified position and ready for velocity control")
+        else:
+            print("Note: The arm should now be in home position and ready for velocity control")
         
         while self.running and not self.emergency_stop:
             try:
@@ -520,10 +561,23 @@ class record_demo:
                 
                 # Check for home position request
                 if self.controller.triangle_pressed:
-                    print("Moving to home position...")
-                    self.arm.move_home()
+                    if self.custom_cartesian_position:
+                        print("Moving to specified cartesian position...")
+                        # Extract position and rotation from the 7D vector
+                        position = self.custom_cartesian_position[:3]  # First 3 values (x, y, z)
+                        rotation = self.custom_cartesian_position[3:6]  # Next 3 values (rx, ry, rz)
+                        # Send cartesian position command
+                        self.arm.send_cartesian_position(
+                            position=position,
+                            rotation=rotation,
+                            fingers=(0.0, 0.0, 0.0),  # Open fingers
+                            duration=5.0
+                        )
+                    else:
+                        print("Moving to home position...")
+                        self.arm.move_home()
                     # Wait for movement to complete
-                    print("Waiting for home position movement to complete...")
+                    print("Waiting for position movement to complete...")
                     time.sleep(5)
                     print("Ready for velocity control again")
                     continue
@@ -532,8 +586,10 @@ class record_demo:
                 if self.recording:
                     # Get joint angles for joint control mode
                     joint_angles = self.arm.get_joint_angles()
+                    print(f"Joint angles: {[f'{angle:.2f}' for angle in joint_angles]}")
                     # Get cartesian pose too
                     cartesian_pose = self.arm.get_cartesian_position()
+                    print(f"Cartesian pose: {[f'{pose:.2f}' for pose in cartesian_pose]}")
                     # Record the frame with both joint angles and cartesian pose
                     self.data_recorder.add_frame(frames_dict, joint_angles, cartesian_pose, joint_velocities)
                 
@@ -635,7 +691,23 @@ def main():
     parser.add_argument('--modular', action='store_true', help='Enable modular demo recording')
     parser.add_argument('--width', type=int, default=320, help='Camera width resolution')
     parser.add_argument('--height', type=int, default=240, help='Camera height resolution')
+    parser.add_argument('--position', type=str, help='Custom cartesian position in format "[x, y, z, rx, ry, rz, rw]"')
     args = parser.parse_args()
+    
+    # Parse custom cartesian position if provided
+    custom_position = None
+    if args.position:
+        try:
+            # Convert string to list of floats
+            position_list = eval(args.position)
+            if isinstance(position_list, list) and len(position_list) >= 7:
+                # Convert string values to float if necessary
+                custom_position = [float(val) for val in position_list]
+                print(f"Using custom cartesian position: {custom_position}")
+            else:
+                print("Invalid position format. Expected 7 values. Using default home position.")
+        except Exception as e:
+            print(f"Error parsing position: {e}. Using default home position.")
     
     # Initialize controller with parsed arguments
     controller = record_demo(
@@ -643,7 +715,8 @@ def main():
         camera_width=args.width, 
         camera_height=args.height,
         record_modular_demo=args.modular,
-        control_mode=args.mode
+        control_mode=args.mode,
+        custom_cartesian_position=custom_position
     )
     
     print(f"Starting robot controller in {args.mode} control mode")
