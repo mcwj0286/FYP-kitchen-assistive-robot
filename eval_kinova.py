@@ -148,40 +148,104 @@ def preprocess_image(frames_dict, device):
         print(f"Error in image preprocessing: {e}")
         return None
 
-def preprocess_robot_state(robot_state, control_mode='joint', device='cpu'):
-    """Preprocess robot state (joint angles or cartesian pose) into a tensor and normalize
+def preprocess_robot_state(robot_state, control_mode='joint', proprioceptive_type='joint', device='cpu', robot_controller=None):
+    """Preprocess robot state based on proprioceptive_type and normalize using dataset.py methods
     
     Args:
-        robot_state: Either joint angles (9 values) or cartesian pose (7 values)
+        robot_state: Robot state data (joint angles, cartesian pose, or both)
         control_mode: 'joint' or 'cartesian'
+        proprioceptive_type: 'joint', 'cartesian', or 'combined'
         device: PyTorch device to use
+        robot_controller: Robot controller instance (needed for combined mode)
+    
+    Returns:
+        Properly normalized tensor of robot state
     """
     try:
-        if control_mode == 'joint':
+        if proprioceptive_type == 'joint':
             # Ensure there are 9 values (pad with zeros if necessary)
             if len(robot_state) < 9:
                 robot_state = robot_state + [0.0] * (9 - len(robot_state))
-            robot_tensor = torch.tensor(robot_state, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-            # Normalize using linear normalization: (angle - 180) / 180, mapping [0,360] to [-1,1]
-            robot_tensor = (robot_tensor - 180.0) / 180.0
-        else:  # cartesian mode
+            
+            # Convert to numpy array
+            robot_state_np = np.array(robot_state, dtype=np.float32)
+            
+            # Apply joint normalization as in dataset.py
+            # Joint angles (first 6): (angle - 180)/180, mapping [0,360] to [-1,1]
+            # Gripper positions (last 3): min-max scaling
+            robot_state_np[:6] = (robot_state_np[:6] - 180.0) / 180.0
+            gripper_min, gripper_max = 0.0, 10000.0
+            robot_state_np[6:] = 2.0 * (robot_state_np[6:] - gripper_min) / (gripper_max - gripper_min) - 1.0
+            
+            # Convert to tensor with batch and time dimensions
+            robot_tensor = torch.from_numpy(robot_state_np).unsqueeze(0).unsqueeze(0).to(device)
+            
+        elif proprioceptive_type == 'cartesian':
             # Ensure there are 7 values (pad with zeros if necessary)
             if len(robot_state) < 7:
                 robot_state = robot_state + [0.0] * (7 - len(robot_state))
-            robot_tensor = torch.tensor(robot_state, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
             
-            # Normalize cartesian pose using the same method as in dataset.py
+            # Convert to numpy array
+            robot_state_np = np.array(robot_state, dtype=np.float32)
+            
+            # Apply cartesian normalization as in dataset.py
             # Position (XYZ): first 3 values normalized by 1.0
-            robot_tensor[..., :3] = robot_tensor[..., :3] / 1.0
+            robot_state_np[:3] = robot_state_np[:3] / 1.0
             
             # Orientation (XYZ): next 3 values normalized by dividing by pi
-            robot_tensor[..., 3:6] = robot_tensor[..., 3:6] / np.pi
+            robot_state_np[3:6] = robot_state_np[3:6] / np.pi
             
             # Gripper: last value normalized by min-max scaling
             gripper_min, gripper_max = -6.0, 7020.0
-            robot_tensor[..., 6] = 2.0 * (robot_tensor[..., 6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+            robot_state_np[6] = 2.0 * (robot_state_np[6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+            
+            # Convert to tensor with batch and time dimensions
+            robot_tensor = torch.from_numpy(robot_state_np).unsqueeze(0).unsqueeze(0).to(device)
+            
+        elif proprioceptive_type == 'combined':
+            # For combined, we need both joint angles and cartesian pose
+            if robot_controller is None:
+                raise ValueError("Robot controller is required for combined proprioceptive mode")
+                
+            # Get joint angles state
+            joint_angles = get_robot_state_with_retry(robot_controller.arm, control_mode='joint')
+            # Get cartesian pose state
+            cartesian_pose = get_robot_state_with_retry(robot_controller.arm, control_mode='cartesian')
+            
+            if joint_angles is None or cartesian_pose is None:
+                raise ValueError("Failed to retrieve both joint and cartesian data for combined mode")
+            
+            # Ensure joint_angles has 9 values
+            if len(joint_angles) < 9:
+                joint_angles = joint_angles + [0.0] * (9 - len(joint_angles))
+            
+            # Ensure cartesian_pose has at least 6 values (excluding gripper)
+            if len(cartesian_pose) < 6:
+                cartesian_pose = cartesian_pose + [0.0] * (6 - len(cartesian_pose))
+            
+            # Convert to numpy arrays
+            joint_np = np.array(joint_angles[:9], dtype=np.float32)
+            cartesian_np = np.array(cartesian_pose[:6], dtype=np.float32)  # Only get position and orientation
+            
+            # Apply joint normalization
+            joint_np[:6] = (joint_np[:6] - 180.0) / 180.0
+            gripper_min, gripper_max = 0.0, 10000.0
+            joint_np[6:] = 2.0 * (joint_np[6:] - gripper_min) / (gripper_max - gripper_min) - 1.0
+            
+            # Apply cartesian normalization
+            cartesian_np[:3] = cartesian_np[:3] / 1.0  # Position
+            cartesian_np[3:6] = cartesian_np[3:6] / np.pi  # Orientation
+            
+            # Concatenate to create the combined representation
+            combined_np = np.concatenate([joint_np, cartesian_np])
+            
+            # Convert to tensor with batch and time dimensions
+            robot_tensor = torch.from_numpy(combined_np).unsqueeze(0).unsqueeze(0).to(device)
+        else:
+            raise ValueError(f"Unsupported proprioceptive_type: {proprioceptive_type}")
             
         return robot_tensor
+        
     except Exception as e:
         print(f"Error in robot state preprocessing: {e}")
         return None
@@ -236,9 +300,24 @@ def get_policy_class(experiment_dir):
     # Default device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
+    # Default values for proprioceptive dimensions
+    proprio_shape = (9,)  # Default to joint angles shape
+    
     if args_config and 'model_type' in args_config:
         model_type = args_config['model_type'].lower()
         print(f"Using {model_type} policy based on args.txt")
+        
+        # Determine proprioceptive shape based on type in args.txt
+        proprioceptive_type = args_config.get("proprioceptive_type", "joint")
+        if proprioceptive_type == 'joint':
+            proprio_shape = (9,)
+            print("Using joint angles proprioceptive shape: (9,)")
+        elif proprioceptive_type == 'cartesian':
+            proprio_shape = (7,)
+            print("Using cartesian pose proprioceptive shape: (7,)")
+        elif proprioceptive_type == 'combined':
+            proprio_shape = (15,)  # 9 from joint angles + 6 from cartesian
+            print("Using combined proprioceptive shape: (15,)")
         
         if model_type == 'bc_act':
             # Configure BC-ACT policy based on args.txt
@@ -246,7 +325,7 @@ def get_policy_class(experiment_dir):
                 "obs_shape": {
                     "pixels": (3, 128, 128),
                     "pixels_egocentric": (3, 128, 128),
-                    "proprioceptive": (7,)
+                    "proprioceptive": proprio_shape
                 },
                 "act_dim": 7,
                 "policy_head": args_config.get("policy_head", "deterministic"),
@@ -267,6 +346,11 @@ def get_policy_class(experiment_dir):
         
         elif model_type == 'bc_transformer':
             config = {
+                "obs_shape": {
+                    "pixels": (3, 128, 128),
+                    "pixels_egocentric": (3, 128, 128),
+                    "proprioceptive": proprio_shape
+                },
                 "history": args_config.get("history", False),
                 "max_episode_len": 1000,
                 "use_mpi_pixels_egocentric": args_config.get("use_mpi", False),
@@ -276,13 +360,14 @@ def get_policy_class(experiment_dir):
     
     # Fallback to directory name-based detection if args.txt parsing failed
     dir_name = os.path.basename(experiment_dir).lower()
+    # Default to cartesian shape for fallback
     if 'bc_act' in dir_name:
         print("Using BC-ACT policy (fallback method)")
         config = {
             "obs_shape": {
                 "pixels": (3, 128, 128),
                 "pixels_egocentric": (3, 128, 128),
-                "proprioceptive": (7,)
+                "proprioceptive": (7,)  # Default to cartesian shape for fallback
             },
             "act_dim": 7,
             "policy_head": "deterministic",
@@ -297,6 +382,11 @@ def get_policy_class(experiment_dir):
     elif 'bc_transformer' in dir_name:
         print("Using BC-Transformer policy (fallback method)")
         config = {
+            "obs_shape": {
+                "pixels": (3, 128, 128),
+                "pixels_egocentric": (3, 128, 128),
+                "proprioceptive": (7,)  # Default to cartesian shape for fallback
+            },
             "history": False,
             "max_episode_len": 1000,
             "use_mpi_pixels_egocentric": False,
@@ -306,6 +396,11 @@ def get_policy_class(experiment_dir):
     else:
         print("Warning: Could not determine policy type. Defaulting to BC-Transformer")
         config = {
+            "obs_shape": {
+                "pixels": (3, 128, 128),
+                "pixels_egocentric": (3, 128, 128),
+                "proprioceptive": (7,)  # Default to cartesian shape for fallback
+            },
             "history": False,
             "max_episode_len": 1000,
             "use_mpi_pixels_egocentric": False,
@@ -322,9 +417,12 @@ def main():
     parser.add_argument("--base-dir", type=str, default="kinova_experiments", help="Base directory for experiment directories")
     parser.add_argument("--control-mode", type=str, choices=['joint', 'cartesian'], default='cartesian',
                         help="Control mode (joint or cartesian)")
+    parser.add_argument("--proprioceptive-type", type=str, choices=['joint', 'cartesian', 'combined'], default='cartesian',
+                        help="Type of proprioceptive data to use (joint, cartesian, or combined)")
     args = parser.parse_args()
     device = args.device
     control_mode = args.control_mode
+    proprioceptive_type = args.proprioceptive_type
 
     # Initialize variables to None for cleanup
     cameras = None
@@ -340,8 +438,25 @@ def main():
         
         # Initialize the model with proper configuration
         print("\nInitializing model...")
+        
         # Update device in config
         config["device"] = device
+        
+        # Determine proper proprioceptive shape based on command-line argument
+        # This overrides any config from args.txt
+        if proprioceptive_type == 'joint':
+            proprio_shape = (9,)
+            print(f"Using joint angles as proprioceptive data (9 dimensions) based on command-line argument")
+        elif proprioceptive_type == 'cartesian':
+            proprio_shape = (7,)
+            print(f"Using cartesian poses as proprioceptive data (7 dimensions) based on command-line argument")
+        elif proprioceptive_type == 'combined':
+            proprio_shape = (15,)
+            print(f"Using combined joint angles and cartesian poses as proprioceptive data (15 dimensions) based on command-line argument")
+        
+        # Update the proprioceptive shape in the config
+        if "obs_shape" in config:
+            config["obs_shape"]["proprioceptive"] = proprio_shape
         
         # Check if we're using bc_act policy with MPI
         is_bc_act_mpi = (policy_class == bc_act_policy) and config.get("use_mpi", False)
@@ -482,7 +597,13 @@ def main():
                 time.sleep(0.03333)
                 continue
 
-            robot_state_tensor = preprocess_robot_state(robot_state, control_mode=control_mode, device=device)
+            robot_state_tensor = preprocess_robot_state(
+                robot_state, 
+                control_mode=control_mode,
+                proprioceptive_type=proprioceptive_type, 
+                device=device,
+                robot_controller=robot_controller
+            )
             if robot_state_tensor is None:
                 print("Robot state preprocessing failed. Skipping iteration.")
                 time.sleep(0.03333)
