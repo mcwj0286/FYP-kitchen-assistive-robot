@@ -131,8 +131,10 @@ def preprocess_image(frames_dict, device):
         for cam_id, frame in frames_dict.items():
             if frame is None:
                 continue
+            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
             # Resize using cv2 (target size 128x128)
-            frame_resized = cv2.resize(frame, (128, 128))
+            frame_resized = cv2.resize(image_rgb, (128, 128))
             # Convert to float32, normalize to [0,1] range  
             frame_normalized = frame_resized.astype(np.float32) / 255.0
             # Convert to tensor and rearrange dimensions to (C,H,W)
@@ -146,19 +148,56 @@ def preprocess_image(frames_dict, device):
         print(f"Error in image preprocessing: {e}")
         return None
 
-def preprocess_robot_state(joint_angles, device):
-    """Preprocess robot state (joint angles) into a tensor and normalize"""
+def preprocess_robot_state(robot_state, control_mode='joint', device='cpu'):
+    """Preprocess robot state (joint angles or cartesian pose) into a tensor and normalize
+    
+    Args:
+        robot_state: Either joint angles (9 values) or cartesian pose (7 values)
+        control_mode: 'joint' or 'cartesian'
+        device: PyTorch device to use
+    """
     try:
-        # Ensure there are 9 values (pad with zeros if necessary)
-        if len(joint_angles) < 9:
-            joint_angles = joint_angles + [0.0] * (9 - len(joint_angles))
-        robot_tensor = torch.tensor(joint_angles, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-        # Normalize using linear normalization: (angle - 180) / 180, mapping [0,360] to [-1,1]
-        robot_tensor = (robot_tensor - 180.0) / 180.0
+        if control_mode == 'joint':
+            # Ensure there are 9 values (pad with zeros if necessary)
+            if len(robot_state) < 9:
+                robot_state = robot_state + [0.0] * (9 - len(robot_state))
+            robot_tensor = torch.tensor(robot_state, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+            # Normalize using linear normalization: (angle - 180) / 180, mapping [0,360] to [-1,1]
+            robot_tensor = (robot_tensor - 180.0) / 180.0
+        else:  # cartesian mode
+            # Ensure there are 7 values (pad with zeros if necessary)
+            if len(robot_state) < 7:
+                robot_state = robot_state + [0.0] * (7 - len(robot_state))
+            robot_tensor = torch.tensor(robot_state, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+            
+            # Normalize cartesian pose using the same method as in dataset.py
+            # Position (XYZ): first 3 values normalized by 1.0
+            robot_tensor[..., :3] = robot_tensor[..., :3] / 1.0
+            
+            # Orientation (XYZ): next 3 values normalized by dividing by pi
+            robot_tensor[..., 3:6] = robot_tensor[..., 3:6] / np.pi
+            
+            # Gripper: last value normalized by min-max scaling
+            gripper_min, gripper_max = -6.0, 7020.0
+            robot_tensor[..., 6] = 2.0 * (robot_tensor[..., 6] - gripper_min) / (gripper_max - gripper_min) - 1.0
+            
         return robot_tensor
     except Exception as e:
         print(f"Error in robot state preprocessing: {e}")
         return None
+
+def get_robot_state_with_retry(arm, control_mode='joint', max_retries=3, wait_time=0.1):
+    """Attempt to get robot state with retry logic in case of transient errors."""
+    for attempt in range(max_retries):
+        if control_mode == 'joint':
+            state = arm.get_joint_angles()
+        else:  # cartesian mode
+            state = arm.get_cartesian_position()
+        if state is not None:
+            return state
+        print(f"Warning: Failed to get robot state on attempt {attempt+1}/{max_retries}, retrying...")
+        time.sleep(wait_time)
+    return None
 
 def parse_args_file(args_file_path):
     """Parse the args.txt file to extract hyperparameters"""
@@ -207,7 +246,7 @@ def get_policy_class(experiment_dir):
                 "obs_shape": {
                     "pixels": (3, 128, 128),
                     "pixels_egocentric": (3, 128, 128),
-                    "proprioceptive": (9,)
+                    "proprioceptive": (7,)
                 },
                 "act_dim": 7,
                 "policy_head": args_config.get("policy_head", "deterministic"),
@@ -217,10 +256,9 @@ def get_policy_class(experiment_dir):
                 "max_episode_len": 1000,
                 "use_proprio": True,
                 "n_layer": args_config.get("n_layer", 4),
-                "use_mpi": args_config.get("use_mpi",False),
-                "mpi_root_dir": "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints"
+                "use_mpi": args_config.get("use_mpi", False),
+                "mpi_root_dir": os.path.join(os.path.expanduser("~"), "Documents/GitHub/FYP-kitchen-assistive-robot/models/networks/utils/MPI/mpi/checkpoints/mpi-small")
             }
-            
             # Add additional parameters if present in args.txt
             if "repr_dim" in args_config:
                 config["repr_dim"] = args_config["repr_dim"]
@@ -244,7 +282,7 @@ def get_policy_class(experiment_dir):
             "obs_shape": {
                 "pixels": (3, 128, 128),
                 "pixels_egocentric": (3, 128, 128),
-                "proprioceptive": (9,)
+                "proprioceptive": (7,)
             },
             "act_dim": 7,
             "policy_head": "deterministic",
@@ -282,8 +320,11 @@ def main():
     parser.add_argument("--agent-view-cam", type=int, help="Camera ID to use for agent view")
     parser.add_argument("--ego-view-cam", type=int, help="Camera ID to use for egocentric view")
     parser.add_argument("--base-dir", type=str, default="kinova_experiments", help="Base directory for experiment directories")
+    parser.add_argument("--control-mode", type=str, choices=['joint', 'cartesian'], default='cartesian',
+                        help="Control mode (joint or cartesian)")
     args = parser.parse_args()
     device = args.device
+    control_mode = args.control_mode
 
     # Initialize variables to None for cleanup
     cameras = None
@@ -348,8 +389,8 @@ def main():
 
         # Initialize robot controller (which connects and initializes the Kinova arm)
         try:
-            robot_controller = RobotController(debug_mode=False, enable_controller=False)
-            if not robot_controller.initialize_devices():
+            robot_controller = RobotController(debug_mode=False, enable_controller=False, control_mode=control_mode)
+            if not robot_controller.initialize_devices(move_home=False):
                 print("Error initializing robot controller")
                 return
             # Send zero velocity command after initialization
@@ -394,14 +435,14 @@ def main():
             agentview_tensor = image_tensor_dict[AGENT_VIEW_CAM]
             egocentric_tensor = image_tensor_dict[EGO_VIEW_CAM]
 
-            # Get robot joint angles from the arm using retry logic
-            joint_angles = get_joint_angles_with_retry(robot_controller.arm, max_retries=3, wait_time=0.1)
-            if joint_angles is None:
+            # Get robot state from the arm using retry logic
+            robot_state = get_robot_state_with_retry(robot_controller.arm, control_mode=control_mode, max_retries=3, wait_time=0.1)
+            if robot_state is None:
                 print("Failed to get robot state after retries. Skipping iteration.")
                 time.sleep(0.03333)
                 continue
 
-            robot_state_tensor = preprocess_robot_state(joint_angles, device)
+            robot_state_tensor = preprocess_robot_state(robot_state, control_mode=control_mode, device=device)
             if robot_state_tensor is None:
                 print("Robot state preprocessing failed. Skipping iteration.")
                 time.sleep(0.03333)
@@ -411,7 +452,7 @@ def main():
             data = {
                 "pixels": agentview_tensor,             # Expected shape: (1, 1, 3, 128, 128)
                 "pixels_egocentric": egocentric_tensor,   # Expected shape: (1, 1, 3, 128, 128)
-                "proprioceptive": robot_state_tensor,     # Expected shape: (1, 1, 9)
+                "proprioceptive": robot_state_tensor,     # Expected shape: (1, 1, 9) for joint mode or (1, 1, 7) for cartesian mode
                 "task_emb": task_emb
             }
 
@@ -451,8 +492,8 @@ def main():
 
             try:
                 # Try to move to home position before closing
-                print("Moving to home position...")
-                robot_controller.arm.move_home()
+                # print("Moving to home position...")
+                # robot_controller.arm.move_home()
                 time.sleep(2.0)  # Give some time for home movement
             except Exception as e:
                 print(f"Error moving to home: {e}")
