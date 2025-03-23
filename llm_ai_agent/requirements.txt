@@ -1,0 +1,23 @@
+# Core libraries
+langchain==0.1.12
+langchain-openai==0.0.2
+langchain-community>=0.0.28
+pydantic==2.5.2
+python-dotenv==1.0.0
+
+# LLM providers
+openai==1.13.3
+
+# Optional API tools
+requests==2.31.0
+# duckduckgo-search==4.1.1
+# wikipedia==1.4.0
+# beautifulsoup4==4.12.2
+
+# Hardware control (adjust as needed for your specific hardware)
+# opencv-python==4.8.0.76
+# Pillow==10.1.0
+
+# For development
+pytest==7.4.3
+pytest-mock==3.12.0 
