@@ -10,6 +10,7 @@ import re
 import json
 import logging
 import importlib
+import time
 from typing import Dict, Any, List, Optional, Callable, Union
 
 # Import necessary modules
@@ -122,10 +123,21 @@ class ConfigurableAgent:
         # Get hardware requirements from configuration
         hardware_required = self.config.get('hardware_required', False)
         
+        # Get hardware component configurations
+        hardware_config = self.config.get('hardware', {})
+        enable_camera = hardware_config.get('enable_camera', True)
+        enable_speaker = hardware_config.get('enable_speaker', True)
+        enable_arm = hardware_config.get('enable_arm', True)
+        
         # Set up hardware if required and available
         if hardware_required and HARDWARE_AVAILABLE and self._use_hardware:
             try:
-                self.hardware = HardwareTools(use_mock=not self._use_hardware)
+                self.hardware = HardwareTools(
+                    use_mock=not self._use_hardware,
+                    enable_camera=enable_camera,
+                    enable_speaker=enable_speaker,
+                    enable_arm=enable_arm
+                )
                 logger.info("Hardware tools initialized successfully")
             except Exception as e:
                 logger.error(f"Error initializing hardware tools: {e}")
@@ -134,7 +146,10 @@ class ConfigurableAgent:
         
         # Log hardware configuration
         if hardware_required and HARDWARE_AVAILABLE and self._use_hardware:
-            logger.info("Hardware enabled (using real hardware)")
+            logger.info("Hardware enabled with configuration:")
+            logger.info(f"  - Camera: {'enabled' if enable_camera else 'disabled'}")
+            logger.info(f"  - Speaker: {'enabled' if enable_speaker else 'disabled'}")
+            logger.info(f"  - Robotic Arm: {'enabled' if enable_arm else 'disabled'}")
         else:
             logger.info("Hardware disabled (using mock implementations or unavailable)")
         
@@ -195,25 +210,30 @@ class ConfigurableAgent:
         # Load hardware tools if hardware is available
         if self.hardware:
             try:
-                # Add camera tools
-                self._available_tools["capture_environment"] = self.hardware.camera_tools.capture_environment
-                self._available_tools["capture_wrist"] = self.hardware.camera_tools.capture_wrist
-                self._available_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
+                # Add camera tools if camera is enabled
+                if self.hardware.camera_tools:
+                    self._available_tools["capture_environment"] = self.hardware.camera_tools.capture_environment
+                    self._available_tools["capture_wrist"] = self.hardware.camera_tools.capture_wrist
+                    self._available_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
+                    logger.info("Loaded camera tools")
                 
-                # Add speaker tools
-                self._available_tools["speak"] = self.hardware.speaker_tools.speak
-                self._available_tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
-                self._available_tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
+                # Add speaker tools if speaker is enabled
+                if self.hardware.speaker_tools:
+                    self._available_tools["speak"] = self.hardware.speaker_tools.speak
+                    self._available_tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
+                    self._available_tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
+                    logger.info("Loaded speaker tools")
                 
-                # Add robotic arm tools
-                self._available_tools["move_home"] = self.hardware.arm_tools.move_home
-                self._available_tools["move_position"] = self.hardware.arm_tools.move_position
-                self._available_tools["grasp"] = self.hardware.arm_tools.grasp
-                self._available_tools["release"] = self.hardware.arm_tools.release
-                self._available_tools["get_position"] = self.hardware.arm_tools.get_position
-                self._available_tools["move_default"] = self.hardware.arm_tools.move_default
+                # Add robotic arm tools if arm is enabled
+                if self.hardware.arm_tools:
+                    self._available_tools["move_home"] = self.hardware.arm_tools.move_home
+                    self._available_tools["move_position"] = self.hardware.arm_tools.move_position
+                    self._available_tools["grasp"] = self.hardware.arm_tools.grasp
+                    self._available_tools["release"] = self.hardware.arm_tools.release
+                    self._available_tools["get_position"] = self.hardware.arm_tools.get_position
+                    self._available_tools["move_default"] = self.hardware.arm_tools.move_default
+                    logger.info("Loaded robotic arm tools")
                 
-                logger.info("Loaded hardware tools")
             except Exception as e:
                 logger.error(f"Error loading hardware tools: {e}")
         
@@ -338,121 +358,322 @@ class ConfigurableAgent:
             logger.error(f"Error parsing response: {e}")
             return {"response": response}
     
-    def _execute_tool(self, tool_name: str, tool_input: str) -> str:
+    def _execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
         """
-        Execute a tool with the given input.
+        Execute a tool with the given parameters.
         
         Args:
             tool_name: Name of the tool to execute
-            tool_input: Input for the tool
+            parameters: Parameters for the tool
             
         Returns:
             Result of the tool execution
         """
         if tool_name not in self._available_tools:
-            return f"Error: Tool '{tool_name}' not found. Available tools: {', '.join(self._available_tools.keys())}"
+            return {"error": f"Tool '{tool_name}' not found"}
         
         try:
+            # Get the tool function
             tool_func = self._available_tools[tool_name]
-            result = tool_func(tool_input)
+            
+            # Handle parameter name mapping for specific tools
+            if tool_name == "calculator":
+                # Map 'expression' to 'input_str'
+                if "expression" in parameters and "input_str" not in parameters:
+                    parameters = {"input_str": parameters.get("expression")}
+            
+            # NOTE: No mapping for text_processor - it already expects 'text' parameter
+            
+            # Execute the tool with parameters
+            result = tool_func(**parameters)
+            
+            # Return the result
             return result
         except Exception as e:
-            return f"Error executing tool {tool_name}: {str(e)}"
+            logger.error(f"Error executing tool '{tool_name}': {e}")
+            return {"error": f"Error executing tool: {str(e)}"}
     
-    def process(
-        self, 
-        user_input: str, 
-        chat_history: Optional[List[Dict[str, str]]] = None,
-        max_iterations: int = 5
-    ) -> Dict[str, Any]:
+    def process(self, user_input: str, history=None) -> Dict[str, Any]:
         """
-        Process a user input and return the agent's response.
+        Process user input and generate a response.
         
         Args:
-            user_input: The user's question or command
-            chat_history: Optional list of previous conversation messages
-            max_iterations: Maximum number of tool execution iterations
+            user_input: The user's input text
+            history: Optional conversation history
             
         Returns:
-            The agent's response as a dictionary
+            Dictionary containing the response and any additional data
         """
+        if history is None:
+            history = []
+        
+        # Ensure history is in the right format
+        _history = self._format_history(history)
+        
+        # Track the conversation for this particular exchange
+        conversation = []
+        
+        # Add the user input to the conversation
+        conversation.append({"role": "user", "content": user_input})
+        
+        # Construct the initial prompt with system message and available tools
+        messages = self._construct_prompt(_history + conversation)
+        
         try:
-            if chat_history is None:
-                chat_history = []
+            # Get the initial response from the language model
+            initial_response = self.llm.invoke(messages)
             
-            # Initialize messages list for the conversation
-            messages = [
-                {"role": "system", "content": self._system_prompt}
-            ]
+            # Extract structured response (thought, reply, tool_calls)
+            structured_response = self._extract_structured_response(initial_response.content)
             
-            # Add chat history
-            for message in chat_history:
-                messages.append(message)
+            # Log the structured response
+            if self._verbose:
+                logger.info(f"Initial structured response: {json.dumps(structured_response, indent=2)}")
             
-            # Add the user's input
-            messages.append({"role": "user", "content": user_input})
-            
-            # Initialize variables for the tool execution loop
-            iterations = 0
-            final_response = None
-            
-            # Execute tools and continue the conversation until we get a final response
-            while iterations < max_iterations and final_response is None:
-                # Get response from LLM
-                if self.verbose:
-                    logger.info(f"Iteration {iterations+1}: Requesting response from LLM")
+            # Check if there are tool calls
+            if structured_response.get("tool_calls", []):
+                tool_results = []
                 
-                llm_response = self.llm.invoke(messages)
-                llm_content = llm_response.content
-                
-                if self.verbose:
-                    logger.info(f"LLM response: {llm_content}")
-                
-                # Parse the response
-                parsed_response = self._parse_response(llm_content)
-                
-                # Add the assistant's message to the conversation
-                messages.append({"role": "assistant", "content": llm_content})
-                
-                # Check if we need to execute a tool
-                if "action" in parsed_response and "action_input" in parsed_response:
-                    tool_name = parsed_response["action"]
-                    tool_input = parsed_response["action_input"]
+                # Process each tool call
+                for tool_call in structured_response["tool_calls"]:
+                    tool_name = tool_call.get("tool_name")
+                    parameters = tool_call.get("parameters", {})
                     
-                    if self.verbose:
-                        logger.info(f"Executing tool: {tool_name} with input: {tool_input}")
+                    # Generate a unique call ID
+                    call_id = f"{tool_name}_{int(time.time())}"
                     
                     # Execute the tool
-                    tool_result = self._execute_tool(tool_name, tool_input)
+                    tool_result = self._execute_tool(tool_name, parameters)
                     
-                    if self.verbose:
-                        logger.info(f"Tool result: {tool_result}")
+                    # Format the tool response
+                    tool_response = {
+                        "call_id": call_id,
+                        "tool_name": tool_name,
+                        "data": tool_result
+                    }
                     
-                    # Add the tool result to the conversation
-                    messages.append({"role": "user", "content": f"Tool result: {tool_result}\n\nContinue with your analysis or provide a final response."})
+                    tool_results.append(tool_response)
                     
-                    iterations += 1
-                else:
-                    # If no tool execution is needed, we have our final response
-                    final_response = parsed_response.get("response", llm_content)
-                    if self.verbose:
-                        logger.info(f"Final response: {final_response}")
-            
-            # If we've hit the maximum number of iterations without a final response,
-            # ask the LLM for a final response
-            if final_response is None:
-                messages.append({"role": "user", "content": "You've used the maximum number of tool calls. Please provide your final response to the user."})
-                llm_response = self.llm.invoke(messages)
-                final_response = llm_response.content
-            
-            return {
-                "output": final_response,
-                "chat_history": messages[1:]  # Exclude the system prompt
-            }
-            
+                    if self._verbose:
+                        logger.info(f"Tool response: {json.dumps(tool_response, indent=2)}")
+                
+                # Add the initial response to conversation
+                conversation.append({
+                    "role": "assistant", 
+                    "content": json.dumps(structured_response)
+                })
+                
+                # Add the tool responses to conversation
+                tool_response_message = {
+                    "role": "system", 
+                    "content": json.dumps({
+                        "tool_responses": tool_results,
+                        "instructions": "Please analyze these tool results and provide a helpful response to the user. Make sure to include relevant information from the tool results. Even if there was an error with the tool, provide the best response you can."
+                    })
+                }
+                conversation.append(tool_response_message)
+                
+                # Get the final response after processing tool results
+                final_messages = self._construct_prompt(_history + conversation)
+                final_response = self.llm.invoke(final_messages)
+                
+                # Extract the final structured response
+                final_structured = self._extract_structured_response(final_response.content)
+                
+                # If the final structured response is empty or doesn't have a reply, create a fallback
+                if not final_structured.get("reply"):
+                    # Create a fallback response that includes tool information
+                    has_errors = any("error" in result.get("data", {}) if isinstance(result.get("data"), dict) else False 
+                                    for result in tool_results)
+                    
+                    if has_errors:
+                        final_structured["reply"] = "I encountered an error when trying to use the tool. " + \
+                                                   "Please check your request and try again."
+                    else:
+                        # Create a response that includes the tool results
+                        tool_data = []
+                        for result in tool_results:
+                            data = result.get("data", "No data")
+                            tool_name = result.get("tool_name", "tool")
+                            tool_data.append(f"Result from {tool_name}: {data}")
+                        
+                        final_structured["reply"] = "Here are the results: " + " ".join(tool_data)
+                
+                # Add the final response to conversation for history
+                conversation.append({
+                    "role": "assistant", 
+                    "content": json.dumps(final_structured)
+                })
+                
+                # Return the final structured response
+                return {
+                    "output": final_structured.get("reply", ""),
+                    "thought": final_structured.get("thought", ""),
+                    "tool_calls": structured_response.get("tool_calls", []),
+                    "tool_results": tool_results,
+                    "final_response": final_structured
+                }
+            else:
+                # No tool calls, return the initial response
+                conversation.append({
+                    "role": "assistant", 
+                    "content": json.dumps(structured_response)
+                })
+                
+                return {
+                    "output": structured_response.get("reply", ""),
+                    "thought": structured_response.get("thought", ""),
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "final_response": structured_response
+                }
+        
         except Exception as e:
             logger.error(f"Error processing input: {e}")
-            return {"output": f"Error: {str(e)}"}
+            return {"output": f"I encountered an error: {str(e)}"}
+    
+    def _extract_structured_response(self, response_text: str) -> Dict[str, Any]:
+        """
+        Extract a structured response from the LLM output.
+        Attempts to parse JSON, falls back to generating structured format if not valid JSON.
+        
+        Args:
+            response_text: Raw text response from the LLM
+            
+        Returns:
+            Dictionary with thought, reply, and tool_calls
+        """
+        # First check if the response contains a code block with JSON
+        code_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
+        if code_block_match:
+            # If we found a code block, try to parse its contents as JSON
+            json_str = code_block_match.group(1)
+            try:
+                parsed_json = json.loads(json_str)
+                # Ensure the JSON has the expected structure
+                if isinstance(parsed_json, dict):
+                    # Make sure all required fields exist
+                    parsed_json["thought"] = parsed_json.get("thought", "")
+                    parsed_json["reply"] = parsed_json.get("reply", "")
+                    parsed_json["tool_calls"] = parsed_json.get("tool_calls", [])
+                    return parsed_json
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                if self._verbose:
+                    logger.warning(f"Failed to parse JSON from code block: {e}")
+        
+        # If code block extraction failed, try to parse the whole response as JSON
+        try:
+            # Try to parse as JSON first
+            response_json = json.loads(response_text)
+            
+            # Check if it has the expected keys
+            if isinstance(response_json, dict) and ("thought" in response_json or "reply" in response_json):
+                # Ensure all expected keys exist
+                response_json["thought"] = response_json.get("thought", "")
+                response_json["reply"] = response_json.get("reply", "")
+                response_json["tool_calls"] = response_json.get("tool_calls", [])
+                return response_json
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        
+        # If not valid JSON or doesn't have the right format, extract manually
+        
+        # Look for tool call patterns using regex
+        tool_calls = []
+        tool_pattern = r"Tool:\s*(\w+)\s*\(([^)]*)\)"
+        for match in re.finditer(tool_pattern, response_text):
+            tool_name = match.group(1)
+            params_text = match.group(2)
+            
+            # Parse parameters (simple key=value format)
+            params = {}
+            for param in params_text.split(','):
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    params[key.strip()] = value.strip()
+            
+            tool_calls.append({
+                "tool_name": tool_name,
+                "parameters": params
+            })
+        
+        # Split text into thought and reply
+        if "Thought:" in response_text and "Reply:" in response_text:
+            thought_match = re.search(r"Thought:(.*?)(?=Reply:|$)", response_text, re.DOTALL)
+            reply_match = re.search(r"Reply:(.*?)(?=Tool:|$)", response_text, re.DOTALL)
+            
+            thought = thought_match.group(1).strip() if thought_match else ""
+            reply = reply_match.group(1).strip() if reply_match else response_text
+        else:
+            # No explicit thought/reply structure, treat whole text as reply
+            thought = ""
+            reply = response_text
+        
+        return {
+            "thought": thought,
+            "reply": reply,
+            "tool_calls": tool_calls
+        }
+    
+    def _construct_prompt(self, conversation: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Construct a prompt for the language model.
+        
+        Args:
+            conversation: The conversation history
+            
+        Returns:
+            A list of messages for the language model
+        """
+        messages = []
+        
+        # Add system message with structured response format instructions
+        system_message = f"""{self._system_prompt}
+
+To use tools, respond in the following JSON format:
+{{
+  "thought": "Your reasoning process (not shown to the user)",
+  "reply": "Your response to the user",
+  "tool_calls": [
+    {{
+      "tool_name": "ToolName",
+      "parameters": {{
+        "param1": "value1",
+        "param2": "value2"
+      }}
+    }}
+  ]
+}}
+
+Available tools:
+"""
+        
+        # Add available tools to the system message with explicit parameter information
+        system_message += """- calculator: Calculate the result of a mathematical expression [Parameters: input_str]
+  Example: {"tool_name": "calculator", "parameters": {"input_str": "125 * 37"}}
+
+- text_processor: Process text by counting words, characters, and performing other text operations [Parameters: text] 
+  Example: {"tool_name": "text_processor", "parameters": {"text": "The quick brown fox jumps over the lazy dog"}}
+
+- echo: Simply echoes back the input text [Parameters: text]
+  Example: {"tool_name": "echo", "parameters": {"text": "Hello world"}}
+"""
+        
+        # Add additional instructions for final responses
+        system_message += """
+When tool results are provided, analyze them and provide a final response in the same JSON format.
+Make your final responses comprehensive and include information from the tool results.
+
+IMPORTANT: Use the EXACT parameter names specified above for each tool.
+"""
+        
+        messages.append({"role": "system", "content": system_message})
+        
+        # Add conversation history
+        for message in conversation:
+            messages.append(message)
+        
+        return messages
     
     def process_to_string(
         self, 
@@ -471,7 +692,7 @@ class ConfigurableAgent:
         Returns:
             The agent's response as a string
         """
-        response = self.process(user_input, chat_history, max_iterations)
+        response = self.process(user_input, chat_history)
         
         # Extract the output string from the response
         if isinstance(response, dict) and "output" in response:
@@ -498,6 +719,30 @@ class ConfigurableAgent:
                 logger.info("Hardware connections closed")
             except Exception as e:
                 logger.error(f"Error closing hardware connections: {e}")
+    
+    def _format_history(self, history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """
+        Format conversation history into the required format.
+        
+        Args:
+            history: Raw conversation history
+            
+        Returns:
+            Formatted conversation history
+        """
+        formatted_history = []
+        
+        for message in history:
+            role = message.get("role", "")
+            content = message.get("content", "")
+            
+            if role in ["user", "assistant", "system"]:
+                formatted_history.append({"role": role, "content": content})
+            else:
+                # Default unknown roles to user
+                formatted_history.append({"role": "user", "content": content})
+        
+        return formatted_history
 
 
 # Example usage
