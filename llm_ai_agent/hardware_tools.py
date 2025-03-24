@@ -260,12 +260,40 @@ class CameraTools:
             self.use_mock = True
             self.cameras = MockMultiCameraInterface(width=self.width, height=self.height, fps=self.fps)
     
+    def _encode_image_to_base64(self, frame):
+        """
+        Encode a frame as a base64 string for LLM processing.
+        
+        Args:
+            frame: The image frame (numpy array)
+            
+        Returns:
+            A base64-encoded data URI
+        """
+        try:
+            # Convert the frame to a PIL Image
+            pil_img = Image.fromarray(frame)
+            
+            # Save the image to a bytes buffer
+            img_byte_arr = io.BytesIO()
+            pil_img.save(img_byte_arr, format='JPEG')
+            img_byte_arr.seek(0)
+            
+            # Get the bytes and encode as base64
+            encoded_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+            
+            # Format as a data URI
+            return f"data:image/jpeg;base64,{encoded_image}"
+        except Exception as e:
+            logger.error(f"Error encoding image: {e}")
+            return None
+    
     def capture_environment(self) -> str:
         """
-        Capture an image from the environment camera.
+        Capture an image from the environment camera and return as base64-encoded data URI.
         
         Returns:
-            A string describing what was seen or an error message
+            A base64-encoded image data URI or an error message
         """
         if not self.cameras:
             return "Error: Cameras not initialized"
@@ -275,10 +303,15 @@ class CameraTools:
             if self.env_camera_id in frames:
                 success, frame = frames[self.env_camera_id]
                 if success:
-                    # For now, just return a simple description of the image
-                    # In a real implementation, this could use computer vision models
-                    height, width = frame.shape[:2]
-                    return f"Captured image from environment camera ({width}x{height}). To analyze this image, use the analyze_image tool."
+                    # Encode the frame as base64
+                    encoded_image = self._encode_image_to_base64(frame)
+                    if encoded_image:
+                        # Return the encoded image with dimensions
+                        height, width = frame.shape[:2]
+                        return {
+                            "image": encoded_image,
+                            "description": f"Environment camera image ({width}x{height})"
+                        }
             
             return "Failed to capture image from environment camera"
             
@@ -288,10 +321,10 @@ class CameraTools:
     
     def capture_wrist(self) -> str:
         """
-        Capture an image from the wrist-mounted camera.
+        Capture an image from the wrist-mounted camera and return as base64-encoded data URI.
         
         Returns:
-            A string describing what was seen or an error message
+            A base64-encoded image data URI or an error message
         """
         if not self.cameras:
             return "Error: Cameras not initialized"
@@ -304,9 +337,15 @@ class CameraTools:
             if self.wrist_camera_id in frames:
                 success, frame = frames[self.wrist_camera_id]
                 if success:
-                    # For now, just return a simple description of the image
-                    height, width = frame.shape[:2]
-                    return f"Captured image from wrist camera ({width}x{height}). To analyze this image, use the analyze_image tool."
+                    # Encode the frame as base64
+                    encoded_image = self._encode_image_to_base64(frame)
+                    if encoded_image:
+                        # Return the encoded image with dimensions
+                        height, width = frame.shape[:2]
+                        return {
+                            "image": encoded_image,
+                            "description": f"Wrist camera image ({width}x{height})"
+                        }
             
             return "Failed to capture image from wrist camera"
             
@@ -314,42 +353,53 @@ class CameraTools:
             logger.error(f"Error capturing from wrist camera: {e}")
             return f"Error capturing image: {str(e)}"
     
-    def analyze_image(self, camera_name: str) -> str:
+    def capture_both(self) -> str:
         """
-        Analyze the most recently captured image from the specified camera.
+        Capture images from both environment and wrist cameras simultaneously.
         
-        Args:
-            camera_name: The camera to analyze ('environment' or 'wrist')
-            
         Returns:
-            A description of what was detected in the image
+            Dictionary containing both camera images as base64-encoded data URIs
         """
         if not self.cameras:
             return "Error: Cameras not initialized"
         
-        camera_id = self.env_camera_id if camera_name.lower() == 'environment' else self.wrist_camera_id
-        
-        if camera_id is None:
-            return f"Error: {camera_name} camera not available"
-        
         try:
             frames = self.cameras.capture_frames()
-            if camera_id in frames:
-                success, frame = frames[camera_id]
-                if success:
-                    # In a real implementation, this would use computer vision models
-                    # For now, return a placeholder analysis
-                    if self.use_mock:
-                        return f"Analysis of {camera_name} camera image: Mock scene detected with simple gray background."
-                    else:
-                        average_color = frame.mean(axis=0).mean(axis=0)
-                        return f"Analysis of {camera_name} camera image: Average color RGB: ({average_color[0]:.1f}, {average_color[1]:.1f}, {average_color[2]:.1f})"
+            result = {"environment": None, "wrist": None}
             
-            return f"Failed to analyze image from {camera_name} camera"
+            # Process environment camera
+            if self.env_camera_id in frames:
+                success, frame = frames[self.env_camera_id]
+                if success:
+                    encoded_image = self._encode_image_to_base64(frame)
+                    if encoded_image:
+                        height, width = frame.shape[:2]
+                        result["environment"] = {
+                            "image": encoded_image,
+                            "description": f"Environment camera image ({width}x{height})"
+                        }
+            
+            # Process wrist camera
+            if self.wrist_camera_id in frames and self.wrist_camera_id is not None:
+                success, frame = frames[self.wrist_camera_id]
+                if success:
+                    encoded_image = self._encode_image_to_base64(frame)
+                    if encoded_image:
+                        height, width = frame.shape[:2]
+                        result["wrist"] = {
+                            "image": encoded_image,
+                            "description": f"Wrist camera image ({width}x{height})"
+                        }
+            
+            # Check if we got at least one camera
+            if result["environment"] is None and result["wrist"] is None:
+                return "Failed to capture images from any camera"
+                
+            return result
             
         except Exception as e:
-            logger.error(f"Error analyzing image: {e}")
-            return f"Error analyzing image: {str(e)}"
+            logger.error(f"Error capturing from cameras: {e}")
+            return f"Error capturing images: {str(e)}"
     
     def close(self):
         """Close all camera connections."""
@@ -745,15 +795,16 @@ class RoboticArmTools:
         
         try:
             self.arm.move_home()
+            time.sleep(5)
             # Note: we don't wait for completion as per requirements
-            return "Command sent: Moving to home position"
+            return "Successfully moved to home position"
                 
         except Exception as e:
             logger.error(f"Error moving to home position: {e}")
             return f"Error moving to home position: {str(e)}"
     
     def move_position(self, x: float, y: float, z: float, 
-                     theta_x: float = None, theta_y: float = None, theta_z: float = None) -> str:
+                     theta_x: float = None, theta_y: float = None, theta_z: float = None,gripper: float = None) -> str:
         """
         Move the arm to a specific cartesian position.
         
@@ -780,6 +831,8 @@ class RoboticArmTools:
                 theta_y = current_pos[4]
             if theta_z is None:
                 theta_z = current_pos[5]
+            if gripper is None:
+                gripper = current_pos[6]
             
             # Send the position command
             position = (float(x), float(y), float(z))
@@ -788,12 +841,12 @@ class RoboticArmTools:
             self.arm.send_cartesian_position(
                 position=position,
                 rotation=rotation,
-                fingers=(0.0, 0.0, 0.0),  # Default to open fingers
+                fingers=(float(gripper), float(gripper), float(gripper)),  # Default to open fingers
                 duration=5.0  # Reasonable duration for movement
             )
             
             # Note: we don't wait for completion as per requirements
-            return f"Command sent: Moving to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z})"
+            return f"Successfully moved to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z})"
                 
         except Exception as e:
             logger.error(f"Error moving to position: {e}")
@@ -815,26 +868,14 @@ class RoboticArmTools:
         try:
             # Validate and scale the strength parameter
             strength = max(0.0, min(strength, 1.0))
-            finger_position = strength * 6000.0  # Scale to finger position range (0-6000)
+            finger_velocity = strength * 3000.0  # Scale to finger position range (0-6000)
             
             # Get current position
-            current_pos = self.arm.get_cartesian_position()
-            if not current_pos:
-                return "Error: Could not get current position"
+            self.arm.send_cartesian_velocity([0,0,0,0,0,0],fingers=(finger_velocity,finger_velocity,finger_velocity),hand_mode=1,duration=2.0)
+            #TODO: update the duration based the arm speed
+            time.sleep(2)
             
-            # Maintain the same position, just change finger positions
-            position = (current_pos[0], current_pos[1], current_pos[2])
-            rotation = (current_pos[3], current_pos[4], current_pos[5])
-            
-            self.arm.send_cartesian_position(
-                position=position,
-                rotation=rotation,
-                fingers=(finger_position, finger_position, finger_position),
-                duration=2.0  # Shorter duration for gripper action
-            )
-            
-            # Note: we don't wait for completion as per requirements
-            return f"Command sent: Grasping with strength {strength:.2f}"
+            return f"Successfully grasped with strength {strength:.2f}"
                 
         except Exception as e:
             logger.error(f"Error grasping: {e}")
@@ -851,24 +892,9 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            # Get current position
-            current_pos = self.arm.get_cartesian_position()
-            if not current_pos:
-                return "Error: Could not get current position"
-            
-            # Maintain the same position, just open fingers
-            position = (current_pos[0], current_pos[1], current_pos[2])
-            rotation = (current_pos[3], current_pos[4], current_pos[5])
-            
-            self.arm.send_cartesian_position(
-                position=position,
-                rotation=rotation,
-                fingers=(0.0, 0.0, 0.0),  # Fully open
-                duration=2.0  # Shorter duration for gripper action
-            )
-            
-            # Note: we don't wait for completion as per requirements
-            return "Command sent: Releasing gripper"
+            self.arm.send_cartesian_velocity([0,0,0,0,0,0],fingers=(-3000,-3000,-3000),hand_mode=1,duration=2.0)
+            time.sleep(2)
+            return "Successfully released"
                 
         except Exception as e:
             logger.error(f"Error releasing: {e}")
@@ -933,29 +959,61 @@ class RoboticArmTools:
 class HardwareTools:
     """Management class for all hardware tools."""
     
-    def __init__(self, use_mock=not HARDWARE_AVAILABLE, camera_width=320, camera_height=240, camera_fps=30):
+    def __init__(self, use_mock=not HARDWARE_AVAILABLE, 
+                 enable_camera=True, 
+                 enable_speaker=True, 
+                 enable_arm=True,
+                 camera_width=320, 
+                 camera_height=240, 
+                 camera_fps=30):
         """
         Initialize all hardware tools.
         
         Args:
             use_mock: Whether to use mock interfaces (for testing without hardware)
+            enable_camera: Whether to enable camera tools
+            enable_speaker: Whether to enable speaker tools
+            enable_arm: Whether to enable robotic arm tools
             camera_width: Width resolution for cameras (default: 320)
             camera_height: Height resolution for cameras (default: 240)
             camera_fps: Frames per second for cameras (default: 30)
         """
         self.use_mock = use_mock
-        self.camera_tools = CameraTools(use_mock=use_mock, width=camera_width, height=camera_height, fps=camera_fps)
-        self.speaker_tools = SpeakerTools(use_mock=use_mock)
-        self.arm_tools = RoboticArmTools(use_mock=use_mock)
         
-        logger.info(f"Hardware tools initialized (using {'mock' if use_mock else 'real'} interfaces)")
-        logger.info(f"Camera resolution set to {camera_width}x{camera_height} @ {camera_fps}fps")
+        # Initialize each hardware component only if enabled
+        if enable_camera:
+            self.camera_tools = CameraTools(use_mock=use_mock, width=camera_width, height=camera_height, fps=camera_fps)
+            logger.info(f"Camera tools initialized (using {'mock' if use_mock else 'real'} interfaces)")
+            logger.info(f"Camera resolution set to {camera_width}x{camera_height} @ {camera_fps}fps")
+        else:
+            self.camera_tools = None
+            logger.info("Camera tools disabled")
+        
+        if enable_speaker:
+            self.speaker_tools = SpeakerTools(use_mock=use_mock)
+            logger.info(f"Speaker tools initialized (using {'mock' if use_mock else 'real'} interfaces)")
+        else:
+            self.speaker_tools = None
+            logger.info("Speaker tools disabled")
+        
+        if enable_arm:
+            self.arm_tools = RoboticArmTools(use_mock=use_mock)
+            logger.info(f"Robotic arm tools initialized (using {'mock' if use_mock else 'real'} interfaces)")
+        else:
+            self.arm_tools = None
+            logger.info("Robotic arm tools disabled")
     
     def close(self):
         """Close all hardware connections."""
-        self.camera_tools.close()
-        self.speaker_tools.close()
-        self.arm_tools.close()
+        if self.camera_tools:
+            self.camera_tools.close()
+        
+        if self.speaker_tools:
+            self.speaker_tools.close()
+        
+        if self.arm_tools:
+            self.arm_tools.close()
+            
         logger.info("All hardware connections closed")
 
 
@@ -970,7 +1028,7 @@ def main():
         print("\n=== Testing Camera Tools ===")
         print(hardware.camera_tools.capture_environment())
         print(hardware.camera_tools.capture_wrist())
-        print(hardware.camera_tools.analyze_image("environment"))
+        print(hardware.camera_tools.capture_both())
         
         # Test speaker tools
         print("\n=== Testing Speaker Tools ===")
