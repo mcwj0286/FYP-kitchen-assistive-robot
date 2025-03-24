@@ -1,0 +1,29 @@
+categories:
+  basic:
+    description: "Basic utility tools for common tasks"
+    tools:
+      - calculator
+      - text_processor
+      - echo
+
+tool_prompts:
+  calculator:
+    description: "Calculate the result of a mathematical expression"
+    parameters:
+      - name: input_str
+        description: "Mathematical expression as a string"
+    example: '{"tool_name": "calculator", "parameters": {"input_str": "125 * 37"}}'
+  
+  text_processor:
+    description: "Process text by counting words, characters, and performing other text operations"
+    parameters:
+      - name: text
+        description: "The text to process"
+    example: '{"tool_name": "text_processor", "parameters": {"text": "The quick brown fox jumps over the lazy dog"}}'
+  
+  echo:
+    description: "Simply echoes back the input text"
+    parameters:
+      - name: text
+        description: "The text to echo"
+    example: '{"tool_name": "echo", "parameters": {"text": "Hello world"}}' 

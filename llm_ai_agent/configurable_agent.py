@@ -105,6 +105,7 @@ class ConfigurableAgent:
         self.llm = None
         self.hardware = None
         self._available_tools = {}
+        self._tool_prompts = {}
         self._system_prompt = ""
         
         # Set up the agent based on configuration
@@ -195,6 +196,7 @@ class ConfigurableAgent:
     def _load_tools(self):
         """Load tools based on configuration."""
         self._available_tools = {}
+        self._tool_prompts = {}
         
         # Import standard tools
         try:
@@ -247,6 +249,9 @@ class ConfigurableAgent:
             includes = tool_config.get('include', [])
             excludes = tool_config.get('exclude', [])
             
+            # Load tool prompts from tool configuration files
+            self._load_tool_prompts()
+            
             # Here we would process categories to include/exclude tools
             # For now, we'll just log the configuration
             if categories:
@@ -262,6 +267,43 @@ class ConfigurableAgent:
                         logger.info(f"Excluded tool: {tool_name}")
             
         logger.info(f"Loaded {len(self._available_tools)} tools: {', '.join(self._available_tools.keys())}")
+    
+    def _load_tool_prompts(self):
+        """Load tool prompts from configuration files."""
+        try:
+            # Get the tool configuration directory
+            config_path = self.config_loader.config_dir
+            tools_config_dir = os.path.join(config_path, 'tools')
+            
+            # Check if the directory exists
+            if not os.path.isdir(tools_config_dir):
+                logger.warning(f"Tool configuration directory not found: {tools_config_dir}")
+                return
+            
+            # Import yaml
+            import yaml
+            
+            # Load all tool configuration files
+            for filename in os.listdir(tools_config_dir):
+                if filename.endswith('.yaml') or filename.endswith('.yml'):
+                    file_path = os.path.join(tools_config_dir, filename)
+                    
+                    try:
+                        with open(file_path, 'r') as f:
+                            tool_config = yaml.safe_load(f)
+                            
+                            # Check if the file contains tool prompts
+                            if 'tool_prompts' in tool_config:
+                                # Load tool prompts
+                                for tool_name, prompt_info in tool_config['tool_prompts'].items():
+                                    self._tool_prompts[tool_name] = prompt_info
+                                    
+                                logger.info(f"Loaded tool prompts from {filename}")
+                    except Exception as e:
+                        logger.error(f"Error loading tool configuration from {filename}: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error loading tool prompts: {e}")
     
     def _format_tools_for_prompt(self) -> str:
         """
@@ -444,7 +486,9 @@ class ConfigurableAgent:
                     
                     # Execute the tool
                     tool_result = self._execute_tool(tool_name, parameters)
-                    
+                    image_data_uri = None
+                    if isinstance(tool_result, dict) and "image" in tool_result:
+                        image_data_uri = tool_result.pop("image")
                     # Format the tool response
                     tool_response = {
                         "call_id": call_id,
@@ -464,12 +508,17 @@ class ConfigurableAgent:
                 })
                 
                 # Add the tool responses to conversation
+                tool_response_content = {
+                    "tool_responses": tool_results,
+                    "instructions": "Please analyze these tool results and provide a helpful response to the user. Make sure to include relevant information from the tool results. Even if there was an error with the tool, provide the best response you can."
+                }
+                
+                if image_data_uri is not None:
+                    tool_response_content["image_url"] = image_data_uri
+                
                 tool_response_message = {
                     "role": "system", 
-                    "content": json.dumps({
-                        "tool_responses": tool_results,
-                        "instructions": "Please analyze these tool results and provide a helpful response to the user. Make sure to include relevant information from the tool results. Even if there was an error with the tool, provide the best response you can."
-                    })
+                    "content": json.dumps(tool_response_content)
                 }
                 conversation.append(tool_response_message)
                 
@@ -648,16 +697,32 @@ To use tools, respond in the following JSON format:
 Available tools:
 """
         
-        # Add available tools to the system message with explicit parameter information
-        system_message += """- calculator: Calculate the result of a mathematical expression [Parameters: input_str]
-  Example: {"tool_name": "calculator", "parameters": {"input_str": "125 * 37"}}
-
-- text_processor: Process text by counting words, characters, and performing other text operations [Parameters: text] 
-  Example: {"tool_name": "text_processor", "parameters": {"text": "The quick brown fox jumps over the lazy dog"}}
-
-- echo: Simply echoes back the input text [Parameters: text]
-  Example: {"tool_name": "echo", "parameters": {"text": "Hello world"}}
-"""
+        # Add available tools to the system message using tool prompts if available
+        for tool_name in self._available_tools.keys():
+            if tool_name in self._tool_prompts:
+                # Get tool prompt information
+                tool_prompt = self._tool_prompts[tool_name]
+                description = tool_prompt.get('description', '')
+                parameters = tool_prompt.get('parameters', [])
+                example = tool_prompt.get('example', '')
+                
+                # Format parameters
+                param_names = [param.get('name', '') for param in parameters]
+                param_str = ", ".join(param_names)
+                
+                # Add to system message
+                system_message += f"- {tool_name}: {description} [Parameters: {param_str}]\n"
+                if example:
+                    system_message += f"  Example: {example}\n"
+                system_message += "\n"
+            else:
+                # If no tool prompt is available, use basic format
+                func = self._available_tools[tool_name]
+                doc = func.__doc__ or "No description available."
+                first_line = doc.strip()
+                if "\n" in first_line:
+                    first_line = first_line[:first_line.find("\n")]
+                system_message += f"- {tool_name}: {first_line}\n"
         
         # Add additional instructions for final responses
         system_message += """

@@ -9,26 +9,17 @@ categories:
       - name: capture_environment
         description: Capture an image from the environment camera
         hardware_required: true
-        parameters:
-          - name: resolution
-            type: string
-            description: Resolution to capture (low, medium, high)
-            optional: true
-            default: medium
+        parameters: []
       
       - name: capture_wrist
         description: Capture an image from the wrist-mounted camera
         hardware_required: true
-        parameters:
-          - name: resolution
-            type: string
-            description: Resolution to capture (low, medium, high)
-            optional: true
-            default: medium
+        parameters: []
       
-      - name: analyze_image
-        description: Analyze the most recently captured image
-        hardware_required: false
+      - name: capture_both
+        description: Capture images from both environment and wrist cameras
+        hardware_required: true
+        parameters: []
   
   # Speaker tools for user communication
   speaker:
@@ -114,3 +105,84 @@ categories:
         description: Move the arm to a default position suitable for kitchen tasks
         hardware_required: true
         parameters: [] 
+
+# Tool prompts for LLM system prompts
+tool_prompts:
+  # Camera tools
+  capture_environment:
+    description: "Capture an image from the environment camera"
+    parameters: []
+    example: '{"tool_name": "capture_environment", "parameters": {}}'
+  
+  capture_wrist:
+    description: "Capture an image from the wrist-mounted camera"
+    parameters: []
+    example: '{"tool_name": "capture_wrist", "parameters": {}}'
+  
+  capture_both:
+    description: "Capture images from both environment and wrist cameras"
+    parameters: []
+    example: '{"tool_name": "capture_both", "parameters": {}}'
+  
+  # Speaker tools
+  speak:
+    description: "Convert text to speech"
+    parameters:
+      - name: text
+        description: "Text to speak"
+    example: '{"tool_name": "speak", "parameters": {"text": "Hello, how can I help you with your cooking today?"}}'
+  
+  is_speaking:
+    description: "Check if the speaker is currently active"
+    parameters: []
+    example: '{"tool_name": "is_speaking", "parameters": {}}'
+  
+  stop_speaking:
+    description: "Stop any current speech or audio playback"
+    parameters: []
+    example: '{"tool_name": "stop_speaking", "parameters": {}}'
+  
+  # Robotic arm tools
+  move_home:
+    description: "Move the arm to the home position"
+    parameters: []
+    example: '{"tool_name": "move_home", "parameters": {}}'
+  
+  move_position:
+    description: "Move the arm to a specific Cartesian position"
+    parameters:
+      - name: x
+        description: "X-coordinate (mm)"
+      - name: y
+        description: "Y-coordinate (mm)"
+      - name: z
+        description: "Z-coordinate (mm)"
+      - name: roll
+        description: "Roll angle (degrees)"
+      - name: pitch
+        description: "Pitch angle (degrees)"
+      - name: yaw
+        description: "Yaw angle (degrees)"
+    example: '{"tool_name": "move_position", "parameters": {"x": 250, "y": 300, "z": 200, "roll": 0, "pitch": 45, "yaw": 0}}'
+  
+  grasp:
+    description: "Close the gripper to grasp an object"
+    parameters:
+      - name: strength
+        description: "Gripping strength (0.0-1.0)"
+    example: '{"tool_name": "grasp", "parameters": {"strength": 0.7}}'
+  
+  release:
+    description: "Open the gripper to release an object"
+    parameters: []
+    example: '{"tool_name": "release", "parameters": {}}'
+  
+  get_position:
+    description: "Get the current position of the robotic arm"
+    parameters: []
+    example: '{"tool_name": "get_position", "parameters": {}}'
+  
+  move_default:
+    description: "Move the arm to a default position suitable for kitchen tasks"
+    parameters: []
+    example: '{"tool_name": "move_default", "parameters": {}}' 
