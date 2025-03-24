@@ -10,6 +10,14 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+# Import hardware tools
+try:
+    from hardware_tools import HardwareTools, CameraTools, SpeakerTools, RoboticArmTools
+    HARDWARE_AVAILABLE = True
+except ImportError:
+    HARDWARE_AVAILABLE = False
+    logging.warning("Hardware tools module not found. Hardware capabilities will not be available.")
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -84,7 +92,8 @@ class BaseAgent(abc.ABC):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        use_hardware: bool = HARDWARE_AVAILABLE
     ):
         """
         Initialize the base agent with LLM settings.
@@ -95,6 +104,7 @@ class BaseAgent(abc.ABC):
             api_base: Base URL for API calls
             system_prompt: System prompt for the agent
             verbose: Whether to display detailed processing information
+            use_hardware: Whether to use hardware tools if available
         """
         # Set up the language model
         self.llm = ChatOpenAI(
@@ -108,6 +118,19 @@ class BaseAgent(abc.ABC):
         )
         
         self.verbose = verbose
+        self.use_hardware = use_hardware
+        
+        # Initialize hardware tools if available and requested
+        self.hardware = None
+        if self.use_hardware and HARDWARE_AVAILABLE:
+            try:
+                self.hardware = HardwareTools(use_mock=not HARDWARE_AVAILABLE)
+                logger.info("Hardware tools initialized successfully")
+            except Exception as e:
+                logger.error(f"Error initializing hardware tools: {e}")
+                self.hardware = None
+                self.use_hardware = False
+        
         # Initialize available tools first
         self._available_tools = self._get_available_tools()
         # Then initialize system prompt using those tools
@@ -370,6 +393,17 @@ Think carefully about when to use tools versus when to respond directly.
         elif isinstance(response, str):
             return response
         return "Unable to generate a response."
+    
+    def __del__(self):
+        """
+        Clean up hardware resources when the agent is deleted.
+        """
+        if self.hardware:
+            try:
+                self.hardware.close()
+                logger.info("Hardware connections closed")
+            except Exception as e:
+                logger.error(f"Error closing hardware connections: {e}")
 
 
 class KitchenAssistantAgent(BaseAgent):
@@ -383,7 +417,8 @@ class KitchenAssistantAgent(BaseAgent):
         model_name: Optional[str] = None, 
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        use_hardware: bool = HARDWARE_AVAILABLE
     ):
         """
         Initialize the kitchen assistant agent.
@@ -393,6 +428,7 @@ class KitchenAssistantAgent(BaseAgent):
             api_key: API key for the LLM provider
             api_base: Base URL for API calls
             verbose: Whether to display detailed processing information
+            use_hardware: Whether to use hardware tools if available
         """
         # Kitchen-specific system prompt will be generated in the parent class
         # using the kitchen-specific tools
@@ -401,20 +437,22 @@ class KitchenAssistantAgent(BaseAgent):
             api_key=api_key,
             api_base=api_base,
             system_prompt=None,  # Will be generated based on tools
-            verbose=verbose
+            verbose=verbose,
+            use_hardware=use_hardware
         )
         
         # After initialization, update the system prompt with kitchen-specific context
-        kitchen_context = """You are a helpful kitchen assistant AI that will eventually control physical hardware devices.
+        kitchen_context = """You are a helpful kitchen assistant AI that controls physical hardware devices.
 
-Currently, you have access to basic tools, but in future versions, you will have access to:
-- Robot arm control
-- Camera systems
-- Voice output
-- Action planning capabilities
+You have access to the following hardware capabilities:
+- Robot arm for manipulating objects in the kitchen
+- Cameras for observing the environment and objects
+- Speaker for communicating through voice
 
-Please use your available tools appropriately to help the user with kitchen-related tasks.
+Use your available tools appropriately to help the user with kitchen-related tasks.
 Always think step by step when handling complex cooking instructions or recipes.
+When using hardware tools, remember that robot commands are sent without waiting for completion.
+If a task requires sequential robot movements, pause between commands by explaining steps to the user.
 """
         
         # Combine the tool information with the kitchen context
@@ -457,6 +495,28 @@ Think carefully about when to use tools versus when to respond directly.
         # Add kitchen-specific tools
         tools["echo"] = echo_tool
         
+        # Add hardware tools if available
+        if self.use_hardware and self.hardware:
+            # Camera tools
+            tools["capture_environment"] = self.hardware.camera_tools.capture_environment
+            tools["capture_wrist"] = self.hardware.camera_tools.capture_wrist
+            tools["analyze_image"] = self.hardware.camera_tools.analyze_image
+            
+            # Speaker tools
+            tools["speak"] = self.hardware.speaker_tools.speak
+            tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
+            tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
+            
+            # Robotic arm tools
+            tools["move_home"] = self.hardware.arm_tools.move_home
+            tools["move_position"] = self.hardware.arm_tools.move_position
+            tools["grasp"] = self.hardware.arm_tools.grasp
+            tools["release"] = self.hardware.arm_tools.release
+            tools["get_position"] = self.hardware.arm_tools.get_position
+            tools["move_default"] = self.hardware.arm_tools.move_default
+            
+            logger.info(f"Added {len(tools) - 2} hardware tools to the Kitchen Assistant Agent")
+        
         return tools
 
 
@@ -473,3 +533,9 @@ if __name__ == "__main__":
     print("=== Kitchen Agent Test ===")
     response = kitchen_agent.process_to_string("Can you analyze this recipe: 2 cups flour, 1 cup sugar, 3 eggs?")
     print(f"Response: {response}")
+    
+    # Test hardware tools if available
+    if HARDWARE_AVAILABLE:
+        print("\n=== Hardware Tools Test ===")
+        response = kitchen_agent.process_to_string("Can you check what the robot arm is seeing?")
+        print(f"Response: {response}")

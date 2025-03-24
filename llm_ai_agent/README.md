@@ -79,6 +79,52 @@ This ReAct (Reasoning + Acting) pattern provides:
 - Structured output that's easy to parse
 - Compatibility with models that don't support function calling
 
+## Hardware Integration
+
+The Kitchen Assistant Agent integrates with the following hardware components:
+
+### Camera System
+- Environment camera: Provides a view of the overall kitchen environment
+- Wrist camera: Mounted on the robot arm for detailed views of objects being manipulated
+- Image analysis capabilities for basic scene understanding
+
+### Speaker System
+- Cross-platform text-to-speech functionality to communicate with users
+- Automatic platform detection (macOS, Linux, Windows)
+- Dynamic TTS command selection based on available tools
+- Asynchronous speech processing with proper process management
+- Audio playback capabilities for alerts and notifications
+
+### Robotic Arm (Kinova)
+- Cartesian movement capabilities in 3D space
+- Angular control of joints
+- Gripper control for grasping objects
+- Position sensing and monitoring
+
+All hardware interactions are implemented as tools that can be called by the agent, with built-in fallback to mock implementations when hardware is not available or for testing.
+
+## Cross-Platform Support
+
+The system has been designed to work across different operating systems:
+
+### Development Environment (macOS)
+- Uses native `say` command for text-to-speech
+- Uses `afplay` for audio file playback
+- Automatic detection of available commands
+
+### Deployment Environment (Linux)
+- Dynamically selects available TTS engines:
+  - `espeak`: Lightweight speech synthesizer
+  - `festival`: More advanced, higher quality speech
+  - `pico2wave`: High-quality multilingual TTS
+- Uses `aplay` or `play` for audio file playback
+- Graceful fallback to mock implementation if no TTS engines are available
+
+### Testing Tools
+- Comprehensive cross-platform test script (`test_cross_platform_speech.py`)
+- Platform detection and command availability reporting
+- Independent component testing
+
 ## Progress
 
 - [x] Project setup
@@ -87,10 +133,63 @@ This ReAct (Reasoning + Acting) pattern provides:
 - [x] KitchenAssistantAgent implementation
 - [x] Interactive testing interface
 - [x] Structured output approach implementation
-- [ ] Hardware tool integration
+- [x] Hardware tool integration
+  - [x] Camera interface
+  - [x] Speaker interface
+    - [x] Cross-platform speech implementation (macOS/Linux)
+    - [x] Platform-aware TTS engine selection
+  - [x] Robotic arm interface
 - [ ] Action planning integration
 - [ ] Advanced features
 - [ ] Complete test suite
+
+## Deployment Preparation
+
+### Linux Environment Setup
+
+To prepare a Linux system for deployment, follow these steps:
+
+1. **Install Required Dependencies:**
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get update
+   sudo apt-get install -y python3-pip python3-dev
+
+   # Install text-to-speech engines (at least one is required)
+   sudo apt-get install -y espeak        # Lightweight option
+   # OR
+   sudo apt-get install -y festival      # More natural sounding
+   # OR
+   sudo apt-get install -y libttspico-utils # High quality multilingual
+
+   # Install audio playback
+   sudo apt-get install -y alsa-utils    # For aplay
+   # OR
+   sudo apt-get install -y sox           # For play command
+   ```
+
+2. **Install Python Requirements:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Test the Speech Functionality:**
+   ```bash
+   # Check which TTS engines are available
+   python llm_ai_agent/test_cross_platform_speech.py --info
+   
+   # Test the speech interface
+   python llm_ai_agent/test_cross_platform_speech.py
+   ```
+
+4. **Verify Other Hardware Components:**
+   ```bash
+   # Test camera interfaces if available
+   python llm_ai_agent/test_hardware.py --camera
+   
+   # Test robotic arm if available
+   python llm_ai_agent/test_hardware.py --arm
+   ```
 
 ## Usage
 
@@ -129,8 +228,28 @@ class MySpecializedAgent(BaseAgent):
         return tools
 ```
 
+### Using Hardware Tools
+```python
+from base_agent import KitchenAssistantAgent
+
+# Create a kitchen assistant agent with hardware capabilities
+agent = KitchenAssistantAgent(verbose=True)
+
+# Process commands that use hardware
+response = agent.process_to_string("Can you move the robot arm to grasp the cup?")
+print(response)
+
+# The agent will automatically use hardware tools when appropriate:
+# - Camera tools: capture_environment, capture_wrist, analyze_image
+# - Speaker tools: speak, is_speaking, stop_speaking
+# - Robotic arm tools: move_home, move_position, grasp, release, get_position, move_default
+```
+
 ### Interactive Mode
 ```bash
 # Run the interactive testing script
 python interactive.py
+
+# Run with the kitchen assistant agent (has hardware capabilities)
+python interactive.py --agent kitchen
 ```
