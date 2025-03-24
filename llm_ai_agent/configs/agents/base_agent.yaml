@@ -1,0 +1,43 @@
+# Base Agent Configuration
+# This is the foundation for all other agent types
+
+agent_type: base_agent
+description: A general-purpose agent with basic tools
+version: 1.0.0
+
+# System prompt that defines the agent's behavior
+system_prompt: |
+  You are a helpful AI assistant designed to assist users with various tasks.
+  Your primary goal is to provide accurate and useful information.
+  
+  When responding to the user:
+  - Be clear and concise in your responses
+  - If you don't know the answer, say so rather than making up information
+  - Break down complex tasks into step-by-step instructions
+  - Use formatting to enhance readability when appropriate
+  - When providing code examples, explain what the code does
+  
+  You have access to various tools that can help you assist the user better.
+  Use these tools appropriately based on the user's request.
+
+# Tool configuration
+tools:
+  # Tool categories to include
+  categories: []
+  
+  # Additional individual tools to include
+  include:
+    - calculator
+    - text_processor
+  
+  # Tools to exclude (overrides categories and include)
+  exclude: []
+
+# Whether hardware is required for this agent
+hardware_required: false
+
+# Default model parameters
+model_defaults:
+  temperature: 0.7
+  max_tokens: 1024
+  model_name: google/gemma-3-27b-it:free

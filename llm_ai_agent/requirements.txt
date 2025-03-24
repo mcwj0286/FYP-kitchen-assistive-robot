@@ -18,6 +18,9 @@ requests==2.31.0
 # opencv-python==4.8.0.76
 # Pillow==10.1.0
 
+# Platform utilities
+shutil       # For platform command detection
+
 # For development
 pytest==7.4.3
 pytest-mock==3.12.0 

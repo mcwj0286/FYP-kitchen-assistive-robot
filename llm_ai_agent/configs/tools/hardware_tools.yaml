@@ -1,0 +1,116 @@
+# Hardware Tools Configuration
+# Defines tools for interacting with physical hardware
+
+categories:
+  # Camera tools for environment perception
+  camera:
+    description: Tools for environment perception
+    tools:
+      - name: capture_environment
+        description: Capture an image from the environment camera
+        hardware_required: true
+        parameters:
+          - name: resolution
+            type: string
+            description: Resolution to capture (low, medium, high)
+            optional: true
+            default: medium
+      
+      - name: capture_wrist
+        description: Capture an image from the wrist-mounted camera
+        hardware_required: true
+        parameters:
+          - name: resolution
+            type: string
+            description: Resolution to capture (low, medium, high)
+            optional: true
+            default: medium
+      
+      - name: analyze_image
+        description: Analyze the most recently captured image
+        hardware_required: false
+  
+  # Speaker tools for user communication
+  speaker:
+    description: Tools for user communication
+    tools:
+      - name: speak
+        description: Convert text to speech
+        hardware_required: true
+        parameters:
+          - name: text
+            type: string
+            description: Text to speak
+      
+      - name: is_speaking
+        description: Check if the speaker is currently active
+        hardware_required: true
+        parameters: []
+      
+      - name: stop_speaking
+        description: Stop any current speech or audio playback
+        hardware_required: true
+        parameters: []
+  
+  # Robotic arm tools for physical interaction
+  arm:
+    description: Robotic arm control tools for physical interaction
+    tools:
+      - name: move_home
+        description: Move the arm to the home position
+        hardware_required: true
+        parameters: []
+      
+      - name: move_position
+        description: Move the arm to a specific Cartesian position
+        hardware_required: true
+        parameters:
+          - name: x
+            type: float
+            description: X-coordinate (mm)
+          - name: y
+            type: float
+            description: Y-coordinate (mm)
+          - name: z
+            type: float
+            description: Z-coordinate (mm)
+          - name: roll
+            type: float
+            description: Roll angle (degrees)
+            optional: true
+            default: 0.0
+          - name: pitch
+            type: float
+            description: Pitch angle (degrees)
+            optional: true
+            default: 0.0
+          - name: yaw
+            type: float
+            description: Yaw angle (degrees)
+            optional: true
+            default: 0.0
+      
+      - name: grasp
+        description: Close the gripper to grasp an object
+        hardware_required: true
+        parameters:
+          - name: strength
+            type: float
+            description: Gripping strength (0.0-1.0)
+            optional: true
+            default: 0.5
+      
+      - name: release
+        description: Open the gripper to release an object
+        hardware_required: true
+        parameters: []
+      
+      - name: get_position
+        description: Get the current position of the robotic arm
+        hardware_required: true
+        parameters: []
+      
+      - name: move_default
+        description: Move the arm to a default position suitable for kitchen tasks
+        hardware_required: true
+        parameters: [] 

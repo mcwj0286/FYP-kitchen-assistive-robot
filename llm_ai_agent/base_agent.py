@@ -232,6 +232,11 @@ Think carefully about when to use tools versus when to respond directly.
             Parsed response as a dictionary
         """
         try:
+            # Guard against None responses
+            if response is None:
+                logger.warning("Received None response from LLM")
+                return {"response": "No response received from language model."}
+                
             # Extract JSON from the response using regex
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
             if json_match:
@@ -246,8 +251,13 @@ Think carefully about when to use tools versus when to respond directly.
                     return {"response": response}
             
             # Parse the JSON
-            parsed = json.loads(json_str)
-            return parsed
+            try:
+                parsed = json.loads(json_str)
+                return parsed
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON decode error: {e}")
+                return {"response": response}
+                
         except Exception as e:
             logger.error(f"Error parsing response: {e}")
             return {"response": response}

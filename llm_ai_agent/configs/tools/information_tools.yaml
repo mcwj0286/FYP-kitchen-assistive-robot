@@ -1,0 +1,53 @@
+# Information Tools Configuration
+# Defines tools for information processing and retrieval
+
+categories:
+  # Basic information processing tools
+  basic:
+    description: Information processing tools
+    tools:
+      - name: calculator
+        description: Calculate the result of a mathematical expression
+        hardware_required: false
+        parameters:
+          - name: input_str
+            type: string
+            description: Mathematical expression to evaluate
+      
+      - name: text_processor
+        description: Process text by counting words and characters
+        hardware_required: false
+        parameters:
+          - name: text
+            type: string
+            description: Text to process
+  
+  # Search and retrieval tools
+  search:
+    description: Information search and retrieval tools
+    tools:
+      - name: web_search
+        description: Search the web for information
+        hardware_required: false
+        parameters:
+          - name: query
+            type: string
+            description: Search query
+          - name: num_results
+            type: integer
+            description: Number of results to return
+            optional: true
+            default: 5
+      
+      - name: knowledge_base_search
+        description: Search the local knowledge base
+        hardware_required: false
+        parameters:
+          - name: query
+            type: string
+            description: Search query
+          - name: threshold
+            type: float
+            description: Similarity threshold (0.0-1.0)
+            optional: true
+            default: 0.7 
