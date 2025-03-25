@@ -17,6 +17,9 @@ As of the latest update, we have successfully implemented:
 - ✅ Automatic image capture functionality with multiple camera support
 - ✅ Multimodal vision capabilities with controlled access to camera tools
 - ✅ System prompt debugging and inspection capabilities
+- ✅ Unified hardware tools integration with environment variable control
+- ✅ Simplified configuration with streamlined tool inclusion
+- ✅ Memory access tools for retrieving action plans, positions, and item locations
 
 ## System Architecture
 
@@ -25,9 +28,10 @@ The framework follows a modular, configuration-driven architecture:
 - `agents.py`: Central module for creating and managing agents
 - `configurable_agent.py`: The main agent implementation that loads behavior from configuration
 - `config_loader.py`: Utilities for loading and processing YAML configurations
-- `tools.py`: Collection of basic tools that agents can use
+- `tools.py`: Collection of basic tools and unified hardware tools that agents can use
 - `interactive.py`: Command-line interface for interacting with agents
 - `hardware_tools.py`: Hardware interface implementations with mock fallbacks
+- `memory/`: Directory containing YAML files for stored knowledge about the environment
 
 ### Key Design Principles
 
@@ -38,6 +42,8 @@ The framework follows a modular, configuration-driven architecture:
 5. **Robust Error Handling**: Graceful handling of LLM response failures
 6. **Controlled Hardware Access**: Camera capture managed via configuration rather than direct tool calls
 7. **Multimodal Capabilities**: Support for text and image inputs to the LLM
+8. **Environment Variable Control**: Hardware components can be selectively enabled/disabled
+9. **Persistent Memory**: Structured storage of environmental knowledge and action procedures
 
 ## Quick Start
 
@@ -68,6 +74,14 @@ vision_agent = create_agent(
 # Process a vision query (image is automatically captured and included)
 response = vision_agent.process_to_string("What objects do you see in front of me?")
 print(response)
+
+# Use memory tools with the kitchen assistant
+kitchen_agent = create_agent(agent_type="kitchen_assistant")
+response = kitchen_agent.process_to_string("Where is the coffee located?")
+print(response)  # Will access memory to find coffee location
+
+response = kitchen_agent.process_to_string("Do you have any action plans for opening a jar?")
+print(response)  # Will retrieve action plans from memory
 ```
 
 ## Interactive Mode
@@ -87,6 +101,24 @@ python -m llm_ai_agent.interactive --agent vision_agent --capture-image environm
 # List available agent configurations
 python -m llm_ai_agent.interactive --list-configs
 ```
+
+## Environment Variables
+
+You can control hardware components using environment variables (in a `.env` file):
+
+```bash
+# Hardware component configuration
+ENABLE_CAMERA=true    # Enable/disable camera tools
+ENABLE_SPEAKER=true   # Enable/disable speaker tools
+ENABLE_ARM=false      # Enable/disable robotic arm tools
+
+# OpenRouter API configuration
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=anthropic/claude-3-opus-20240229
+```
+
+This allows you to selectively enable only the hardware components you need or have available.
 
 ## Creating New Agent Types
 
@@ -110,17 +142,13 @@ system_prompt: |
 
 # Tool configuration
 tools:
-  categories:
-    - information_tools.basic
   include:
     - calculator
     - text_processor
-  exclude: []
-
-# Model configuration
-model_defaults:
-  temperature: 0.3
-  max_tokens: 2048
+    - speak
+    - capture
+    - get_action_plans
+    - get_item_locations
 ```
 
 ## Extending with New Tools
@@ -165,6 +193,47 @@ agent = create_agent(agent_type="kitchen_assistant", use_hardware=True)
 agent = create_agent(agent_type="kitchen_assistant", use_hardware=False)
 ```
 
+You can also control hardware via environment variables in your `.env` file:
+
+```
+ENABLE_CAMERA=true
+ENABLE_SPEAKER=true
+ENABLE_ARM=false
+```
+
+## Memory System
+
+The framework includes tools for accessing structured memory stored in YAML files:
+
+```python
+from llm_ai_agent.tools import get_action_plans, get_action_positions, get_item_locations
+
+# Get all predefined action plans
+plans = get_action_plans()
+print(plans)  # Displays all available action sequences
+
+# Get stored robot arm positions
+positions = get_action_positions()
+print(positions)  # Displays coordinates for specific actions
+
+# Get known item locations in the environment
+items = get_item_locations()
+print(items)  # Displays coordinates of known objects
+```
+
+Memory is organized into three primary categories:
+
+1. **Action Plans** (`memory/action_plan.yaml`): Step-by-step procedures for completing tasks
+2. **Action Positions** (`memory/action_position.yaml`): Stored coordinates for specific robot actions
+3. **Item Locations** (`memory/item_location.yaml`): Coordinates of known objects in the environment
+
+Agents can access this memory to:
+- Retrieve predefined sequences for common tasks like opening jars
+- Access specific arm positions for tasks
+- Locate known items in the environment
+
+Memory tools are automatically integrated into agents that include them in their tool configuration.
+
 ## Vision Capabilities
 
 The framework now supports automatic image capture with each request through the `capture_image` setting:
@@ -201,13 +270,22 @@ Currently implemented configurations:
 - `base_agent.yaml`: A general-purpose agent with basic tools
 - `kitchen_assistant.yaml`: A specialized agent for kitchen assistance with hardware control
 - `vision_agent.yaml`: A vision-enabled agent with camera capabilities
+- `memory_tools.yaml`: Tool configurations for memory access capabilities
 
-Tool categories include:
-- `hardware_tools.camera`: Tools for environment perception (now controlled via configuration)
-- `hardware_tools.speaker`: Tools for user communication
-- `hardware_tools.arm`: Tools for robotic arm control
-- `information_tools.basic`: Basic information processing tools
-- `information_tools.search`: Information search and retrieval tools
+Tool configuration has been simplified - now you just need to include the tools you want to use:
+
+```yaml
+tools:
+  include:
+    - calculator
+    - text_processor
+    - speak
+    - capture
+    - move_home
+    - get_action_plans
+    - get_action_positions
+    - get_item_locations
+```
 
 ## LLM Response Handling
 
@@ -230,3 +308,4 @@ Planned enhancements include:
 - [ ] Better multi-step task planning and execution
 - [ ] Enhanced personalization options
 - [ ] Integration with external APIs for broader knowledge
+- [ ] Memory update capabilities to modify stored knowledge

@@ -1,0 +1,13 @@
+open_jar_assistance:
+  goal: "Open a jar for the user"
+  steps:
+    - step_num: 1
+      description: "Move to open jar position"
+    - step_num: 2
+      description: "Announce user to put the jar on the gripper"
+    - step_num: 3
+      description: "Wait for user to put the jar on the gripper"
+    - step_num: 4
+      description: "Close the gripper"
+    - step_num: 5
+      description: "Roll left to open the jar"

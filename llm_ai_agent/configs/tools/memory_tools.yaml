@@ -1,0 +1,65 @@
+# Memory Tools Configuration
+# This file defines tool prompts for the memory-related tools
+
+tool_prompts:
+  get_action_plans:
+    name: get_action_plans
+    description: "Retrieve all robot action plans stored in memory. These are predefined step-by-step procedures for completing specific tasks like opening jars or manipulating objects."
+    parameters: []
+    example: "To get all action plans: get_action_plans()"
+    result_example: |
+      Available Action Plans:
+      
+      Plan: open_jar_assistance
+      Goal: Open a jar for the user
+      Steps:
+        1. Move to open jar position
+        2. Announce user to put the jar on the gripper
+        3. Wait for user to put the jar on the gripper
+        4. Close the gripper
+        5. Roll left to open the jar
+
+  get_action_positions:
+    name: get_action_positions
+    description: "Retrieve all stored robot arm positions from memory. These are predefined cartesian coordinates for specific robot actions and tasks."
+    parameters: []
+    example: "To get all stored positions: get_action_positions()"
+    result_example: |
+      Available Action Positions:
+      
+      Action: open_jar_position
+      Cartesian position: ['0.2795', '-0.1953', '0.3392', '-3.0256', '0.3381', '-1.3524', '2544.0000']
+
+  get_item_locations:
+    name: get_item_locations
+    description: "Retrieve the locations of all known items in the kitchen environment. This tool provides the stored coordinates of objects that the robot knows about."
+    parameters: []
+    example: "To get all known item locations: get_item_locations()"
+    result_example: |
+      Known Item Locations:
+      
+      Item: plant
+      Coordinates: [0.25, 0.22, 0.08]
+      
+      Item: coffee
+      Coordinates: [0.2, 0.12, 0.08]
+      
+      Item: wine
+      Coordinates: [0.17, 0.13, 0.03]
+
+# Usage guide for memory tools
+memory_tools_guide: |
+  Memory tools provide access to stored information about the robot's environment and capabilities.
+  
+  When to use memory tools:
+  - Use get_action_plans() when you need to know what predefined procedures the robot can perform
+  - Use get_action_positions() when you need coordinates for specific robot actions
+  - Use get_item_locations() when you need to know where items are in the environment
+  
+  Memory tools work without parameters and return the complete contents of their respective memory files.
+  These tools are useful for planning tasks that involve known items or following predefined procedures.
+  
+  Example usage:
+  1. When a user asks "What can you help me with in the kitchen?", use get_action_plans() to see available procedures
+  2. When a user asks "Where is the coffee?", use get_item_locations() to find the coordinates
+  3. When you need to move to a specific position, use get_action_positions() to find the right coordinates 

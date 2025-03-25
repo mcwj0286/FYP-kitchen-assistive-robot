@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 import os
 import sys
+import yaml
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -115,6 +116,136 @@ def echo_tool(text: str) -> str:
     """
     return f"Echo: {text}"
 
+# Memory access tools
+
+def get_memory_path() -> str:
+    """Helper function to get the path to the memory directory."""
+    # Get the current file's directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # The memory directory is a subdirectory of the current directory
+    memory_dir = os.path.join(current_dir, "memory")
+    return memory_dir
+
+def get_action_plans() -> str:
+    """
+    Retrieve all action plans stored in memory.
+    
+    This tool provides access to predefined robot action sequences, including
+    step-by-step procedures for tasks like opening jars or retrieving items.
+    
+    Returns:
+        A formatted string containing all available action plans
+    """
+    try:
+        memory_dir = get_memory_path()
+        action_plans_file = os.path.join(memory_dir, "action_plan.yaml")
+        
+        if not os.path.exists(action_plans_file):
+            return "Error: Action plans file not found in memory directory."
+        
+        with open(action_plans_file, 'r') as file:
+            action_plans = yaml.safe_load(file)
+        
+        if not action_plans:
+            return "No action plans found in memory."
+        
+        # Format the output for readability
+        result = "Available Action Plans:\n\n"
+        for plan_name, plan_details in action_plans.items():
+            result += f"Plan: {plan_name}\n"
+            result += f"Goal: {plan_details.get('goal', 'No goal specified')}\n"
+            
+            steps = plan_details.get('steps', [])
+            if steps:
+                result += "Steps:\n"
+                for step in steps:
+                    step_num = step.get('step_num', '?')
+                    description = step.get('description', 'No description')
+                    result += f"  {step_num}. {description}\n"
+            else:
+                result += "No steps defined for this plan.\n"
+            
+            result += "\n"
+        
+        return result
+    except yaml.YAMLError as e:
+        return f"Error parsing action plans YAML: {e}"
+    except Exception as e:
+        return f"Error retrieving action plans: {e}"
+
+def get_action_positions() -> str:
+    """
+    Retrieve all stored robot arm positions from memory.
+    
+    This tool provides access to predefined robot arm coordinates for specific actions,
+    such as positions for grasping objects or performing tasks.
+    
+    Returns:
+        A formatted string containing all stored action positions
+    """
+    try:
+        memory_dir = get_memory_path()
+        positions_file = os.path.join(memory_dir, "action_position.yaml")
+        
+        if not os.path.exists(positions_file):
+            return "Error: Action positions file not found in memory directory."
+        
+        with open(positions_file, 'r') as file:
+            positions = yaml.safe_load(file)
+        
+        if not positions:
+            return "No action positions found in memory."
+        
+        # Format the output for readability
+        result = "Available Action Positions:\n\n"
+        for action_name, coordinates in positions.items():
+            result += f"Action: {action_name}\n"
+            result += f"Cartesian position: {coordinates}\n\n"
+        
+        return result
+    except yaml.YAMLError as e:
+        return f"Error parsing action positions YAML: {e}"
+    except Exception as e:
+        return f"Error retrieving action positions: {e}"
+
+def get_item_locations() -> str:
+    """
+    Retrieve the locations of all known items in the environment.
+    
+    This tool provides access to the stored coordinates of items that the
+    robot knows about, such as objects on tables or in the workspace.
+    
+    Returns:
+        A formatted string containing all known item locations
+    """
+    try:
+        memory_dir = get_memory_path()
+        locations_file = os.path.join(memory_dir, "item_location.yaml")
+        
+        if not os.path.exists(locations_file):
+            return "Error: Item locations file not found in memory directory."
+        
+        with open(locations_file, 'r') as file:
+            locations_data = yaml.safe_load(file)
+        
+        if not locations_data or 'items' not in locations_data:
+            return "No item locations found in memory."
+        
+        items = locations_data.get('items', {})
+        
+        # Format the output for readability
+        result = "Known Item Locations:\n\n"
+        for item_name, item_data in items.items():
+            result += f"Item: {item_name}\n"
+            coordinates = item_data.get('coordinates', 'Unknown')
+            result += f"Coordinates: {coordinates}\n\n"
+        
+        return result
+    except yaml.YAMLError as e:
+        return f"Error parsing item locations YAML: {e}"
+    except Exception as e:
+        return f"Error retrieving item locations: {e}"
+
 # Add more tools as needed
 
 # Initialize hardware tools
@@ -173,6 +304,9 @@ TOOLS = {
     "calculator": calculator_tool,
     "text_processor": text_processor,
     "echo": echo_tool,
+    "get_action_plans": get_action_plans,
+    "get_action_positions": get_action_positions,
+    "get_item_locations": get_item_locations,
 }
 
 # Add hardware tools to TOOLS dictionary
@@ -214,6 +348,16 @@ if __name__ == "__main__":
     print("Calculator: ", calculator_tool("2 + 2 * 3"))
     print("Text Processor: ", text_processor("This is a test. This is only a test."))
     print("Echo: ", echo_tool("Hello, world!"))
+    
+    # Test memory tools
+    print("\nAction Plans:")
+    print(get_action_plans())
+    
+    print("\nAction Positions:")
+    print(get_action_positions())
+    
+    print("\nItem Locations:")
+    print(get_item_locations())
     
     # Print all available tools
     print("\nAvailable tools:")
