@@ -123,7 +123,12 @@ class AgentConfigLoader:
                             file_prefix = os.path.splitext(filename)[0]
                             qualified_name = f"{file_prefix}.{category_name}"
                             tool_configs[qualified_name] = category_config
-                        
+                            
+                            # Also add a simplified name for backward compatibility 
+                            # and easier configuration (only if it doesn't already exist)
+                            if category_name not in tool_configs:
+                                tool_configs[category_name] = category_config
+                            
                         logger.debug(f"Loaded tool categories from: {filename}")
                     else:
                         logger.warning(f"No categories found in tool configuration: {file_path}")
@@ -273,25 +278,42 @@ class AgentConfigLoader:
         tools_config = config.get('tools', {})
         
         # Tools explicitly included
-        included_tools = set(tools_config.get('include', []))
+        included_tools = set(tools_config.get('include', []) or [])
         
         # Tools from categories
         category_tools = set()
-        for category in tools_config.get('categories', []):
+        for category in tools_config.get('categories', []) or []:
+            # First try the exact category name
             if category in self.tool_configs:
-                tools = self.tool_configs[category].get('tools', [])
-                for tool in tools:
-                    tool_name = tool.get('name')
-                    if tool_name:
-                        category_tools.add(tool_name)
+                category_config = self.tool_configs[category]
             else:
-                logger.warning(f"Tool category not found: {category}")
+                # If not found, try alternative formats (with or without prefix)
+                found = False
+                
+                # Try to find a category with this name as a suffix
+                for key in self.tool_configs.keys():
+                    if key.endswith(f".{category}"):
+                        category_config = self.tool_configs[key]
+                        found = True
+                        logger.debug(f"Resolved category '{category}' to '{key}'")
+                        break
+                
+                if not found:
+                    logger.warning(f"Tool category not found: {category}")
+                    continue
+            
+            # Extract tools from the category
+            tools = category_config.get('tools', [])
+            for tool in tools:
+                tool_name = tool.get('name')
+                if tool_name:
+                    category_tools.add(tool_name)
         
         # Combine included and category tools
         all_tools = included_tools.union(category_tools)
         
         # Remove excluded tools
-        excluded_tools = set(tools_config.get('exclude', []))
+        excluded_tools = set(tools_config.get('exclude', []) or [])
         final_tools = all_tools - excluded_tools
         
         return sorted(list(final_tools))

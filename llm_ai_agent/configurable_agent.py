@@ -12,7 +12,10 @@ import logging
 import importlib
 import time
 from typing import Dict, Any, List, Optional, Callable, Union
+from dotenv import load_dotenv
 
+load_dotenv()
+DEBUG = os.getenv("DEBUG", "false") == "true"
 # Import necessary modules
 from llm_ai_agent.config_loader import AgentConfigLoader
 
@@ -220,89 +223,37 @@ class ConfigurableAgent:
         self._available_tools = {}
         self._tool_prompts = {}
         
-        # Define a list of camera capture tools that should never be available to the LLM
-        # We want these tools to be used only through the capture_image parameter
-        # This ensures that all image capture goes through the predefined agent configuration
-        # rather than allowing the LLM to call these tools directly
-        CAMERA_CAPTURE_TOOLS = ["capture_environment", "capture_wrist", "capture_both"]
-        
-        # Import standard tools
+        # Import all tools from unified tools module
         try:
             from llm_ai_agent.tools import get_all_tools
             
-            # Add basic tools that should always be available
-            self._available_tools.update(get_all_tools())
+            # Get all available tools
+            all_tools = get_all_tools()
             
-            logger.info("Loaded basic tools")
+            logger.info("Loaded all tools from unified tools module")
         except ImportError as e:
-            logger.warning(f"Could not import basic tools: {e}")
-        
-        # Load hardware tools if hardware is available
-        if self.hardware:
-            try:
-                # Add camera tools if camera is enabled, but exclude direct capture tools
-                if self.hardware.camera_tools:
-                    # Only add analyze_image, not the capture tools
-                    self._available_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
-                    logger.info("Loaded camera analysis tools (capture tools excluded)")
-                
-                # Add speaker tools if speaker is enabled
-                if self.hardware.speaker_tools:
-                    self._available_tools["speak"] = self.hardware.speaker_tools.speak
-                    self._available_tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
-                    self._available_tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
-                    logger.info("Loaded speaker tools")
-                
-                # Add robotic arm tools if arm is enabled
-                if self.hardware.arm_tools:
-                    self._available_tools["move_home"] = self.hardware.arm_tools.move_home
-                    self._available_tools["move_position"] = self.hardware.arm_tools.move_position
-                    self._available_tools["grasp"] = self.hardware.arm_tools.grasp
-                    self._available_tools["release"] = self.hardware.arm_tools.release
-                    self._available_tools["get_position"] = self.hardware.arm_tools.get_position
-                    self._available_tools["move_default"] = self.hardware.arm_tools.move_default
-                    logger.info("Loaded robotic arm tools")
-                
-            except Exception as e:
-                logger.error(f"Error loading hardware tools: {e}")
+            logger.warning(f"Could not import tools: {e}")
+            all_tools = {}
         
         # Load tools from configuration
         tool_config = self.config.get('tools', {})
         if tool_config:
             logger.info("Processing tool configuration")
             
-            # Process tool inclusions/exclusions based on configuration
-            categories = tool_config.get('categories', [])
+            # Get the include list from the configuration
             includes = tool_config.get('include', [])
-            excludes = tool_config.get('exclude', [])
-            
-            # Add camera capture tools to the excludes list
-            for tool_name in CAMERA_CAPTURE_TOOLS:
-                if tool_name not in excludes:
-                    excludes.append(tool_name)
             
             # Load tool prompts from tool configuration files
             self._load_tool_prompts()
             
-            # Here we would process categories to include/exclude tools
-            # For now, we'll just log the configuration
-            if categories:
-                logger.info(f"Tool categories: {categories}")
-            if includes:
-                logger.info(f"Tools to include: {includes}")
-            
-            logger.info(f"Tools to exclude: {excludes}")
-            # Remove excluded tools
-            for tool_name in excludes:
-                if tool_name in self._available_tools:
-                    del self._available_tools[tool_name]
-                    logger.info(f"Excluded tool: {tool_name}")
-        
-        # Final check to ensure camera capture tools are never available
-        for tool_name in CAMERA_CAPTURE_TOOLS:
-            if tool_name in self._available_tools:
-                del self._available_tools[tool_name]
-                logger.info(f"Forcibly excluded camera capture tool: {tool_name}")
+            # Filter available tools to only include those in the include list
+            for tool_name, tool_func in all_tools.items():
+                if tool_name in includes:
+                    self._available_tools[tool_name] = tool_func
+                    logger.info(f"Added tool from configuration: {tool_name}")
+        else:
+            # If no tool configuration is provided, don't add any tools
+            logger.warning("No tool configuration found")
         
         logger.info(f"Loaded {len(self._available_tools)} tools: {', '.join(self._available_tools.keys())}")
     
@@ -600,17 +551,19 @@ class ConfigurableAgent:
         
         try:
             # Print the input to the first API call
-            print("\n=======================first api call========")
-            print(json.dumps(messages, indent=2))
-            print("==========================================\n")
+            if DEBUG:
+                print("\n=======================first api call========")
+                print(json.dumps(messages, indent=2))
+                print("==========================================\n")
             
             # Get the initial response from the language model
             initial_response = self.llm.invoke(messages)
             
             # Print the response from the first API call
-            print("\n=======================first api response========")
-            print(initial_response.content)
-            print("==========================================\n")
+            if DEBUG:
+                print("\n=======================first api response========")
+                print(initial_response.content)
+                print("==========================================\n")
             
             # Extract structured response (thought, reply, tool_calls)
             structured_response = self._extract_structured_response(initial_response.content)
@@ -708,16 +661,20 @@ class ConfigurableAgent:
                 final_messages = self._construct_prompt(user_messages)
                 
                 # Print the input to the second API call
-                print("\n=======================second api call========")
-                print(json.dumps(final_messages, indent=2))
-                print("==========================================\n")
+                if DEBUG:
+                    print("\n=======================second api call========")
+                    print(json.dumps(final_messages, indent=2))
+                    print("==========================================\n")
                 
                 final_response = self.llm.invoke(final_messages)
                 
-                # Print the response from the second API call
-                print("\n=======================second api response========")
-                print(final_response.content)
-                print("==========================================\n")
+                # Print the response from the second API call with additional debug info
+                if DEBUG:
+                    print("\n=======================second api response========")
+                    if hasattr(final_response, 'content') and final_response.content:
+                        print(final_response.content)
+                    
+                    print("==========================================\n")
                 
                 # Extract the final structured response
                 final_structured = self._extract_structured_response(final_response.content)
