@@ -228,55 +228,43 @@ class ConfigurableAgent:
         
         # Import standard tools
         try:
-            from llm_ai_agent.tools import get_all_tools, get_tool
+            from llm_ai_agent.tools import get_all_tools
             
-            # Store all possible tool functions for later reference
-            all_tools = get_all_tools()
-            logger.info(f"Available tools from module: {', '.join(all_tools.keys())}")
+            # Add basic tools that should always be available
+            self._available_tools.update(get_all_tools())
             
-            # We'll only add the tools specified in the configuration
-            # So we don't add all_tools to self._available_tools directly
-            
-            logger.info("Loaded basic tools module")
+            logger.info("Loaded basic tools")
         except ImportError as e:
             logger.warning(f"Could not import basic tools: {e}")
-            all_tools = {}
         
         # Load hardware tools if hardware is available
-        hardware_tools = {}
         if self.hardware:
             try:
                 # Add camera tools if camera is enabled, but exclude direct capture tools
                 if self.hardware.camera_tools:
                     # Only add analyze_image, not the capture tools
-                    if hasattr(self.hardware.camera_tools, "analyze_image"):
-                        hardware_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
-                        logger.info("Loaded camera analysis tools (capture tools excluded)")
-                    else:
-                        logger.warning("Camera tools don't have analyze_image method")
+                    self._available_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
+                    logger.info("Loaded camera analysis tools (capture tools excluded)")
                 
                 # Add speaker tools if speaker is enabled
                 if self.hardware.speaker_tools:
-                    hardware_tools["speak"] = self.hardware.speaker_tools.speak
-                    hardware_tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
-                    hardware_tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
+                    self._available_tools["speak"] = self.hardware.speaker_tools.speak
+                    self._available_tools["is_speaking"] = self.hardware.speaker_tools.is_speaking
+                    self._available_tools["stop_speaking"] = self.hardware.speaker_tools.stop_speaking
                     logger.info("Loaded speaker tools")
                 
                 # Add robotic arm tools if arm is enabled
                 if self.hardware.arm_tools:
-                    hardware_tools["move_home"] = self.hardware.arm_tools.move_home
-                    hardware_tools["move_position"] = self.hardware.arm_tools.move_position
-                    hardware_tools["grasp"] = self.hardware.arm_tools.grasp
-                    hardware_tools["release"] = self.hardware.arm_tools.release
-                    hardware_tools["get_position"] = self.hardware.arm_tools.get_position
-                    hardware_tools["move_default"] = self.hardware.arm_tools.move_default
+                    self._available_tools["move_home"] = self.hardware.arm_tools.move_home
+                    self._available_tools["move_position"] = self.hardware.arm_tools.move_position
+                    self._available_tools["grasp"] = self.hardware.arm_tools.grasp
+                    self._available_tools["release"] = self.hardware.arm_tools.release
+                    self._available_tools["get_position"] = self.hardware.arm_tools.get_position
+                    self._available_tools["move_default"] = self.hardware.arm_tools.move_default
                     logger.info("Loaded robotic arm tools")
-                
-                logger.info(f"Available hardware tools: {', '.join(hardware_tools.keys())}")
                 
             except Exception as e:
                 logger.error(f"Error loading hardware tools: {e}")
-                hardware_tools = {}
         
         # Load tools from configuration
         tool_config = self.config.get('tools', {})
@@ -296,60 +284,14 @@ class ConfigurableAgent:
             # Load tool prompts from tool configuration files
             self._load_tool_prompts()
             
-            # Get tools from categories
-            category_tools = set()
+            # Here we would process categories to include/exclude tools
+            # For now, we'll just log the configuration
             if categories:
                 logger.info(f"Tool categories: {categories}")
-                
-                # Get all tools from categories using the config loader
-                for category in categories:
-                    # Check if the category exists in the tool configs
-                    if category in self.config_loader.tool_configs:
-                        # Get tools configuration from the category
-                        category_config = self.config_loader.tool_configs[category]
-                        tools_from_category = category_config.get('tools', [])
-                        
-                        # Add each tool from the category
-                        for tool_info in tools_from_category:
-                            # Handle both formats: strings and dictionaries
-                            if isinstance(tool_info, str):
-                                tool_name = tool_info
-                            elif isinstance(tool_info, dict):
-                                tool_name = tool_info.get('name')
-                            else:
-                                logger.warning(f"Invalid tool format in category {category}")
-                                continue
-                                
-                            # Add to our set of tools from categories
-                            if tool_name:
-                                category_tools.add(tool_name)
-                                logger.debug(f"Added tool from category {category}: {tool_name}")
-                    else:
-                        logger.warning(f"Tool category not found: {category}")
+            if includes:
+                logger.info(f"Tools to include: {includes}")
             
-            # Combine tools from categories with explicitly included tools
-            included_tools = set(includes)
-            all_included_tools = category_tools.union(included_tools)
-            
-            # Add all configured tools to available_tools (that aren't excluded)
-            for tool_name in all_included_tools:
-                if tool_name in excludes:
-                    continue
-                    
-                # Try to find the tool implementation
-                if tool_name in all_tools:
-                    self._available_tools[tool_name] = all_tools[tool_name]
-                    logger.info(f"Added tool from basic tools: {tool_name}")
-                elif tool_name in hardware_tools:
-                    self._available_tools[tool_name] = hardware_tools[tool_name]
-                    logger.info(f"Added tool from hardware tools: {tool_name}")
-                else:
-                    logger.warning(f"Tool '{tool_name}' configured but implementation not found")
-            
-            # Log information about tools
-            logger.info(f"Tools to include: {includes}")
             logger.info(f"Tools to exclude: {excludes}")
-            
             # Remove excluded tools
             for tool_name in excludes:
                 if tool_name in self._available_tools:
@@ -657,8 +599,18 @@ class ConfigurableAgent:
         messages = self._construct_prompt(messages)
         
         try:
+            # Print the input to the first API call
+            print("\n=======================first api call========")
+            print(json.dumps(messages, indent=2))
+            print("==========================================\n")
+            
             # Get the initial response from the language model
             initial_response = self.llm.invoke(messages)
+            
+            # Print the response from the first API call
+            print("\n=======================first api response========")
+            print(initial_response.content)
+            print("==========================================\n")
             
             # Extract structured response (thought, reply, tool_calls)
             structured_response = self._extract_structured_response(initial_response.content)
@@ -745,14 +697,27 @@ class ConfigurableAgent:
                     tool_response_content["images"] = images_from_tools
                 
                 tool_response_message = {
-                    "role": "system", 
+                    "role": "user", 
                     "content": json.dumps(tool_response_content)
                 }
                 messages.append(tool_response_message)
                 
                 # Get the final response after processing tool results
-                final_messages = self._construct_prompt(messages)
+                # Create a new messages list without the system message
+                user_messages = [msg for msg in messages if msg.get("role") != "system"]
+                final_messages = self._construct_prompt(user_messages)
+                
+                # Print the input to the second API call
+                print("\n=======================second api call========")
+                print(json.dumps(final_messages, indent=2))
+                print("==========================================\n")
+                
                 final_response = self.llm.invoke(final_messages)
+                
+                # Print the response from the second API call
+                print("\n=======================second api response========")
+                print(final_response.content)
+                print("==========================================\n")
                 
                 # Extract the final structured response
                 final_structured = self._extract_structured_response(final_response.content)
@@ -1135,8 +1100,8 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
 # Example usage
 if __name__ == "__main__":
     # Create a configurable agent with the base configuration
-    agent = ConfigurableAgent(agent_type="base_agent", verbose=True)
-    agent.print_system_prompt()
+    # agent = ConfigurableAgent(agent_type="base_agent", verbose=True)
+    
     # # Test a simple query
     # response = agent.process_to_string("What is 15 multiplied by 32?")
     # print(f"Base agent response: {response}\n")
