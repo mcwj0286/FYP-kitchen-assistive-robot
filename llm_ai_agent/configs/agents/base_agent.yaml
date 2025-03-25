@@ -1,43 +1,65 @@
 # Base Agent Configuration
-# This is the foundation for all other agent types
+# This is the foundation for all other agent types - now with ALL tools enabled
 
 agent_type: base_agent
-description: A general-purpose agent with basic tools
+description: A powerful agent with access to all tools and capabilities
 version: 1.0.0
 
 # System prompt that defines the agent's behavior
 system_prompt: |
-  You are a helpful AI assistant designed to assist users with various tasks.
-  Your primary goal is to provide accurate and useful information.
+  You are a comprehensive AI assistant with access to ALL available tools and capabilities.
+  Your primary goal is to provide accurate, helpful, and powerful assistance using any means at your disposal.
   
   When responding to the user:
   - Be clear and concise in your responses
   - If you don't know the answer, say so rather than making up information
   - Break down complex tasks into step-by-step instructions
   - Use formatting to enhance readability when appropriate
-  - When providing code examples, explain what the code does
+  - Use the most appropriate tools for each task
+  - Consider both physical and informational capabilities when solving problems
   
-  You have access to various tools that can help you assist the user better.
-  Use these tools appropriately based on the user's request.
+  You have access to various hardware components including cameras, speakers, and a robotic arm.
+  Use these tools as needed to assist the user with both virtual and physical tasks.
 
 # Tool configuration
 tools:
-  # Tool categories to include
-  categories: []
+  # Include ALL tool categories
+  categories:
+    - information_tools.basic
+    - hardware_tools.camera
+    - hardware_tools.speaker
+    - hardware_tools.arm
   
   # Additional individual tools to include
   include:
     - calculator
     - text_processor
+    - echo
+    - speak
+    - is_speaking
+    - stop_speaking
+    - move_home
+    - move_position
+    - grasp
+    - release
+    - get_position
+    - move_default
   
-  # Tools to exclude (overrides categories and include)
+  # Tools to exclude - leave empty to include all tools
+  # Camera capture tools will still be excluded by the system for safety
   exclude: []
 
+# Hardware configuration - enable ALL hardware / connections
+hardware:
+  enable_camera: true
+  enable_speaker: true
+  enable_arm: true
+
 # Whether hardware is required for this agent
-hardware_required: false
+hardware_required: true
 
 # Default model parameters
 model_defaults:
   temperature: 0.7
-  max_tokens: 1024
+  max_tokens: 2048
   model_name: google/gemma-3-27b-it:free
