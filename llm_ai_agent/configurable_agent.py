@@ -39,6 +39,16 @@ class ConfigurableAgent:
     """
     A fully configurable agent that loads all properties from YAML configuration.
     This is the only agent class needed, with behavior determined by configuration.
+    
+    Features:
+    - Configuration-driven behavior via YAML files
+    - Support for multiple LLM providers through OpenRouter
+    - Automatic tool calling when supported by the model
+    - Hardware integration for robotics applications
+    - Multimodal capabilities with image input
+    
+    The agent can be configured to automatically capture images from connected cameras
+    with each query, enabling visual context for the LLM's responses.
     """
     
     def __init__(
@@ -47,7 +57,8 @@ class ConfigurableAgent:
         config_path: Optional[str] = None,
         verbose: bool = True,
         model_name: Optional[str] = None,
-        use_hardware: bool = True
+        use_hardware: bool = True,
+        capture_image: str = ""
     ):
         """
         Initialize a configurable agent.
@@ -58,10 +69,12 @@ class ConfigurableAgent:
             verbose: Whether to enable verbose logging
             model_name: Model name to use (overrides config)
             use_hardware: Whether to use real hardware (False uses mock implementations)
+            capture_image: Which camera view to capture with each prompt ["environment", "wrist", "both", ""]
         """
         self.agent_type = agent_type
         self._verbose = verbose
         self._use_hardware = use_hardware
+        self._capture_image = capture_image
         
         # Initialize configuration loader
         if config_path:
@@ -129,6 +142,15 @@ class ConfigurableAgent:
         enable_camera = hardware_config.get('enable_camera', True)
         enable_speaker = hardware_config.get('enable_speaker', True)
         enable_arm = hardware_config.get('enable_arm', True)
+        
+        # Get image capture configuration if not explicitly provided at initialization
+        if self._capture_image == "":
+            capture_image = hardware_config.get('capture_image', "")
+            # Only set if the value is valid
+            if capture_image in ["environment", "wrist", "both", ""]:
+                self._capture_image = capture_image
+                if self._verbose and capture_image:
+                    logger.info(f"Using configuration capture_image: {capture_image}")
         
         # Set up hardware if required and available
         if hardware_required and HARDWARE_AVAILABLE and self._use_hardware:
@@ -198,6 +220,12 @@ class ConfigurableAgent:
         self._available_tools = {}
         self._tool_prompts = {}
         
+        # Define a list of camera capture tools that should never be available to the LLM
+        # We want these tools to be used only through the capture_image parameter
+        # This ensures that all image capture goes through the predefined agent configuration
+        # rather than allowing the LLM to call these tools directly
+        CAMERA_CAPTURE_TOOLS = ["capture_environment", "capture_wrist", "capture_both"]
+        
         # Import standard tools
         try:
             from llm_ai_agent.tools import get_all_tools
@@ -212,12 +240,11 @@ class ConfigurableAgent:
         # Load hardware tools if hardware is available
         if self.hardware:
             try:
-                # Add camera tools if camera is enabled
+                # Add camera tools if camera is enabled, but exclude direct capture tools
                 if self.hardware.camera_tools:
-                    self._available_tools["capture_environment"] = self.hardware.camera_tools.capture_environment
-                    self._available_tools["capture_wrist"] = self.hardware.camera_tools.capture_wrist
+                    # Only add analyze_image, not the capture tools
                     self._available_tools["analyze_image"] = self.hardware.camera_tools.analyze_image
-                    logger.info("Loaded camera tools")
+                    logger.info("Loaded camera analysis tools (capture tools excluded)")
                 
                 # Add speaker tools if speaker is enabled
                 if self.hardware.speaker_tools:
@@ -249,6 +276,11 @@ class ConfigurableAgent:
             includes = tool_config.get('include', [])
             excludes = tool_config.get('exclude', [])
             
+            # Add camera capture tools to the excludes list
+            for tool_name in CAMERA_CAPTURE_TOOLS:
+                if tool_name not in excludes:
+                    excludes.append(tool_name)
+            
             # Load tool prompts from tool configuration files
             self._load_tool_prompts()
             
@@ -258,14 +290,20 @@ class ConfigurableAgent:
                 logger.info(f"Tool categories: {categories}")
             if includes:
                 logger.info(f"Tools to include: {includes}")
-            if excludes:
-                logger.info(f"Tools to exclude: {excludes}")
-                # Remove excluded tools
-                for tool_name in excludes:
-                    if tool_name in self._available_tools:
-                        del self._available_tools[tool_name]
-                        logger.info(f"Excluded tool: {tool_name}")
             
+            logger.info(f"Tools to exclude: {excludes}")
+            # Remove excluded tools
+            for tool_name in excludes:
+                if tool_name in self._available_tools:
+                    del self._available_tools[tool_name]
+                    logger.info(f"Excluded tool: {tool_name}")
+        
+        # Final check to ensure camera capture tools are never available
+        for tool_name in CAMERA_CAPTURE_TOOLS:
+            if tool_name in self._available_tools:
+                del self._available_tools[tool_name]
+                logger.info(f"Forcibly excluded camera capture tool: {tool_name}")
+        
         logger.info(f"Loaded {len(self._available_tools)} tools: {', '.join(self._available_tools.keys())}")
     
     def _load_tool_prompts(self):
@@ -452,14 +490,113 @@ class ConfigurableAgent:
         # Ensure history is in the right format
         _history = self._format_history(history)
         
-        # Track the conversation for this particular exchange
-        conversation = []
+        # Check if we should capture an image
+        # The capture_image parameter can be:
+        # - "environment": Capture from the environment camera only
+        # - "wrist": Capture from the wrist-mounted camera only
+        # - "both": Capture from both cameras and send both images
+        # - "": Disable image capture (default)
+        image_data_uris = []
+        if self._capture_image and self.hardware and self.hardware.camera_tools:
+            try:
+                if self._verbose:
+                    logger.info(f"Capturing image from {self._capture_image} camera")
+                
+                # Capture the requested camera view
+                if self._capture_image == "environment":
+                    result = self.hardware.camera_tools.capture_environment()
+                    if isinstance(result, dict) and "image" in result:
+                        image_data_uris.append({
+                            "url": result["image"],
+                            "description": f"Environment camera: {result.get('description', '')}"
+                        })
+                        logger.info("Environment image captured successfully")
+                elif self._capture_image == "wrist":
+                    result = self.hardware.camera_tools.capture_wrist()
+                    if isinstance(result, dict) and "image" in result:
+                        image_data_uris.append({
+                            "url": result["image"],
+                            "description": f"Wrist camera: {result.get('description', '')}"
+                        })
+                        logger.info("Wrist image captured successfully")
+                elif self._capture_image == "both":
+                    result = self.hardware.camera_tools.capture_both()
+                    if isinstance(result, dict):
+                        # Handle environment camera
+                        if result.get("environment") and isinstance(result["environment"], dict) and "image" in result["environment"]:
+                            image_data_uris.append({
+                                "url": result["environment"]["image"],
+                                "description": f"Environment camera: {result['environment'].get('description', '')}"
+                            })
+                        
+                        # Handle wrist camera
+                        if result.get("wrist") and isinstance(result["wrist"], dict) and "image" in result["wrist"]:
+                            image_data_uris.append({
+                                "url": result["wrist"]["image"],
+                                "description": f"Wrist camera: {result['wrist'].get('description', '')}"
+                            })
+                        
+                        if image_data_uris:
+                            logger.info(f"Captured {len(image_data_uris)} camera images successfully")
+                        else:
+                            logger.warning("No images captured from 'both' camera option")
+                else:
+                    logger.warning(f"Invalid capture_image value: {self._capture_image}")
+            except Exception as e:
+                logger.error(f"Error capturing image: {e}")
+        
+        # Create user message - either text-only or multimodal with image(s)
+        if image_data_uris:
+            user_message = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": user_input
+                    }
+                ]
+            }
+            
+            # Add each image to the content
+            for image_data in image_data_uris:
+                user_message["content"].append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data["url"],
+                        "detail": "high"
+                    }
+                })
+                
+                # If the first image has a description, add it to the user input
+                if "description" in image_data and image_data_uris.index(image_data) == 0:
+                    user_message["content"][0]["text"] = f"{user_input}\n\nImage source: {image_data['description']}"
+                
+                # For additional images, add a note about them in the text
+                if len(image_data_uris) > 1 and image_data_uris.index(image_data) > 0:
+                    user_message["content"][0]["text"] += f"\nAdditional image: {image_data['description']}"
+        else:
+            user_message = {"role": "user", "content": user_input}
         
         # Add the user input to the conversation
-        conversation.append({"role": "user", "content": user_input})
+        messages = _history + [user_message]
+        
+        # Define the response format for structured outputs
+        response_format = {
+            "thought": "Your reasoning process (not shown to the user)",
+            "reply": "Your response to the user",
+            "tool_calls": [
+                {
+                    "tool_name": "ToolName",
+                    "parameters": {
+                        "param1": "value1",
+                        "param2": "value2"
+                    }
+                }
+            ]
+        }
         
         # Construct the initial prompt with system message and available tools
-        messages = self._construct_prompt(_history + conversation)
+        messages = self._construct_prompt(messages)
         
         try:
             # Get the initial response from the language model
@@ -486,9 +623,31 @@ class ConfigurableAgent:
                     
                     # Execute the tool
                     tool_result = self._execute_tool(tool_name, parameters)
-                    image_data_uri = None
-                    if isinstance(tool_result, dict) and "image" in tool_result:
-                        image_data_uri = tool_result.pop("image")
+                    
+                    # Extract any image data from the tool result
+                    image_data = None
+                    if isinstance(tool_result, dict):
+                        # Handle direct image in result
+                        if "image" in tool_result:
+                            image_data = {
+                                "url": tool_result.pop("image"),
+                                "description": tool_result.get("description", f"{tool_name} result image")
+                            }
+                        # Handle environment/wrist structure for 'both' image capture
+                        elif "environment" in tool_result and isinstance(tool_result["environment"], dict) and "image" in tool_result["environment"]:
+                            env_image = tool_result["environment"].pop("image")
+                            wrist_image = None
+                            if "wrist" in tool_result and isinstance(tool_result["wrist"], dict) and "image" in tool_result["wrist"]:
+                                wrist_image = tool_result["wrist"].pop("image")
+                            
+                            # For multiple images, we'll use the first one in the response and log about the others
+                            image_data = {
+                                "url": env_image,
+                                "description": "Environment camera image"
+                            }
+                            if wrist_image:
+                                logger.info("Multiple images in tool result, using environment camera image for response")
+                    
                     # Format the tool response
                     tool_response = {
                         "call_id": call_id,
@@ -496,13 +655,17 @@ class ConfigurableAgent:
                         "data": tool_result
                     }
                     
+                    # Add image data if present
+                    if image_data:
+                        tool_response["image"] = image_data
+                    
                     tool_results.append(tool_response)
                     
                     if self._verbose:
                         logger.info(f"Tool response: {json.dumps(tool_response, indent=2)}")
                 
                 # Add the initial response to conversation
-                conversation.append({
+                messages.append({
                     "role": "assistant", 
                     "content": json.dumps(structured_response)
                 })
@@ -513,17 +676,24 @@ class ConfigurableAgent:
                     "instructions": "Please analyze these tool results and provide a helpful response to the user. Make sure to include relevant information from the tool results. Even if there was an error with the tool, provide the best response you can."
                 }
                 
-                if image_data_uri is not None:
-                    tool_response_content["image_url"] = image_data_uri
+                # Extract image data from tool responses to include in the next message
+                images_from_tools = []
+                for result in tool_results:
+                    if "image" in result and isinstance(result["image"], dict) and "url" in result["image"]:
+                        images_from_tools.append(result["image"])
+                
+                # Add image URLs to the tool response content if available
+                if images_from_tools:
+                    tool_response_content["images"] = images_from_tools
                 
                 tool_response_message = {
                     "role": "system", 
                     "content": json.dumps(tool_response_content)
                 }
-                conversation.append(tool_response_message)
+                messages.append(tool_response_message)
                 
                 # Get the final response after processing tool results
-                final_messages = self._construct_prompt(_history + conversation)
+                final_messages = self._construct_prompt(messages)
                 final_response = self.llm.invoke(final_messages)
                 
                 # Extract the final structured response
@@ -549,7 +719,7 @@ class ConfigurableAgent:
                         final_structured["reply"] = "Here are the results: " + " ".join(tool_data)
                 
                 # Add the final response to conversation for history
-                conversation.append({
+                messages.append({
                     "role": "assistant", 
                     "content": json.dumps(final_structured)
                 })
@@ -564,7 +734,7 @@ class ConfigurableAgent:
                 }
             else:
                 # No tool calls, return the initial response
-                conversation.append({
+                messages.append({
                     "role": "assistant", 
                     "content": json.dumps(structured_response)
                 })
@@ -776,6 +946,100 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
         """Set the verbose setting."""
         self._verbose = value
     
+    @property
+    def capture_image(self) -> str:
+        """Get the capture_image setting."""
+        return self._capture_image
+    
+    @capture_image.setter
+    def capture_image(self, value: str) -> None:
+        """
+        Set the capture_image setting.
+        
+        Args:
+            value: The camera view to capture ("environment", "wrist", "both", or "" for none)
+        """
+        if value not in ["environment", "wrist", "both", ""]:
+            logger.warning(f"Invalid capture_image value: {value}. Using empty string (disabled).")
+            self._capture_image = ""
+        else:
+            self._capture_image = value
+            if self._verbose:
+                if value:
+                    logger.info(f"Image capture enabled with camera: {value}")
+                else:
+                    logger.info("Image capture disabled")
+    
+    def print_system_prompt(self) -> None:
+        """
+        Print the complete system prompt that will be sent to the LLM.
+        This includes the base system prompt from configuration plus
+        all tool descriptions and usage instructions.
+        """
+        # Create the system message with the same format as in _construct_prompt
+        system_message = f"""{self._system_prompt}
+
+To use tools, respond in the following JSON format:
+{{
+  "thought": "Your reasoning process (not shown to the user)",
+  "reply": "Your response to the user",
+  "tool_calls": [
+    {{
+      "tool_name": "ToolName",
+      "parameters": {{
+        "param1": "value1",
+        "param2": "value2"
+      }}
+    }}
+  ]
+}}
+
+Available tools:
+"""
+        
+        # Add available tools to the system message using tool prompts if available
+        for tool_name in self._available_tools.keys():
+            if tool_name in self._tool_prompts:
+                # Get tool prompt information
+                tool_prompt = self._tool_prompts[tool_name]
+                description = tool_prompt.get('description', '')
+                parameters = tool_prompt.get('parameters', [])
+                example = tool_prompt.get('example', '')
+                
+                # Format parameters
+                param_names = [param.get('name', '') for param in parameters]
+                param_str = ", ".join(param_names)
+                
+                # Add to system message
+                system_message += f"- {tool_name}: {description} [Parameters: {param_str}]\n"
+                if example:
+                    system_message += f"  Example: {example}\n"
+                system_message += "\n"
+            else:
+                # If no tool prompt is available, use basic format
+                func = self._available_tools[tool_name]
+                doc = func.__doc__ or "No description available."
+                first_line = doc.strip()
+                if "\n" in first_line:
+                    first_line = first_line[:first_line.find("\n")]
+                system_message += f"- {tool_name}: {first_line}\n"
+        
+        # Add additional instructions for final responses
+        system_message += """
+When tool results are provided, analyze them and provide a final response in the same JSON format.
+Make your final responses comprehensive and include information from the tool results.
+
+IMPORTANT: Use the EXACT parameter names specified above for each tool.
+"""
+        
+        # Print the complete system prompt
+        print("\n=== SYSTEM PROMPT ===\n")
+        print(system_message)
+        print("\n====================\n")
+        
+        # Return the formatted system message in case it's needed
+        return system_message
+    
     def __del__(self):
         """Clean up resources when the agent is deleted."""
         if hasattr(self, 'hardware') and self.hardware:
@@ -813,15 +1077,44 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
 # Example usage
 if __name__ == "__main__":
     # Create a configurable agent with the base configuration
-    agent = ConfigurableAgent(agent_type="base_agent", verbose=True)
+    # agent = ConfigurableAgent(agent_type="base_agent", verbose=True)
     
-    # Test a simple query
-    response = agent.process_to_string("What is 15 multiplied by 32?")
-    print(f"Base agent response: {response}\n")
+    # # Test a simple query
+    # response = agent.process_to_string("What is 15 multiplied by 32?")
+    # print(f"Base agent response: {response}\n")
     
-    # Create a kitchen assistant agent
-    kitchen_agent = ConfigurableAgent(agent_type="kitchen_assistant", verbose=True)
+    # # Create a kitchen assistant agent
+    # kitchen_agent = ConfigurableAgent(agent_type="kitchen_assistant", verbose=True)
     
-    # Test a kitchen-related query
-    response = kitchen_agent.process_to_string("Can you analyze this recipe: 2 cups flour, 1 cup sugar, 3 eggs?")
-    print(f"Kitchen agent response: {response}") 
+    # # Test a kitchen-related query
+    # response = kitchen_agent.process_to_string("Can you analyze this recipe: 2 cups flour, 1 cup sugar, 3 eggs?")
+    # print(f"Kitchen agent response: {response}")
+    
+    # Create a vision-enabled kitchen assistant agent
+    vision_agent = ConfigurableAgent(
+        agent_type="vision_agent", 
+        verbose=True,
+        capture_image="environment"  # Automatically capture environment images
+    )
+    
+    vision_agent.print_system_prompt()
+    
+    # # Print the full system prompt for the vision agent
+    # print("\nPrinting the full system prompt for the vision agent:")
+    # vision_agent.print_system_prompt()
+    
+    # print("vison test 1")
+    # # Test a vision query
+    # response = vision_agent.process_to_string("What do you see in the image? ")
+    # print(f"Vision agent response: {response}")
+    
+    # print("vison test 2")
+    # # Change the camera view
+    # vision_agent.capture_image = "wrist"
+    # response = vision_agent.process_to_string("what do you see in the image?")
+    # print(f"Updated vision agent response: {response}")
+    
+    # print("vison test 3")
+    # vision_agent.capture_image = "both"
+    # response = vision_agent.process_to_string("what do you see in the image?")
+    print(f"Text-only agent response: {response}")
