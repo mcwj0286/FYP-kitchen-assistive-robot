@@ -195,7 +195,7 @@ class AgentConfigLoader:
     
     def _merge_tools(self, parent_tools: Dict[str, Any], child_tools: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Merge tool configurations from parent and child.
+        Merge tool configurations from parent and child agents.
         
         Args:
             parent_tools: Tool configuration from parent
@@ -204,7 +204,12 @@ class AgentConfigLoader:
         Returns:
             Merged tool configuration
         """
-        merged = parent_tools.copy()
+        # Create a copy of parent_tools or initialize to empty dict if None
+        merged = parent_tools.copy() if parent_tools else {}
+        
+        # Handle None for child_tools
+        if not child_tools:
+            return merged
         
         # Merge categories
         if 'categories' in child_tools:
@@ -212,8 +217,8 @@ class AgentConfigLoader:
                 merged['categories'] = []
             
             # Add child categories
-            parent_categories = set(merged['categories'])
-            child_categories = set(child_tools['categories'])
+            parent_categories = set(merged['categories'] or [])
+            child_categories = set(child_tools['categories'] or [])
             merged['categories'] = list(parent_categories.union(child_categories))
         
         # Merge includes
@@ -222,8 +227,8 @@ class AgentConfigLoader:
                 merged['include'] = []
             
             # Add child includes
-            parent_includes = set(merged['include'])
-            child_includes = set(child_tools['include'])
+            parent_includes = set(merged['include'] or [])
+            child_includes = set(child_tools['include'] or [])
             merged['include'] = list(parent_includes.union(child_includes))
         
         # Merge excludes
@@ -232,8 +237,8 @@ class AgentConfigLoader:
                 merged['exclude'] = []
             
             # Add child excludes
-            parent_excludes = set(merged['exclude'])
-            child_excludes = set(child_tools['exclude'])
+            parent_excludes = set(merged['exclude'] or [])
+            child_excludes = set(child_tools['exclude'] or [])
             merged['exclude'] = list(parent_excludes.union(child_excludes))
         
         return merged
