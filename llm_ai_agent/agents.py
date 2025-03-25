@@ -20,7 +20,8 @@ def create_agent(
     config_path: Optional[str] = None,
     verbose: bool = True,
     model_name: Optional[str] = None,
-    use_hardware: bool = True
+    use_hardware: bool = True,
+    capture_image: str = ""
 ) -> ConfigurableAgent:
     """
     Create an agent with the specified configuration.
@@ -41,7 +42,8 @@ def create_agent(
             config_path=config_path,
             verbose=verbose,
             model_name=model_name,
-            use_hardware=use_hardware
+            use_hardware=use_hardware,
+            capture_image=capture_image
         )
     except Exception as e:
         logger.error(f"Error creating agent of type '{agent_type}': {e}")

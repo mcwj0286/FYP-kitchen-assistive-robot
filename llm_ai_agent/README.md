@@ -14,6 +14,9 @@ As of the latest update, we have successfully implemented:
 - ✅ Interactive testing interface with enhanced usability
 - ✅ Cross-platform support for hardware tools
 - ✅ Test suite for configurations, tools, and hardware interfaces
+- ✅ Automatic image capture functionality with multiple camera support
+- ✅ Multimodal vision capabilities with controlled access to camera tools
+- ✅ System prompt debugging and inspection capabilities
 
 ## System Architecture
 
@@ -22,7 +25,7 @@ The framework follows a modular, configuration-driven architecture:
 - `agents.py`: Central module for creating and managing agents
 - `configurable_agent.py`: The main agent implementation that loads behavior from configuration
 - `config_loader.py`: Utilities for loading and processing YAML configurations
-- `tools.py`: Collection of basic tools that agents can use (NEW)
+- `tools.py`: Collection of basic tools that agents can use
 - `interactive.py`: Command-line interface for interacting with agents
 - `hardware_tools.py`: Hardware interface implementations with mock fallbacks
 
@@ -33,6 +36,8 @@ The framework follows a modular, configuration-driven architecture:
 3. **Hardware Abstraction**: Seamlessly switch between real and mock hardware
 4. **Modular Tool System**: Easily add, remove, or customize tools
 5. **Robust Error Handling**: Graceful handling of LLM response failures
+6. **Controlled Hardware Access**: Camera capture managed via configuration rather than direct tool calls
+7. **Multimodal Capabilities**: Support for text and image inputs to the LLM
 
 ## Quick Start
 
@@ -52,6 +57,17 @@ kitchen_agent = create_agent(agent_type="kitchen_assistant", use_hardware=False)
 # Process a kitchen-related query
 response = kitchen_agent.process_to_string("Can you analyze this recipe: 2 cups flour, 1 cup sugar, 3 eggs?")
 print(response)
+
+# Create a vision-enabled agent
+vision_agent = create_agent(
+    agent_type="vision_agent", 
+    use_hardware=True,
+    capture_image="environment"  # Automatically capture from environment camera with each request
+)
+
+# Process a vision query (image is automatically captured and included)
+response = vision_agent.process_to_string("What objects do you see in front of me?")
+print(response)
 ```
 
 ## Interactive Mode
@@ -64,6 +80,9 @@ python -m llm_ai_agent.interactive
 
 # Use the kitchen assistant agent with hardware disabled
 python -m llm_ai_agent.interactive --agent kitchen_assistant --no-hardware
+
+# Use the vision agent with environment camera enabled
+python -m llm_ai_agent.interactive --agent vision_agent --capture-image environment
 
 # List available agent configurations
 python -m llm_ai_agent.interactive --list-configs
@@ -78,9 +97,9 @@ python -m llm_ai_agent.interactive --list-configs
 Example:
 
 ```yaml
-# Recipe Assistant Agent
-agent_type: recipe_assistant
-description: A specialized agent for recipe analysis and cooking guidance
+# Vision Agent Configuration
+agent_type: vision_agent
+description: A vision-enabled agent for kitchen assistance
 version: 1.0.0
 inherits_from: kitchen_assistant
 
@@ -146,6 +165,31 @@ agent = create_agent(agent_type="kitchen_assistant", use_hardware=True)
 agent = create_agent(agent_type="kitchen_assistant", use_hardware=False)
 ```
 
+## Vision Capabilities
+
+The framework now supports automatic image capture with each request through the `capture_image` setting:
+
+```python
+# Create an agent with environment camera enabled
+agent = create_agent(
+    agent_type="vision_agent", 
+    capture_image="environment"
+)
+
+# Change the camera view dynamically
+agent.capture_image = "wrist"  # Switch to wrist camera
+agent.capture_image = "both"   # Use both cameras
+agent.capture_image = ""       # Disable automatic image capture
+```
+
+Available camera options:
+- `"environment"`: Use the environment camera (showing the general scene)
+- `"wrist"`: Use the wrist-mounted camera (showing what's in front of the gripper)
+- `"both"`: Use both cameras together
+- `""` (empty string): Disable automatic image capture
+
+This approach prevents the LLM from directly calling camera capture tools, ensuring all image capture is controlled through configuration.
+
 ## Configuration System
 
 The agent configuration system uses YAML files in these directories:
@@ -156,9 +200,10 @@ The agent configuration system uses YAML files in these directories:
 Currently implemented configurations:
 - `base_agent.yaml`: A general-purpose agent with basic tools
 - `kitchen_assistant.yaml`: A specialized agent for kitchen assistance with hardware control
+- `vision_agent.yaml`: A vision-enabled agent with camera capabilities
 
 Tool categories include:
-- `hardware_tools.camera`: Tools for environment perception
+- `hardware_tools.camera`: Tools for environment perception (now controlled via configuration)
 - `hardware_tools.speaker`: Tools for user communication
 - `hardware_tools.arm`: Tools for robotic arm control
 - `information_tools.basic`: Basic information processing tools
@@ -173,6 +218,7 @@ The system implements robust LLM response handling with:
 3. Error recovery for None/empty responses
 4. Tool execution based on parsed actions
 5. Proper chat history management
+6. Support for multimodal (text+image) inputs
 
 ## Future Development
 
