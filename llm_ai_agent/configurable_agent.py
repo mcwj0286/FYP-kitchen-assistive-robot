@@ -74,6 +74,9 @@ class ConfigurableAgent:
             model_name: Model name to use (overrides config)
             use_hardware: Whether to use real hardware (False uses mock implementations)
             capture_image: Which camera view to capture with each prompt ["environment", "wrist", "both", ""]
+                           If set to empty string (""), the value will be read from the YAML config file's
+                           hardware.capture_image setting. Explicit values passed here take priority over
+                           the configuration file.
             max_tool_iterations: Maximum number of tool iterations to allow (for multi-turn tool calling)
         """
         self.agent_type = agent_type

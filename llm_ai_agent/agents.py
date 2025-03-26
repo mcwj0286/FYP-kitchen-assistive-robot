@@ -32,6 +32,9 @@ def create_agent(
         verbose: Whether to enable verbose logging
         model_name: Model name to use (overrides config)
         use_hardware: Whether to use real hardware (False uses mock implementations)
+        capture_image: Which camera view to capture with each prompt ("environment", "wrist", "both", or "" to disable)
+                      If empty string, will use the setting from the agent's YAML config file
+                      (hardware.capture_image)
         
     Returns:
         An instance of ConfigurableAgent
