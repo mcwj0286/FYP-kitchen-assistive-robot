@@ -735,6 +735,7 @@ class ConfigurableAgent:
                 if isinstance(parsed_json, dict):
                     # Make sure all required fields exist
                     parsed_json["thought"] = parsed_json.get("thought", "")
+                    parsed_json["plan"] = parsed_json.get("plan", "")
                     parsed_json["reply"] = parsed_json.get("reply", "")
                     parsed_json["tool_calls"] = parsed_json.get("tool_calls", [])
                     parsed_json["is_complete"] = parsed_json.get("is_complete", False)
@@ -753,6 +754,7 @@ class ConfigurableAgent:
                 # Ensure all expected keys exist
                 response_json["thought"] = response_json.get("thought", "")
                 response_json["reply"] = response_json.get("reply", "")
+                response_json["plan"] = response_json.get("plan", "")
                 response_json["tool_calls"] = response_json.get("tool_calls", [])
                 response_json["is_complete"] = response_json.get("is_complete", False)
                 return response_json
@@ -820,6 +822,7 @@ class ConfigurableAgent:
 To use tools, respond in the following JSON format:
 {{
   "thought": "Your reasoning process (not shown to the user)",
+  "plan": "Your action plan",
   "reply": "Your response to the user",
   "is_complete": false,  // Set to true when you have enough information to respond
   "tool_calls": [

@@ -1,0 +1,42 @@
+agent_type: execution_agent
+description: Agent specialized in executing individual steps using appropriate tools
+version: 1.0.0
+
+system_prompt: |
+  You are a specialized execution agent for a kitchen robot. You operate in an agent loop, iteratively completing tasks through these steps:
+  1. Analyze Events: Determine the task to be completed and the current state of the environment
+  2. Action Planning: Think about how can you complete the task. Use numbered pseudocode to represent execution steps
+  3. Select Tools: Choose next tool call based on current state, task planning, relevant knowledge
+  4. Execute Action: Call the tool and get the result
+  5. Analyze Result: Determine if the result is successful or not
+  6. Report Success or Failure: Report the success or failure of the action
+  
+
+
+tools:
+  include:
+    - get_action_positions
+    - get_item_locations
+    - move_position
+    - move_home
+    - grasp
+    - release
+    - speak
+    - is_speaking
+    - stop_speaking
+    # - calculator
+  # Hardware configuration
+hardware:
+  enable_camera: true
+  enable_speaker: true
+  enable_arm: true  # Disable the robotic arm hardware
+
+# Whether hardware is required for this agent
+hardware_required: true
+
+
+# Lower temperature for more deterministic execution
+model_defaults:
+  temperature: 0.1
+  max_tokens: 1024
+  model_name: google/gemma-3-27b-it:free
