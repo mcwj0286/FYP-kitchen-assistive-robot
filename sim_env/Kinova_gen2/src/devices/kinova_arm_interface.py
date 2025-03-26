@@ -359,8 +359,7 @@ class KinovaArmInterface:
         if success:
             print("Finished sending Cartesian position commands")
 
-    def send_cartesian_velocity(self, linear_velocity, angular_velocity, 
-                               fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005, hand_mode=1):
+    def send_cartesian_velocity(self, linear_velocity=[0,0,0], angular_velocity=[0,0,0], fingers=(0.0, 0.0, 0.0), duration=1.0, period=0.005, hand_mode=1):
         """
         Send a Cartesian velocity command to the arm.
         
