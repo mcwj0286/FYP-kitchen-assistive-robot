@@ -58,28 +58,33 @@ categories:
         parameters:
           - name: x
             type: float
-            description: X-coordinate (mm)
+            description: X-coordinate (meters)
           - name: y
             type: float
-            description: Y-coordinate (mm)
+            description: Y-coordinate (meters)
           - name: z
             type: float
-            description: Z-coordinate (mm)
-          - name: roll
+            description: Z-coordinate (meters)
+          - name: theta_x
             type: float
-            description: Roll angle (degrees)
+            description: Roll angle (radians)
             optional: true
             default: 0.0
-          - name: pitch
+          - name: theta_y
             type: float
-            description: Pitch angle (degrees)
+            description: Pitch angle (radians)
             optional: true
             default: 0.0
-          - name: yaw
+          - name: theta_z
             type: float
-            description: Yaw angle (degrees)
+            description: Yaw angle (radians)
             optional: true
             default: 0.0
+          - name: fingers
+            type: float
+            description: Fingers (0.0-7000.0)
+            optional: true
+            default: 2000.0
       
       - name: grasp
         description: Close the gripper to grasp an object
@@ -110,79 +115,224 @@ categories:
 tool_prompts:
   # Camera tools
   capture_environment:
+    name: capture_environment
     description: "Capture an image from the environment camera"
     parameters: []
-    example: '{"tool_name": "capture_environment", "parameters": {}}'
+    example: "To capture an image from the environment camera: capture_environment()"
+    result_example: |
+      {
+        "image": "data:image/jpeg;base64,...",
+        "description": "Image from environment camera",
+        "timestamp": "2023-05-15T14:32:45"
+      }
   
   capture_wrist:
+    name: capture_wrist
     description: "Capture an image from the wrist-mounted camera"
     parameters: []
-    example: '{"tool_name": "capture_wrist", "parameters": {}}'
+    example: "To capture an image from the wrist camera: capture_wrist()"
+    result_example: |
+      {
+        "image": "data:image/jpeg;base64,...",
+        "description": "Image from wrist-mounted camera",
+        "timestamp": "2023-05-15T14:32:45"
+      }
   
   capture_both:
+    name: capture_both
     description: "Capture images from both environment and wrist cameras"
     parameters: []
-    example: '{"tool_name": "capture_both", "parameters": {}}'
+    example: "To capture images from both cameras: capture_both()"
+    result_example: |
+      {
+        "environment": {
+          "image": "data:image/jpeg;base64,...",
+          "description": "Image from environment camera",
+          "timestamp": "2023-05-15T14:32:45"
+        },
+        "wrist": {
+          "image": "data:image/jpeg;base64,...",
+          "description": "Image from wrist-mounted camera",
+          "timestamp": "2023-05-15T14:32:45"
+        }
+      }
   
   # Speaker tools
   speak:
+    name: speak
     description: "Convert text to speech"
     parameters:
       - name: text
         description: "Text to speak"
-    example: '{"tool_name": "speak", "parameters": {"text": "Hello, how can I help you with your cooking today?"}}'
+    example: "To speak a message: speak(text=\"Hello, how can I help you with your cooking today?\")"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Text successfully converted to speech and played",
+        "text": "Hello, how can I help you with your cooking today?"
+      }
   
   is_speaking:
+    name: is_speaking
     description: "Check if the speaker is currently active"
     parameters: []
-    example: '{"tool_name": "is_speaking", "parameters": {}}'
+    example: "To check if speaking is active: is_speaking()"
+    result_example: |
+      {
+        "speaking": true,
+        "current_text": "Hello, how can I help you with your cooking today?"
+      }
   
   stop_speaking:
+    name: stop_speaking
     description: "Stop any current speech or audio playback"
     parameters: []
-    example: '{"tool_name": "stop_speaking", "parameters": {}}'
+    example: "To stop speaking: stop_speaking()"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Speech stopped successfully"
+      }
   
   # Robotic arm tools
   move_home:
+    name: move_home
     description: "Move the arm to the home position"
     parameters: []
-    example: '{"tool_name": "move_home", "parameters": {}}'
+    example: "To move the arm to home position: move_home()"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Robot arm successfully moved to home position",
+        "position": [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
+      }
   
   move_position:
+    name: move_position
     description: "Move the arm to a specific Cartesian position"
     parameters:
       - name: x
-        description: "X-coordinate (mm)"
+        description: "X-coordinate (meters)"
       - name: y
-        description: "Y-coordinate (mm)"
+        description: "Y-coordinate (meters)"
       - name: z
-        description: "Z-coordinate (mm)"
-      - name: roll
-        description: "Roll angle (degrees)"
-      - name: pitch
-        description: "Pitch angle (degrees)"
-      - name: yaw
-        description: "Yaw angle (degrees)"
-    example: '{"tool_name": "move_position", "parameters": {"x": 250, "y": 300, "z": 200, "roll": 0, "pitch": 45, "yaw": 0}}'
+        description: "Z-coordinate (meters)"
+      - name: theta_x
+        description: "Roll angle (radians)"
+      - name: theta_y
+        description: "Pitch angle (radians)"
+      - name: theta_z
+        description: "Yaw angle (radians)"
+      - name: fingers
+        description: "Fingers (0.0-7000.0)"
+    example: "To move the arm to a specific position: move_position(x=0.2, y=0.3, z=0.4, theta_x=0, theta_y=0, theta_z=0, fingers=2000.0)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Robot arm successfully moved to requested position",
+        "requested_position": {
+          "x": 0.2,
+          "y": 0.3,
+          "z": 0.4,
+          "theta_x": 0,
+          "theta_y": 0,
+          "theta_z": 0,
+          "fingers": 2000.0
+        },
+        "actual_position": {
+          "x": 0.201,
+          "y": 0.299,
+          "z": 0.402,
+          "theta_x": 0.001,
+          "theta_y": 0.002,
+          "theta_z": 0.001,
+          "fingers": 2000.0
+        }
+      }
   
   grasp:
+    name: grasp
     description: "Close the gripper to grasp an object"
     parameters:
       - name: strength
         description: "Gripping strength (0.0-1.0)"
-    example: '{"tool_name": "grasp", "parameters": {"strength": 0.7}}'
+    example: "To grasp an object: grasp(strength=0.7)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Gripper closed successfully",
+        "strength": 0.7,
+        "gripper_position": 5600.0
+      }
   
   release:
+    name: release
     description: "Open the gripper to release an object"
     parameters: []
-    example: '{"tool_name": "release", "parameters": {}}'
+    example: "To release an object: release()"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Gripper opened successfully",
+        "gripper_position": 0.0
+      }
   
   get_position:
+    name: get_position
     description: "Get the current position of the robotic arm"
     parameters: []
-    example: '{"tool_name": "get_position", "parameters": {}}'
+    example: "To get the current position: get_position()"
+    result_example: |
+      {
+        "position": {
+          "x": 0.201,
+          "y": 0.299,
+          "z": 0.402,
+          "theta_x": 0.001,
+          "theta_y": 0.002,
+          "theta_z": 0.001,
+          "fingers": 2000.0
+        },
+        "joint_angles": [0.45, 0.23, 0, 1.57, 0, 0]
+      }
   
   move_default:
+    name: move_default
     description: "Move the arm to a default position suitable for kitchen tasks"
     parameters: []
-    example: '{"tool_name": "move_default", "parameters": {}}' 
+    example: "To move to the default position: move_default()"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Robot arm successfully moved to default kitchen position",
+        "position": {
+          "x": 0.3,
+          "y": 0.0,
+          "z": 0.4,
+          "theta_x": 0,
+          "theta_y": 1.57,
+          "theta_z": 0,
+          "fingers": 2000.0
+        }
+      }
+
+# Usage guide for hardware tools
+hardware_tools_guide: |
+  Hardware tools provide direct control over the robot's physical components including cameras, speakers, and the robotic arm.
+  
+  When to use hardware tools:
+  - Use camera tools (capture_environment, capture_wrist, capture_both) to get visual information about the environment
+  - Use speaker tools (speak, is_speaking, stop_speaking) to communicate with the user through audio
+  - Use robotic arm tools (move_home, move_position, grasp, release, get_position, move_default) to manipulate objects
+  
+  Guidelines for using hardware tools:
+  1. Always check the current position before making large movements
+  2. Use move_home() when you need to reset the arm to a safe position
+  3. Use move_default() to position the arm for common kitchen tasks
+  4. Use appropriate gripper strength when grasping different objects (delicate vs sturdy)
+  5. Always monitor tool results to confirm successful operations
+  
+  Example usage patterns:
+  1. For picking up an object: get_position() → move_position() → grasp() → move_position()
+  2. For putting down an object: move_position() → release() → move_home()
+  3. For user communication: speak() with clear, concise instructions 
