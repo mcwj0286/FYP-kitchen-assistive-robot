@@ -61,7 +61,8 @@ class ConfigurableAgent:
         verbose: bool = True,
         model_name: Optional[str] = None,
         use_hardware: bool = True,
-        capture_image: str = ""
+        capture_image: str = "",
+        max_tool_iterations: int = 5
     ):
         """
         Initialize a configurable agent.
@@ -73,11 +74,13 @@ class ConfigurableAgent:
             model_name: Model name to use (overrides config)
             use_hardware: Whether to use real hardware (False uses mock implementations)
             capture_image: Which camera view to capture with each prompt ["environment", "wrist", "both", ""]
+            max_tool_iterations: Maximum number of tool iterations to allow (for multi-turn tool calling)
         """
         self.agent_type = agent_type
         self._verbose = verbose
         self._use_hardware = use_hardware
         self._capture_image = capture_image
+        self._max_tool_iterations = max_tool_iterations
         
         # Initialize configuration loader
         if config_path:
@@ -531,50 +534,59 @@ class ConfigurableAgent:
         # Add the user input to the conversation
         messages = _history + [user_message]
         
-        # Define the response format for structured outputs
-        response_format = {
-            "thought": "Your reasoning process (not shown to the user)",
-            "reply": "Your response to the user",
-            "tool_calls": [
-                {
-                    "tool_name": "ToolName",
-                    "parameters": {
-                        "param1": "value1",
-                        "param2": "value2"
-                    }
-                }
-            ]
-        }
-        
         # Construct the initial prompt with system message and available tools
         messages = self._construct_prompt(messages)
         
         try:
-            # Print the input to the first API call
-            if DEBUG:
-                print("\n=======================first api call========")
-                print(json.dumps(messages, indent=2))
-                print("==========================================\n")
+            # Initialize variables for multi-turn tool calling
+            iteration = 0
+            final_response = None
+            all_tool_results = []
+            is_complete = False
             
-            # Get the initial response from the language model
-            initial_response = self.llm.invoke(messages)
-            
-            # Print the response from the first API call
-            if DEBUG:
-                print("\n=======================first api response========")
-                print(initial_response.content)
-                print("==========================================\n")
-            
-            # Extract structured response (thought, reply, tool_calls)
-            structured_response = self._extract_structured_response(initial_response.content)
-            
-            # Log the structured response
-            if self._verbose:
-                logger.info(f"Initial structured response: {json.dumps(structured_response, indent=2)}")
-            
-            # Check if there are tool calls
-            if structured_response.get("tool_calls", []):
-                tool_results = []
+            # Start the tool calling loop - continues until completion or max iterations
+            while not is_complete and iteration < self._max_tool_iterations:
+                iteration += 1
+                
+                if self._verbose:
+                    logger.info(f"Starting tool iteration {iteration}/{self._max_tool_iterations}")
+                
+                # Print the input to the API call if in debug mode
+                if DEBUG:
+                    print(f"\n=======================api call (iteration {iteration})========")
+                    print(json.dumps(messages, indent=2))
+                    print("==========================================\n")
+                
+                # Get the response from the language model for this iteration
+                current_response = self.llm.invoke(messages)
+                
+                # Print the response if in debug mode
+                if DEBUG:
+                    print(f"\n=======================api response (iteration {iteration})========")
+                    print(current_response.content)
+                    print("==========================================\n")
+                
+                # Extract structured response including is_complete flag
+                structured_response = self._extract_structured_response(current_response.content)
+                
+                # Log the structured response for this iteration
+                if self._verbose:
+                    logger.info(f"Iteration {iteration} structured response: {json.dumps(structured_response, indent=2)}")
+                
+                # Check if this response is marked as complete or has no tool calls
+                is_complete = structured_response.get("is_complete", False)
+                if not structured_response.get("tool_calls"):
+                    is_complete = True
+                
+                if is_complete:
+                    # This is the final response
+                    final_response = structured_response
+                    if self._verbose:
+                        logger.info(f"Tool execution complete at iteration {iteration}")
+                    break
+                    
+                # Process tool calls for this iteration
+                iteration_tool_results = []
                 
                 # Process each tool call
                 for tool_call in structured_response["tool_calls"]:
@@ -615,6 +627,7 @@ class ConfigurableAgent:
                     tool_response = {
                         "call_id": call_id,
                         "tool_name": tool_name,
+                        "parameters": parameters,
                         "data": tool_result
                     }
                     
@@ -622,12 +635,15 @@ class ConfigurableAgent:
                     if image_data:
                         tool_response["image"] = image_data
                     
-                    tool_results.append(tool_response)
+                    iteration_tool_results.append(tool_response)
                     
                     if self._verbose:
                         logger.info(f"Tool response: {json.dumps(tool_response, indent=2)}")
                 
-                # Add the initial response to conversation
+                # Add all tool results from this iteration
+                all_tool_results.extend(iteration_tool_results)
+                
+                # Add the response to the conversation
                 messages.append({
                     "role": "assistant", 
                     "content": json.dumps(structured_response)
@@ -635,13 +651,15 @@ class ConfigurableAgent:
                 
                 # Add the tool responses to conversation
                 tool_response_content = {
-                    "tool_responses": tool_results,
-                    "instructions": "Please analyze these tool results and provide a helpful response to the user. Make sure to include relevant information from the tool results. Even if there was an error with the tool, provide the best response you can."
+                    "tool_responses": iteration_tool_results,
+                    "iteration": iteration,
+                    "max_iterations": self._max_tool_iterations,
+                    "instructions": "Analyze these tool results and decide if you have enough information to respond to the user or need to call additional tools."
                 }
                 
                 # Extract image data from tool responses to include in the next message
                 images_from_tools = []
-                for result in tool_results:
+                for result in iteration_tool_results:
                     if "image" in result and isinstance(result["image"], dict) and "url" in result["image"]:
                         images_from_tools.append(result["image"])
                 
@@ -655,77 +673,41 @@ class ConfigurableAgent:
                 }
                 messages.append(tool_response_message)
                 
-                # Get the final response after processing tool results
-                # Create a new messages list without the system message
-                user_messages = [msg for msg in messages if msg.get("role") != "system"]
-                final_messages = self._construct_prompt(user_messages)
+                if self._verbose:
+                    logger.info(f"Completed iteration {iteration} with {len(iteration_tool_results)} tool results")
+            
+            # If we exited the loop without setting final_response (reached max iterations)
+            if final_response is None:
+                if self._verbose:
+                    logger.warning(f"Reached maximum iterations ({self._max_tool_iterations}) without completion")
                 
-                # Print the input to the second API call
-                if DEBUG:
-                    print("\n=======================second api call========")
-                    print(json.dumps(final_messages, indent=2))
-                    print("==========================================\n")
-                
-                final_response = self.llm.invoke(final_messages)
-                
-                # Print the response from the second API call with additional debug info
-                if DEBUG:
-                    print("\n=======================second api response========")
-                    if hasattr(final_response, 'content') and final_response.content:
-                        print(final_response.content)
-                    
-                    print("==========================================\n")
-                
-                # Extract the final structured response
-                final_structured = self._extract_structured_response(final_response.content)
-                
-                # If the final structured response is empty or doesn't have a reply, create a fallback
-                if not final_structured.get("reply"):
-                    # Create a fallback response that includes tool information
-                    has_errors = any("error" in result.get("data", {}) if isinstance(result.get("data"), dict) else False 
-                                    for result in tool_results)
-                    
-                    if has_errors:
-                        final_structured["reply"] = "I encountered an error when trying to use the tool. " + \
-                                                   "Please check your request and try again."
-                    else:
-                        # Create a response that includes the tool results
-                        tool_data = []
-                        for result in tool_results:
-                            data = result.get("data", "No data")
-                            tool_name = result.get("tool_name", "tool")
-                            tool_data.append(f"Result from {tool_name}: {data}")
-                        
-                        final_structured["reply"] = "Here are the results: " + " ".join(tool_data)
-                
-                # Add the final response to conversation for history
+                # Create a special prompt asking for a final response
                 messages.append({
-                    "role": "assistant", 
-                    "content": json.dumps(final_structured)
+                    "role": "user",
+                    "content": f"You've reached the maximum number of tool iterations ({self._max_tool_iterations}). Please provide your final response based on the information gathered so far."
                 })
                 
-                # Return the final structured response
-                return {
-                    "output": final_structured.get("reply", ""),
-                    "thought": final_structured.get("thought", ""),
-                    "tool_calls": structured_response.get("tool_calls", []),
-                    "tool_results": tool_results,
-                    "final_response": final_structured
-                }
-            else:
-                # No tool calls, return the initial response
-                messages.append({
-                    "role": "assistant", 
-                    "content": json.dumps(structured_response)
-                })
-                
-                return {
-                    "output": structured_response.get("reply", ""),
-                    "thought": structured_response.get("thought", ""),
-                    "tool_calls": [],
-                    "tool_results": [],
-                    "final_response": structured_response
-                }
+                # Get the final response
+                final_llm_response = self.llm.invoke(messages)
+                final_response = self._extract_structured_response(final_llm_response.content)
+                final_response["is_complete"] = True  # Force completion
+            
+            # Add the final response to conversation for history
+            messages.append({
+                "role": "assistant", 
+                "content": json.dumps(final_response)
+            })
+            
+            # Return the comprehensive response with all tool results
+            return {
+                "output": final_response.get("reply", ""),
+                "thought": final_response.get("thought", ""),
+                "tool_calls": [tool_call for result in all_tool_results for tool_call in [{"tool_name": result["tool_name"], "parameters": result.get("parameters", {})}]],
+                "tool_results": all_tool_results,
+                "iterations": iteration,
+                "is_complete": final_response.get("is_complete", True),
+                "final_response": final_response
+            }
         
         except Exception as e:
             logger.error(f"Error processing input: {e}")
@@ -740,7 +722,7 @@ class ConfigurableAgent:
             response_text: Raw text response from the LLM
             
         Returns:
-            Dictionary with thought, reply, and tool_calls
+            Dictionary with thought, reply, tool_calls, and is_complete flag
         """
         # First check if the response contains a code block with JSON
         code_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
@@ -755,6 +737,7 @@ class ConfigurableAgent:
                     parsed_json["thought"] = parsed_json.get("thought", "")
                     parsed_json["reply"] = parsed_json.get("reply", "")
                     parsed_json["tool_calls"] = parsed_json.get("tool_calls", [])
+                    parsed_json["is_complete"] = parsed_json.get("is_complete", False)
                     return parsed_json
             except (json.JSONDecodeError, ValueError, TypeError) as e:
                 if self._verbose:
@@ -771,6 +754,7 @@ class ConfigurableAgent:
                 response_json["thought"] = response_json.get("thought", "")
                 response_json["reply"] = response_json.get("reply", "")
                 response_json["tool_calls"] = response_json.get("tool_calls", [])
+                response_json["is_complete"] = response_json.get("is_complete", False)
                 return response_json
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
@@ -808,10 +792,14 @@ class ConfigurableAgent:
             thought = ""
             reply = response_text
         
+        # If there are no tool calls, assume the response is complete
+        is_complete = len(tool_calls) == 0
+        
         return {
             "thought": thought,
             "reply": reply,
-            "tool_calls": tool_calls
+            "tool_calls": tool_calls,
+            "is_complete": is_complete
         }
     
     def _construct_prompt(self, conversation: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -833,6 +821,7 @@ To use tools, respond in the following JSON format:
 {{
   "thought": "Your reasoning process (not shown to the user)",
   "reply": "Your response to the user",
+  "is_complete": false,  // Set to true when you have enough information to respond
   "tool_calls": [
     {{
       "tool_name": "ToolName",
@@ -843,6 +832,11 @@ To use tools, respond in the following JSON format:
     }}
   ]
 }}
+
+You can call multiple tools in sequence across multiple turns to complete complex tasks. 
+After each tool result, decide if you:
+1. Have enough information to respond to the user (set "is_complete": true)
+2. Need to call more tools (provide new "tool_calls" and keep "is_complete": false)
 
 Available tools:
 """
@@ -963,6 +957,7 @@ To use tools, respond in the following JSON format:
 {{
   "thought": "Your reasoning process (not shown to the user)",
   "reply": "Your response to the user",
+  "is_complete": false,  // Set to true when you have enough information to respond
   "tool_calls": [
     {{
       "tool_name": "ToolName",
@@ -973,6 +968,11 @@ To use tools, respond in the following JSON format:
     }}
   ]
 }}
+
+You can call multiple tools in sequence across multiple turns to complete complex tasks. 
+After each tool result, decide if you:
+1. Have enough information to respond to the user (set "is_complete": true)
+2. Need to call more tools (provide new "tool_calls" and keep "is_complete": false)
 
 Available tools:
 """
@@ -1074,7 +1074,8 @@ if __name__ == "__main__":
     vision_agent = ConfigurableAgent(
         agent_type="vision_agent", 
         verbose=True,
-        capture_image="environment"  # Automatically capture environment images
+        capture_image="environment",  # Automatically capture environment images
+        max_tool_iterations=5
     )
     
     vision_agent.print_system_prompt()
