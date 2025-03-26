@@ -1,0 +1,59 @@
+# Manipulation Tools Configuration
+# Defines tools for robot manipulation capabilities using machine learning models
+
+categories:
+  manipulation:
+    description: "Machine learning-powered object manipulation tools"
+    tools:
+      - name: object_manipulation
+        description: "Control the robot to manipulate objects based on a task description using machine learning models"
+        hardware_required: true
+        parameters:
+          - name: task
+            type: string
+            description: "Textual description of the task to perform (e.g., 'pick up the cup', 'open the drawer')"
+
+# Tool prompts for LLM system prompts
+tool_prompts:
+  object_manipulation:
+    name: object_manipulation
+    description: "Use deep learning model to perform precise manipulation of objects. Currently only supports grasping tasks."
+    parameters:
+      - name: task
+        description: "A clear, concise description of the manipulation task (e.g., 'grasp the cup', 'grasp the spoon in the bowl')"
+    example: "To have the robot grasp an object: object_manipulation(task=\"grasp the cup\")"
+    result_example: |
+      Object manipulation completed:
+      - Task: grasp the cup
+      - Duration: 10.25 seconds
+      - Actions sent: 302
+      - Success rate: 97.3%
+
+# Usage guide for manipulation tools
+manipulation_tools_guide: |
+  The object manipulation tool provides high-level control of the robot arm using machine learning models.
+  
+  When to use object manipulation:
+  - When you need the robot to perform complex, coordinated movements
+  - When you need the robot to react to the environment in real-time
+  - When you want to express a task in natural language instead of detailed coordinates
+  
+  Guidelines for using object manipulation:
+  1. Provide clear, specific task descriptions (e.g., "pick up the blue cup" is better than "grab a cup")
+  2. Tasks will run for a fixed duration (typically 10 seconds)
+  3. The tool automatically uses both camera views and proprioceptive feedback
+  4. The tool uses a machine learning model trained on similar tasks
+  5. Monitor the success rate in the result to determine if the task succeeded
+  
+  Example tasks:
+  - "pick up the red cup"
+  - "open the drawer"
+  - "place the spoon in the bowl"
+  - "push the button"
+  - "twist the lid off the jar"
+  
+  Limitations:
+  - Performance depends on the quality of the underlying model
+  - Tasks must be similar to what the model was trained on
+  - Complex multi-step tasks may need to be broken down into simpler commands
+  - The tool has a fixed execution time regardless of task complexity 
