@@ -15,7 +15,7 @@ import yaml
 from dotenv import load_dotenv
 import torch
 import numpy as np
-
+import cv2
 # Load environment variables from .env file
 load_dotenv()
 
@@ -356,11 +356,10 @@ def load_model():
         return None, None
 
 def preprocess_image(frames_dict, device):
-    """
-    Preprocess multiple camera frames for model input
+    """Preprocess multiple camera frames for model input
     
     Args:
-        frames_dict: Dictionary of camera frames {cam_id: frame}
+        frames_dict: Dictionary of camera frames {cam_id: frame} (only valid frames)
         device: PyTorch device
         
     Returns:
@@ -371,30 +370,20 @@ def preprocess_image(frames_dict, device):
         for cam_id, frame in frames_dict.items():
             if frame is None:
                 continue
-            # Convert BGR to RGB
-            image_rgb = frame
-            if len(frame.shape) == 3 and frame.shape[2] == 3:  # Check if it's a BGR image
-                image_rgb = frame[:, :, ::-1]  # Simple BGR to RGB conversion
+            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Resize to 128x128
-            frame_resized = np.array(image_rgb)
-            if frame_resized.shape[0] != 128 or frame_resized.shape[1] != 128:
-                import cv2
-                frame_resized = cv2.resize(image_rgb, (128, 128))
-            
+            # Resize using cv2 (target size 128x128)
+            frame_resized = cv2.resize(image_rgb, (128, 128))
             # Convert to float32, normalize to [0,1] range  
             frame_normalized = frame_resized.astype(np.float32) / 255.0
-            
             # Convert to tensor and rearrange dimensions to (C,H,W)
             tensor_img = torch.from_numpy(frame_normalized).permute(2, 0, 1)
-            
             # Add batch and time dimensions: (B=1, T=1, C, H, W)
             tensor_img = tensor_img.unsqueeze(0).unsqueeze(0).to(device)
             processed_frames[cam_id] = tensor_img
-        
         return processed_frames
     except Exception as e:
-        logger.error(f"Error in image preprocessing: {e}")
+        print(f"Error in image preprocessing: {e}")
         return None
 
 def preprocess_robot_state(robot_state, device):
