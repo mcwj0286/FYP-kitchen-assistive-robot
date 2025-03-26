@@ -804,7 +804,7 @@ class RoboticArmTools:
             return f"Error moving to home position: {str(e)}"
     
     def move_position(self, x: float, y: float, z: float, 
-                     theta_x: float = None, theta_y: float = None, theta_z: float = None,gripper: float = None) -> str:
+                     theta_x: float = None, theta_y: float = None, theta_z: float = None,fingers: float = None) -> str:
         """
         Move the arm to a specific cartesian position.
         
@@ -831,8 +831,8 @@ class RoboticArmTools:
                 theta_y = current_pos[4]
             if theta_z is None:
                 theta_z = current_pos[5]
-            if gripper is None:
-                gripper = current_pos[6]
+            if fingers is None:
+                fingers = current_pos[6]
             
             # Send the position command
             position = (float(x), float(y), float(z))
@@ -841,12 +841,12 @@ class RoboticArmTools:
             self.arm.send_cartesian_position(
                 position=position,
                 rotation=rotation,
-                fingers=(float(gripper), float(gripper), float(gripper)),  # Default to open fingers
+                fingers=(float(fingers), float(fingers), float(fingers)),  # Default to open fingers
                 duration=5.0  # Reasonable duration for movement
             )
-            
+            time.sleep(5)
             # Note: we don't wait for completion as per requirements
-            return f"Successfully moved to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z})"
+            return f"Successfully moved to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z}) and fingers {fingers}"
                 
         except Exception as e:
             logger.error(f"Error moving to position: {e}")
@@ -871,7 +871,7 @@ class RoboticArmTools:
             finger_velocity = strength * 3000.0  # Scale to finger position range (0-6000)
             
             # Get current position
-            self.arm.send_cartesian_velocity([0,0,0,0,0,0],fingers=(finger_velocity,finger_velocity,finger_velocity),hand_mode=1,duration=2.0)
+            self.arm.send_cartesian_velocity(fingers=(finger_velocity,finger_velocity,finger_velocity),hand_mode=1,duration=2.0)
             #TODO: update the duration based the arm speed
             time.sleep(2)
             
