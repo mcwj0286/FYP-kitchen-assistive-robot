@@ -575,7 +575,10 @@ class ConfigurableAgent:
                 # Log the structured response for this iteration
                 if self._verbose:
                     logger.info(f"Iteration {iteration} structured response: {json.dumps(structured_response, indent=2)}")
-                
+                #For record demo video purpose, print the reply
+                else:
+                    if structured_response['is_complete'] == False:
+                        print(f"{structured_response['reply']}")
                 # Check if this response is marked as complete or has no tool calls
                 is_complete = structured_response.get("is_complete", False)
                 if not structured_response.get("tool_calls"):
@@ -826,8 +829,8 @@ To use tools, respond in the following JSON format:
 {{
   "thought": "Your reasoning process (not shown to the user)",
   "plan": "Your action plan",
-  "reply": "Your response to the user",
   "is_complete": false,  // Set to true when you have enough information to respond
+  "reply": "Your response to the user. If you are plan to use tools call and the task is not complete, describe your action in short and imcomplete setences.Example: "I'm using calculator ...",
   "tool_calls": [
     {{
       "tool_name": "ToolName",
