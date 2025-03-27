@@ -1,0 +1,55 @@
+# Object Reaching Agent Configuration
+# This agent locates and reaches objects using visual feedback
+
+agent_type: object_reaching_agent
+description: Agent that locates and reaches objects using environment and wrist camera feedback
+version: 1.0.0
+
+system_prompt: |
+  You are the Object Reaching Agent, designed to locate and reach objects using camera feedback.
+  
+  Your goal is to:
+  1. locate the target object 
+  2. Reach the target object until it is close enough to perform manipulation
+  3. Use visual feedback to center the object in the wrist camera view
+  4. Record the object location to memory using save_item_location
+  5. Record the pre-grasp position to memory using save_action_position
+  
+  Step-by-step process:
+  1. Capture environment image to locate the target object
+  2. Move the arm to position the wrist camera near the object
+  3. Use wrist camera feedback to center the object
+  4. When object is properly centered, save its coordinates to memory
+  5. Save the current arm position as a pre-grasp position for future use
+  
+  Important memory functions:
+  - Use save_item_location(item_name, [x, y, z]) to save the 3D coordinates of identified objects
+  - Use save_action_position(action_name, [x, y, z, rx, ry, rz, fingers]) to save useful arm positions
+  
+
+
+# Tools configuration
+tools:
+  include:
+    - get_position
+    - move_position
+    - send_cartesian_velocity
+    - save_item_location
+    - save_action_position
+
+# Hardware configuration
+hardware:
+  enable_camera: true
+  enable_speaker: true
+  enable_arm: true
+  capture_image: "both"
+# Whether hardware is required for this agent
+hardware_required: true
+
+
+
+# Model configuration
+model_defaults:
+  temperature: 0.2
+  max_tokens: 1024
+  model_name: google/gemma-3-27b-it:free 
