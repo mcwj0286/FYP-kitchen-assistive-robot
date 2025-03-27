@@ -36,7 +36,8 @@ def print_header(agent_type: str):
     print()
 
 def create_session_agent(agent_type: str, verbose: bool = True, model: Optional[str] = None, 
-                config_path: Optional[str] = None, use_hardware: bool = True) -> ConfigurableAgent:
+                config_path: Optional[str] = None, use_hardware: bool = True,
+                enable_conversation_logging: bool = False) -> ConfigurableAgent:
     """
     Create an agent for the interactive session.
     
@@ -46,18 +47,20 @@ def create_session_agent(agent_type: str, verbose: bool = True, model: Optional[
         model: Optional model name to use
         config_path: Optional path to a YAML configuration file
         use_hardware: Whether to use hardware or mock implementations
+        enable_conversation_logging: Whether to log the full conversation to a file
         
     Returns:
         An instance of the ConfigurableAgent
     """
     try:
-        # Use the create_agent function from agents.py
+        # Use the create_agent function from agents.py with conversation logging
         return create_agent(
             agent_type=agent_type,
             config_path=config_path,
             verbose=verbose,
             model_name=model,
-            use_hardware=use_hardware
+            use_hardware=use_hardware,
+            enable_conversation_logging=enable_conversation_logging
         )
     except Exception as e:
         logger.error(f"Error creating agent: {e}")
@@ -69,7 +72,8 @@ def create_session_agent(agent_type: str, verbose: bool = True, model: Optional[
         raise ValueError(f"Failed to create agent of type '{agent_type}': {str(e)}")
 
 def interactive_session(agent_type: str = 'base_agent', verbose: bool = True, model: Optional[str] = None,
-                        config_path: Optional[str] = None, use_hardware: bool = True):
+                        config_path: Optional[str] = None, use_hardware: bool = True,
+                        enable_conversation_logging: bool = False):
     """
     Start an interactive session with the specified agent type.
     
@@ -79,9 +83,17 @@ def interactive_session(agent_type: str = 'base_agent', verbose: bool = True, mo
         model: Optional model name to use
         config_path: Optional path to a YAML configuration file
         use_hardware: Whether to use hardware or mock implementations
+        enable_conversation_logging: Whether to log the full conversation to a file
     """
-    # Create the agent
-    agent = create_session_agent(agent_type, verbose, model, config_path, use_hardware)
+    # Create the agent with conversation logging
+    agent = create_session_agent(
+        agent_type, 
+        verbose, 
+        model, 
+        config_path, 
+        use_hardware,
+        enable_conversation_logging
+    )
     
     # Print welcome header
     display_type = agent_type
@@ -173,6 +185,8 @@ def main():
                         help='List available agent configurations')
     parser.add_argument('--no-hardware', action='store_true',
                         help='Disable hardware use (use mock implementations)')
+    parser.add_argument('--log-conversation', action='store_true',
+                        help='Enable detailed conversation logging to file')
     
     args = parser.parse_args()
     
@@ -191,7 +205,8 @@ def main():
             verbose=not args.quiet,
             model=args.model,
             config_path=args.config,
-            use_hardware=not args.no_hardware  # Pass hardware flag to the session
+            use_hardware=not args.no_hardware,
+            enable_conversation_logging=args.log_conversation
         )
     except KeyboardInterrupt:
         print("\nInteractive session terminated by user.")

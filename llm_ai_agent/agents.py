@@ -21,7 +21,8 @@ def create_agent(
     verbose: bool = True,
     model_name: Optional[str] = None,
     use_hardware: bool = True,
-    capture_image: str = ""
+    capture_image: str = "",
+    enable_conversation_logging: bool = False
 ) -> ConfigurableAgent:
     """
     Create an agent with the specified configuration.
@@ -46,7 +47,8 @@ def create_agent(
             verbose=verbose,
             model_name=model_name,
             use_hardware=use_hardware,
-            capture_image=capture_image
+            capture_image=capture_image,
+            enable_conversation_logging=enable_conversation_logging
         )
     except Exception as e:
         logger.error(f"Error creating agent of type '{agent_type}': {e}")

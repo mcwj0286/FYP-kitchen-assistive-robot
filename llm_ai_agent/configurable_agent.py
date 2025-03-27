@@ -13,6 +13,7 @@ import importlib
 import time
 from typing import Dict, Any, List, Optional, Callable, Union
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 DEBUG = os.getenv("DEBUG", "false") == "true"
@@ -62,7 +63,9 @@ class ConfigurableAgent:
         model_name: Optional[str] = None,
         use_hardware: bool = True,
         capture_image: str = "",
-        max_tool_iterations: int = 5
+        max_tool_iterations: int = 5,
+        enable_conversation_logging: bool = False,
+        log_directory: Optional[str] = "conversation_logs"
     ):
         """
         Initialize a configurable agent.
@@ -78,12 +81,20 @@ class ConfigurableAgent:
                            hardware.capture_image setting. Explicit values passed here take priority over
                            the configuration file.
             max_tool_iterations: Maximum number of tool iterations to allow (for multi-turn tool calling)
+            enable_conversation_logging: Whether to log the full conversation to a file
+            log_directory: Directory where conversation logs will be stored (default: current working directory)
         """
         self.agent_type = agent_type
         self._verbose = verbose
         self._use_hardware = use_hardware
         self._capture_image = capture_image
         self._max_tool_iterations = max_tool_iterations
+        self._enable_conversation_logging = enable_conversation_logging
+        self._log_directory = log_directory
+        
+        # Set up conversation logger if enabled
+        if self._enable_conversation_logging:
+            self._setup_conversation_logger()
         
         # Initialize configuration loader
         if config_path:
@@ -540,6 +551,16 @@ class ConfigurableAgent:
         # Construct the initial prompt with system message and available tools
         messages = self._construct_prompt(messages)
         
+        # Log the system prompt and user input
+        if self._enable_conversation_logging:
+            # Find and log the system message
+            for msg in messages:
+                if msg["role"] == "system":
+                    self._log_conversation("system", msg["content"])
+            
+            # Log the user input
+            self._log_conversation("user", user_input)
+        
         try:
             # Initialize variables for multi-turn tool calling
             iteration = 0
@@ -563,11 +584,9 @@ class ConfigurableAgent:
                 # Get the response from the language model for this iteration
                 current_response = self.llm.invoke(messages)
                 
-                # Print the response if in debug mode
-                if DEBUG:
-                    print(f"\n=======================api response (iteration {iteration})========")
-                    print(current_response.content)
-                    print("==========================================\n")
+                # Log the assistant's response
+                if self._enable_conversation_logging:
+                    self._log_conversation("assistant", current_response.content, iteration)
                 
                 # Extract structured response including is_complete flag
                 structured_response = self._extract_structured_response(current_response.content)
@@ -679,6 +698,10 @@ class ConfigurableAgent:
                 }
                 messages.append(tool_response_message)
                 
+                # Log the tool responses
+                if self._enable_conversation_logging:
+                    self._log_conversation("tool", json.dumps(tool_response_content), iteration)
+                
                 if self._verbose:
                     logger.info(f"Completed iteration {iteration} with {len(iteration_tool_results)} tool results")
             
@@ -704,6 +727,10 @@ class ConfigurableAgent:
                 "content": json.dumps(final_response)
             })
             
+            # Log the final response
+            if self._enable_conversation_logging and final_response:
+                self._log_conversation("final", final_response)
+            
             # Return the comprehensive response with all tool results
             return {
                 "output": final_response.get("reply", ""),
@@ -717,6 +744,11 @@ class ConfigurableAgent:
         
         except Exception as e:
             logger.error(f"Error processing input: {e}")
+            
+            # Log the error
+            if self._enable_conversation_logging:
+                self._log_conversation("error", f"Error processing input: {e}")
+            
             return {"output": f"I encountered an error: {str(e)}"}
     
     def _extract_structured_response(self, response_text: str) -> Dict[str, Any]:
@@ -1061,6 +1093,73 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
                 formatted_history.append({"role": "user", "content": content})
         
         return formatted_history
+    
+    def _setup_conversation_logger(self):
+        """Set up a dedicated logger for conversation history."""
+        # Create a formatter for the conversation log
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        
+        # Create a conversation logger
+        self.conversation_logger = logging.getLogger(f"conversation.{self.agent_type}")
+        self.conversation_logger.setLevel(logging.INFO)
+        
+        # Create a unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"conversation_{self.agent_type}_{timestamp}.log"
+        # Create log directory if it doesn't exist
+        if self._log_directory:
+            os.makedirs(self._log_directory, exist_ok=True)
+            log_path = os.path.join(self._log_directory, log_filename)
+        else:
+            log_path = log_filename
+        
+        # Add a file handler
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setFormatter(formatter)
+        self.conversation_logger.addHandler(file_handler)
+        
+        # Prevent logs from propagating to the root logger
+        self.conversation_logger.propagate = False
+        
+        logger.info(f"Conversation logging enabled to {log_path}")
+    
+    def _log_conversation(self, role: str, content: Any, iteration: int = None):
+        """
+        Log a conversation message to the conversation log file.
+        
+        Args:
+            role: The role of the message sender ('system', 'user', 'assistant', 'tool')
+            content: The content of the message
+            iteration: Optional iteration number for tool calls
+        """
+        if not self._enable_conversation_logging or not hasattr(self, 'conversation_logger'):
+            return
+        
+        # Format the message based on role and content type
+        iteration_str = f" [Iteration {iteration}]" if iteration is not None else ""
+        header = f"=== {role.upper()}{iteration_str} ==="
+        
+        # Handle different content types appropriately
+        if isinstance(content, dict):
+            # Format dictionary content as JSON in code block
+            message = f"{header}\n\n```json\n{json.dumps(content, indent=2)}\n```"
+        elif role == "assistant" and isinstance(content, str):
+            # Try to parse assistant responses as JSON and format them
+            try:
+                json_content = json.loads(content)
+                message = f"{header}\n\n```json\n{json.dumps(json_content, indent=2)}\n```"
+            except json.JSONDecodeError:
+                # If it's not valid JSON, use the original format
+                message = f"{header}\n{content}"
+        else:
+            # Format string content directly
+            message = f"{header}\n{content}"
+        
+        # Add a separator for readability
+        message += "\n" + "-" * 80
+        
+        # Log the formatted message
+        self.conversation_logger.info(message)
 
 
 # Example usage
