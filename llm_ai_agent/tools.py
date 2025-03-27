@@ -268,6 +268,125 @@ def get_item_locations() -> str:
     except Exception as e:
         return f"Error retrieving item locations: {e}"
 
+def save_item_location(item_name: str, coordinates: list) -> str:
+    """
+    Save or update an item's location in memory.
+    
+    This tool adds or updates the coordinates of an item in the item_location.yaml file.
+    
+    Args:
+        item_name: Name of the item to save
+        coordinates: List of [x, y, z] coordinates in meters
+        
+    Returns:
+        A string indicating success or failure
+    """
+    try:
+        # Validate inputs
+        if not item_name or not isinstance(item_name, str):
+            return "Error: Item name must be a non-empty string"
+        
+        if not coordinates or not isinstance(coordinates, list) or len(coordinates) != 3:
+            return "Error: Coordinates must be a list of 3 numbers [x, y, z]"
+        
+        # Ensure all coordinates are numbers
+        try:
+            coordinates = [float(c) for c in coordinates]
+        except (ValueError, TypeError):
+            return "Error: Coordinates must be numerical values"
+        
+        # Get memory directory path
+        memory_dir = get_memory_path()
+        locations_file = os.path.join(memory_dir, "item_location.yaml")
+        
+        # Create directory if it doesn't exist
+        if not os.path.exists(memory_dir):
+            os.makedirs(memory_dir)
+        
+        # Load existing data or create new structure
+        if os.path.exists(locations_file):
+            with open(locations_file, 'r') as file:
+                locations_data = yaml.safe_load(file) or {}
+        else:
+            locations_data = {}
+        
+        # Ensure 'items' key exists
+        if 'items' not in locations_data:
+            locations_data['items'] = {}
+        
+        # Add or update item
+        locations_data['items'][item_name] = {
+            'coordinates': coordinates
+        }
+        
+        # Write back to file
+        with open(locations_file, 'w') as file:
+            yaml.dump(locations_data, file, default_flow_style=False)
+        
+        return f"Successfully saved location for item '{item_name}' at coordinates {coordinates}"
+        
+    except yaml.YAMLError as e:
+        return f"Error saving item location YAML: {e}"
+    except Exception as e:
+        return f"Error saving item location: {e}"
+
+def save_action_position(action_name: str, position: list) -> str:
+    """
+    Save or update a robot arm position in memory.
+    
+    This tool adds or updates a named position in the action_position.yaml file.
+    Positions are used for predefined robot movements or task-specific locations.
+    
+    Args:
+        action_name: Name of the action or position (e.g., "grasp_cup_position")
+        position: List of position values [x, y, z, theta_x, theta_y, theta_z, fingers]
+        
+    Returns:
+        A string indicating success or failure
+    """
+    try:
+        # Validate inputs
+        if not action_name or not isinstance(action_name, str):
+            return "Error: Action name must be a non-empty string"
+        
+        if not position or not isinstance(position, list) or len(position) != 7:
+            return "Error: Position must be a list of 7 values [x, y, z, theta_x, theta_y, theta_z, fingers]"
+        
+        # Ensure all position values are numbers
+        try:
+            position = [float(p) for p in position]
+        except (ValueError, TypeError):
+            return "Error: Position values must be numerical"
+        
+        # Get memory directory path
+        memory_dir = get_memory_path()
+        positions_file = os.path.join(memory_dir, "action_position.yaml")
+        
+        # Create directory if it doesn't exist
+        if not os.path.exists(memory_dir):
+            os.makedirs(memory_dir)
+        
+        # Load existing data or create new structure
+        if os.path.exists(positions_file):
+            with open(positions_file, 'r') as file:
+                positions_data = yaml.safe_load(file) or {}
+        else:
+            positions_data = {}
+        
+        # Add or update position
+        positions_data[action_name] = position
+        
+        # Write back to file
+        with open(positions_file, 'w') as file:
+            yaml.dump(positions_data, file, default_flow_style=False)
+        
+        return f"Successfully saved position '{action_name}': {position}"
+        
+    except yaml.YAMLError as e:
+        return f"Error saving action position YAML: {e}"
+    except Exception as e:
+        return f"Error saving action position: {e}"
+
 # Model loading and inference functions
 
 def load_model():
@@ -745,6 +864,8 @@ TOOLS = {
     "get_action_plans": get_action_plans,
     "get_action_positions": get_action_positions,
     "get_item_locations": get_item_locations,
+    "save_item_location": save_item_location,
+    "save_action_position": save_action_position,
     "object_manipulation": object_manipulation,  # Add the new tool
 }
 
