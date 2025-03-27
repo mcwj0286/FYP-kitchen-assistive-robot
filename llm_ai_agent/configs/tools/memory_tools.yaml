@@ -47,6 +47,30 @@ tool_prompts:
       Item: wine
       Coordinates: [0.17, 0.13, 0.03]
 
+  save_item_location:
+    name: save_item_location
+    description: "Save or update the 3D coordinates of an item in memory. This allows the robot to remember where objects are located for future interactions."
+    parameters:
+      - name: item_name
+        description: "Name of the item (e.g., 'cup', 'plate', 'spoon')"
+      - name: coordinates
+        description: "List of 3 floating point values [x, y, z] representing coordinates in meters. Must contain exactly 3 numerical values."
+    example: "To save the location of a cup: save_item_location(item_name='cup', coordinates=[0.25, 0.18, 0.05])"
+    result_example: |
+      Successfully saved location for item 'cup' at coordinates [0.25, 0.18, 0.05]
+
+  save_action_position:
+    name: save_action_position
+    description: "Save or update a robot arm position in memory. These positions are used for predefined movements or task-specific locations."
+    parameters:
+      - name: action_name
+        description: "Name of the action or position (e.g., 'grasp_cup_position'). Use the naming convention 'grasp_[item]_position' for grasping positions."
+      - name: position
+        description: "List of 7 floating point values [x, y, z, theta_x, theta_y, theta_z, fingers] representing position and orientation in meters/radians and finger position. Must contain exactly 7 numerical values."
+    example: "To save a grasping position: save_action_position(action_name='grasp_cup_position', position=[0.32, 0.21, 0.15, -1.57, 0.0, -1.57, 1500.0])"
+    result_example: |
+      Successfully saved position 'grasp_cup_position': [0.32, 0.21, 0.15, -1.57, 0.0, -1.57, 1500.0]
+
 # Usage guide for memory tools
 memory_tools_guide: |
   Memory tools provide access to stored information about the robot's environment and capabilities.
@@ -55,11 +79,15 @@ memory_tools_guide: |
   - Use get_action_plans() when you need to know what predefined procedures the robot can perform
   - Use get_action_positions() when you need coordinates for specific robot actions
   - Use get_item_locations() when you need to know where items are in the environment
+  - Use save_item_location() when you discover the position of a new item
+  - Use save_action_position() when you find a good position for grasping or manipulating an object
   
-  Memory tools work without parameters and return the complete contents of their respective memory files.
-  These tools are useful for planning tasks that involve known items or following predefined procedures.
+  Memory tools allow the robot to build knowledge over time and reuse successful strategies.
+  Saving positions and locations is especially valuable for enabling more efficient interactions in the future.
   
   Example usage:
   1. When a user asks "What can you help me with in the kitchen?", use get_action_plans() to see available procedures
   2. When a user asks "Where is the coffee?", use get_item_locations() to find the coordinates
-  3. When you need to move to a specific position, use get_action_positions() to find the right coordinates 
+  3. When you need to move to a specific position, use get_action_positions() to find the right coordinates
+  4. When you successfully locate a new object, use save_item_location() to remember where it is
+  5. When you find a good position for manipulating an object, use save_action_position() to save it 
