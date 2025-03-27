@@ -959,6 +959,144 @@ class RoboticArmTools:
             logger.error(f"Error moving to default position: {e}")
             return f"Error moving to default position: {str(e)}"
     
+    def turn_left(self, degree: float) -> str:
+        """
+        Turn the arm left around the Y axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=0.0, angular_y=degree, angular_z=0.0,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error turning left: {e}")
+            return f"Error turning left: {str(e)}"
+    
+    def turn_right(self, degree: float) -> str:
+        """
+        Turn the arm right around the Y axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=0.0, angular_y=-degree, angular_z=0.0,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error turning right: {e}")
+            return f"Error turning right: {str(e)}"
+    
+    def turn_down(self, degree: float) -> str:
+        """
+        Turn the arm down around the X axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=degree, angular_y=0.0, angular_z=0.0,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error turning down: {e}")
+            return f"Error turning down: {str(e)}"
+    
+    def turn_up(self, degree: float) -> str:
+        """
+        Turn the arm up around the X axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=-degree, angular_y=0.0, angular_z=0.0,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error turning up: {e}")
+            return f"Error turning up: {str(e)}"
+    
+    def rotate_left(self, degree: float) -> str:
+        """
+        Rotate the arm left around the Z axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=0.0, angular_y=0.0, angular_z=-degree,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error rotating left: {e}")
+            return f"Error rotating left: {str(e)}"
+    
+    def rotate_right(self, degree: float) -> str:
+        """
+        Rotate the arm right around the Z axis.
+        
+        Args:
+            degree: Angular velocity in degrees/second
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            return self.send_cartesian_velocity(
+                linear_x=0.0, linear_y=0.0, linear_z=0.0,
+                angular_x=0.0, angular_y=0.0, angular_z=degree,
+                duration=1.0
+            )
+        except Exception as e:
+            logger.error(f"Error rotating right: {e}")
+            return f"Error rotating right: {str(e)}"
+    
     def close(self):
         """Close the connection to the robotic arm."""
         if self.arm:

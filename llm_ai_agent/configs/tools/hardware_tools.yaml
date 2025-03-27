@@ -111,6 +111,54 @@ categories:
         hardware_required: true
         parameters: []
       
+      - name: turn_left
+        description: Turn the arm left around the Y axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
+      - name: turn_right
+        description: Turn the arm right around the Y axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
+      - name: turn_down
+        description: Turn the arm down around the X axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
+      - name: turn_up
+        description: Turn the arm up around the X axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
+      - name: rotate_left
+        description: Rotate the arm left around the Z axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
+      - name: rotate_right
+        description: Rotate the arm right around the Z axis
+        hardware_required: true
+        parameters:
+          - name: degree
+            type: float
+            description: Angular velocity in degrees/second
+      
       - name: send_cartesian_velocity
         description: Send velocity commands to move the arm at specified speeds
         hardware_required: true
@@ -350,6 +398,96 @@ tool_prompts:
           "theta_z": 0,
           "fingers": 2000.0
         }
+      }
+  
+  turn_left:
+    name: turn_left
+    description: "Turn the arm left around the Y axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To turn the arm left: turn_left(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent turn left command",
+        "angular_velocity": [0.0, 15.0, 0.0],
+        "duration": 1.0
+      }
+
+  turn_right:
+    name: turn_right
+    description: "Turn the arm right around the Y axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To turn the arm right: turn_right(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent turn right command",
+        "angular_velocity": [0.0, -15.0, 0.0],
+        "duration": 1.0
+      }
+
+  turn_down:
+    name: turn_down
+    description: "Turn the arm down around the X axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To turn the arm down: turn_down(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent turn down command",
+        "angular_velocity": [15.0, 0.0, 0.0],
+        "duration": 1.0
+      }
+
+  turn_up:
+    name: turn_up
+    description: "Turn the arm up around the X axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To turn the arm up: turn_up(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent turn up command",
+        "angular_velocity": [-15.0, 0.0, 0.0],
+        "duration": 1.0
+      }
+
+  rotate_left:
+    name: rotate_left
+    description: "Rotate the arm left around the Z axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To rotate the arm left: rotate_left(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent rotate left command",
+        "angular_velocity": [0.0, 0.0, -15.0],
+        "duration": 1.0
+      }
+
+  rotate_right:
+    name: rotate_right
+    description: "Rotate the arm right around the Z axis"
+    parameters:
+      - name: degree
+        description: "Angular velocity in degrees/second"
+    example: "To rotate the arm right: rotate_right(degree=15)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully sent rotate right command",
+        "angular_velocity": [0.0, 0.0, 15.0],
+        "duration": 1.0
       }
   
   send_cartesian_velocity:

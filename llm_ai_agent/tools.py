@@ -850,6 +850,13 @@ if HARDWARE_AVAILABLE:
             hardware_tools["grasp"] = arm_tools.grasp
             hardware_tools["release"] = arm_tools.release
             hardware_tools["get_position"] = arm_tools.get_position
+            hardware_tools["send_cartesian_velocity"] = arm_tools.send_cartesian_velocity
+            hardware_tools["turn_left"] = arm_tools.turn_left
+            hardware_tools["turn_right"] = arm_tools.turn_right
+            hardware_tools["turn_down"] = arm_tools.turn_down
+            hardware_tools["turn_up"] = arm_tools.turn_up
+            hardware_tools["rotate_left"] = arm_tools.rotate_left
+            hardware_tools["rotate_right"] = arm_tools.rotate_right
             logger.info("Robotic arm tools initialized successfully")
         except Exception as e:
             logger.warning(f"Error initializing robotic arm tools: {e}")
