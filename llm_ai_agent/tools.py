@@ -847,8 +847,8 @@ if HARDWARE_AVAILABLE:
             hardware_tools["move_home"] = arm_tools.move_home
             hardware_tools["move_default"] = arm_tools.move_default
             hardware_tools["move_position"] = arm_tools.move_position
-            hardware_tools["grasp"] = arm_tools.grasp
-            hardware_tools["release"] = arm_tools.release
+            hardware_tools["open_gripper"] = arm_tools.open_gripper
+            hardware_tools["close_gripper"] = arm_tools.close_gripper
             hardware_tools["get_position"] = arm_tools.get_position
             hardware_tools["send_cartesian_velocity"] = arm_tools.send_cartesian_velocity
             hardware_tools["turn_left"] = arm_tools.turn_left
@@ -931,4 +931,4 @@ if __name__ == "__main__":
     for name in get_tool_names():
         print(f"- {name}") 
 
-    object_manipulation("grasp cup ")
+    # object_manipulation("grasp cup ")

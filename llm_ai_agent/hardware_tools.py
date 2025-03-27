@@ -795,9 +795,21 @@ class RoboticArmTools:
         
         try:
             self.arm.move_home()
-            time.sleep(5)
-            # Note: we don't wait for completion as per requirements
-            return "Successfully moved to home position"
+            time.sleep(5)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully moved to home position, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully moved to home position\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 6000=closed)"
+            
+            return position_str
                 
         except Exception as e:
             logger.error(f"Error moving to home position: {e}")
@@ -844,9 +856,21 @@ class RoboticArmTools:
                 fingers=(float(fingers), float(fingers), float(fingers)),  # Default to open fingers
                 duration=5.0  # Reasonable duration for movement
             )
-            time.sleep(5)
-            # Note: we don't wait for completion as per requirements
-            return f"Successfully moved to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z}) and fingers {fingers}"
+            time.sleep(5)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            new_pos = self.arm.get_cartesian_position()
+            if not new_pos:
+                return f"Successfully moved to position ({x}, {y}, {z}) with rotation ({theta_x}, {theta_y}, {theta_z}) and fingers {fingers}, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully moved to position ({x}, {y}, {z})\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({new_pos[0]:.4f}, {new_pos[1]:.4f}, {new_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({new_pos[3]:.4f}, {new_pos[4]:.4f}, {new_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {new_pos[6]:.1f} (0=open, 6000=closed)"
+            
+            return position_str
                 
         except Exception as e:
             logger.error(f"Error moving to position: {e}")
@@ -951,9 +975,21 @@ class RoboticArmTools:
         
         try:
             success = self.arm.move_default(duration=5.0, monitor=False)
+            time.sleep(5)  # Wait for movement to complete
             
-            # Note: we don't wait for completion as per requirements
-            return "Command sent: Moving to default kitchen position"
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully moved to default kitchen position, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully moved to default kitchen position\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
                 
         except Exception as e:
             logger.error(f"Error moving to default position: {e}")
@@ -973,11 +1009,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=0.0, angular_y=degree, angular_z=0.0,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[0.0, degree, 0.0],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully turned left, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully turned left with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 6000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error turning left: {e}")
             return f"Error turning left: {str(e)}"
@@ -996,11 +1049,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=0.0, angular_y=-degree, angular_z=0.0,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[0.0, -degree, 0.0],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully turned right, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully turned right with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error turning right: {e}")
             return f"Error turning right: {str(e)}"
@@ -1019,11 +1089,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=degree, angular_y=0.0, angular_z=0.0,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[degree, 0.0, 0.0],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully turned down, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully turned down with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error turning down: {e}")
             return f"Error turning down: {str(e)}"
@@ -1042,11 +1129,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=-degree, angular_y=0.0, angular_z=0.0,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[-degree, 0.0, 0.0],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully turned up, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully turned up with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 6000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error turning up: {e}")
             return f"Error turning up: {str(e)}"
@@ -1065,11 +1169,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=0.0, angular_y=0.0, angular_z=-degree,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[0.0, 0.0, -degree],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully rotated left, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully rotated left with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error rotating left: {e}")
             return f"Error rotating left: {str(e)}"
@@ -1088,11 +1209,28 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            return self.send_cartesian_velocity(
-                linear_x=0.0, linear_y=0.0, linear_z=0.0,
-                angular_x=0.0, angular_y=0.0, angular_z=degree,
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0.0, 0.0, 0.0], 
+                angular_velocity=[0.0, 0.0, degree],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
                 duration=1.0
             )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully rotated right, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully rotated right with angular velocity {degree} deg/s\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
         except Exception as e:
             logger.error(f"Error rotating right: {e}")
             return f"Error rotating right: {str(e)}"
@@ -1106,7 +1244,7 @@ class RoboticArmTools:
     
     def send_cartesian_velocity(self, linear_x: float, linear_y: float, linear_z: float, 
                                 angular_x: float, angular_y: float, angular_z: float,
-                                fingers_velocity: float = 0.0, hand_mode: int = 1, duration: float = 1.0):
+                                fingers_velocity: float = 0.0, duration: float = 1.0, hand_mode: int = 1):
         """
         Send velocity commands to move the arm at specified speeds.
         
@@ -1114,15 +1252,15 @@ class RoboticArmTools:
             linear_x: Linear velocity in X direction (meters/second)
             linear_y: Linear velocity in Y direction (meters/second)
             linear_z: Linear velocity in Z direction (meters/second)
-            angular_x: Angular velocity around X axis (radians/second)
-            angular_y: Angular velocity around Y axis (radians/second)
-            angular_z: Angular velocity around Z axis (radians/second)
+            angular_x: Angular velocity around X axis (degrees/second)
+            angular_y: Angular velocity around Y axis (degrees/second)
+            angular_z: Angular velocity around Z axis (degrees/second)
             fingers_velocity: Gripper fingers velocity (default: 0.0)
+            duration: Duration to apply velocity (seconds) (default: 1.0)
             hand_mode: Hand mode (0-2) (default: 1)
-            duration: Duration to apply velocity (seconds)
             
         Returns:
-            A string indicating the command was sent
+            A string indicating the command was sent and the new position
         """
         if not self.arm:
             return "Error: Robotic arm not initialized"
@@ -1137,12 +1275,27 @@ class RoboticArmTools:
             self.arm.send_cartesian_velocity(
                 linear_velocity=linear_velocity, 
                 angular_velocity=angular_velocity, 
-                fingers=fingers, 
-                hand_mode=hand_mode,
-                duration=duration
+                fingers=fingers,
+                duration=duration,
+                hand_mode=hand_mode
             )
             
-            return f"Successfully sent cartesian velocity command for {duration} seconds"
+            # Wait for the movement to complete
+            time.sleep(duration)
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully sent cartesian velocity command, but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully sent cartesian velocity command\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 7000=closed)"
+            
+            return position_str
                 
         except Exception as e:
             logger.error(f"Error sending velocity command: {e}")
