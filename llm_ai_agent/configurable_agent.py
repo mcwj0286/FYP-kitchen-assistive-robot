@@ -39,6 +39,85 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+class LLM:
+    def __init__(self, model_name: str, temperature: float = 0.7, max_tokens: int = 3096):
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        
+    def invoke(self, messages: List[Dict[str, Any]]) -> Any:
+        """
+        Directly calls the OpenRouter API with the given messages, supporting both text and images.
+        
+        Args:
+            messages: A list of message objects in the format [{role: "system", content: "..."}, {role: "user", content: [...]}, ...]
+            
+        Returns:
+            A response object with a content attribute containing the LLM's response text
+        """
+        import requests
+        
+        
+        # API endpoint and auth
+        api_endpoint = "https://openrouter.ai/api/v1/chat/completions"
+        api_key = os.getenv('OPENROUTER_API_KEY')
+        
+        if not api_key:
+            logger.error("OPENROUTER_API_KEY environment variable is not set")
+            class ErrorResponse:
+                content = "Error: OpenRouter API key not found. Please set the OPENROUTER_API_KEY environment variable."
+            return ErrorResponse()
+        
+        # Construct the payload
+        payload = {
+            "model": self.model_name or os.getenv('MODEL_NAME', "anthropic/claude-3-opus-20240229"),
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": os.getenv("YOUR_SITE_URL", "https://example.com"),
+            "X-Title": os.getenv("YOUR_SITE_NAME", "AI Assistant"),
+        }
+        
+        try:
+            # Make the request to OpenRouter API
+            response = requests.post(api_endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            # Parse the JSON response
+            result = response.json()
+            
+            if result and "choices" in result and len(result["choices"]) > 0:
+                output = result["choices"][0]["message"]["content"].strip()
+                token_usage = result["usage"]["total_tokens"] if "usage" in result else "n/a"
+                
+                # Log token usage for monitoring
+                logger.info(f"OpenRouter API call: {token_usage} total tokens used")
+                
+                # Create a response object with content attribute to match LangChain's output format
+                class LLMResponse:
+                    def __init__(self, content):
+                        self.content = content
+                
+                return LLMResponse(output)
+            else:
+                logger.error("No valid response received from OpenRouter API")
+                logger.error(result)
+                class ErrorResponse:
+                    content = "Error: Failed to get valid response from LLM"
+                return ErrorResponse()
+                
+        except Exception as e:
+            logger.error(f"Error calling OpenRouter API: {e}")
+            class ErrorResponse:
+                content = f"Error during LLM call: {str(e)}"
+            return ErrorResponse()
+
+
 class ConfigurableAgent:
     """
     A fully configurable agent that loads all properties from YAML configuration.
@@ -65,7 +144,8 @@ class ConfigurableAgent:
         capture_image: str = "",
         max_tool_iterations: int = 5,
         enable_conversation_logging: bool = False,
-        log_directory: Optional[str] = "conversation_logs"
+        log_directory: Optional[str] = "conversation_logs",
+        enable_display: bool = True
     ):
         """
         Initialize a configurable agent.
@@ -83,6 +163,7 @@ class ConfigurableAgent:
             max_tool_iterations: Maximum number of tool iterations to allow (for multi-turn tool calling)
             enable_conversation_logging: Whether to log the full conversation to a file
             log_directory: Directory where conversation logs will be stored (default: current working directory)
+            enable_display: Whether to open a window to display the camera stream
         """
         self.agent_type = agent_type
         self._verbose = verbose
@@ -91,6 +172,9 @@ class ConfigurableAgent:
         self._max_tool_iterations = max_tool_iterations
         self._enable_conversation_logging = enable_conversation_logging
         self._log_directory = log_directory
+        self._enable_display = enable_display
+        self.display_thread = None
+        self._stop_display = False
         
         # Set up conversation logger if enabled
         if self._enable_conversation_logging:
@@ -143,6 +227,21 @@ class ConfigurableAgent:
         
         # Set up the agent based on configuration
         self._setup_agent(model_name)
+        
+        # Start display thread if enabled and hardware is available
+        if self._enable_display and self.hardware and self.hardware.camera_tools:
+            try:
+                # Import cv2 here to prevent import errors if OpenCV is not installed
+                import cv2
+                import threading
+                self.open_display_thread()
+                logger.info("Camera display thread started")
+            except ImportError:
+                logger.error("OpenCV (cv2) is required for camera display. Install with: pip install opencv-python")
+            except Exception as e:
+                logger.error(f"Error starting display thread: {e}")
+        elif self._enable_display:
+            logger.warning("Display enabled but hardware or camera tools not available")
     
     def _setup_agent(self, model_name: Optional[str]):
         """
@@ -206,19 +305,20 @@ class ConfigurableAgent:
         
         # Initialize the language model
         try:
-            self.llm = ChatOpenAI(
-                openai_api_key=os.getenv("OPENROUTER_API_KEY"),
-                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                model_name=model or os.getenv("MODEL_NAME", "anthropic/claude-3-opus-20240229"),
-                default_headers={
-                    "HTTP-Referer": os.getenv("YOUR_SITE_URL", "https://example.com"),
-                    "X-Title": os.getenv("YOUR_SITE_NAME", "AI Assistant"),
-                }
-            )
+            self.llm = LLM(model_name=model)
+            # ChatOpenAI(
+            #     openai_api_key=os.getenv("OPENROUTER_API_KEY"),
+            #     base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            #     model_name=model or os.getenv("MODEL_NAME", "anthropic/claude-3-opus-20240229"),
+            #     default_headers={
+            #         "HTTP-Referer": os.getenv("YOUR_SITE_URL", "https://example.com"),
+            #         "X-Title": os.getenv("YOUR_SITE_NAME", "AI Assistant"),
+            #     }
+            # )
             
             # Apply model parameters
             temperature = model_defaults.get('temperature', 0.7)
-            max_tokens = model_defaults.get('max_tokens', 1024)
+            max_tokens = model_defaults.get('max_tokens', 3096)
             
             if temperature is not None:
                 self.llm.temperature = temperature
@@ -441,6 +541,100 @@ class ConfigurableAgent:
             logger.error(f"Error executing tool '{tool_name}': {e}")
             return {"error": f"Error executing tool: {str(e)}"}
     
+    def open_display_thread(self):
+        """
+        Open a separate thread to display the camera streams.
+        The thread will run until the agent is deleted or stop_display_thread is called.
+        """
+        import threading
+        # Stop any existing display thread
+        self.stop_display_thread()
+        
+        # Reset the stop flag
+        self._stop_display = False
+        
+        # Start a new thread
+        self.display_thread = threading.Thread(target=self._display_image)
+        self.display_thread.daemon = True  # Make thread a daemon so it exits when main program exits
+        self.display_thread.start()
+        
+        if self._verbose:
+            logger.info("Display thread started")
+    
+    def _display_image(self):
+        """
+        Continuously display camera frames until stopped.
+        This runs in a separate thread to avoid blocking the main program.
+        """
+        import cv2
+        import time
+        
+        if not self.hardware or not self.hardware.camera_tools:
+            logger.error("Hardware or camera tools not available for display")
+            return
+        
+        try:
+            # Create a window for each camera
+            window_created = False
+            
+            # Display loop
+            while not self._stop_display:
+                try:
+                    # Get frames from all cameras
+                    frames = self.hardware.camera_tools.cameras.capture_frames()
+                    
+                    if not frames:
+                        logger.warning("No camera frames received")
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Display each camera frame
+                    for cam_id, (success, frame) in frames.items():
+                        if success and frame is not None:
+                            if not window_created:
+                                # Create windows on first successful frame
+                                cv2.namedWindow(f"Camera {cam_id}", cv2.WINDOW_NORMAL)
+                                window_created = True
+                            
+                            # Display the frame
+                            cv2.imshow(f"Camera {cam_id}", frame)
+                    
+                    # Process any window events (needed for window to be responsive)
+                    # Wait for 30ms (about 30 FPS) or until a key is pressed
+                    if cv2.waitKey(30) & 0xFF == ord('q'):
+                        break
+                        
+                    # Short sleep to avoid using too much CPU
+                    time.sleep(0.01)
+                    
+                except Exception as e:
+                    logger.error(f"Error in display loop: {e}")
+                    time.sleep(0.5)  # Sleep longer on error
+        
+        except Exception as e:
+            logger.error(f"Error in display thread: {e}")
+        finally:
+            # Clean up
+            cv2.destroyAllWindows()
+            logger.info("Display thread terminated")
+    
+    def stop_display_thread(self):
+        """
+        Stop the display thread if it's running.
+        """
+        if self.display_thread and self.display_thread.is_alive():
+            self._stop_display = True
+            # Give the thread time to clean up
+            import time
+            time.sleep(0.5)
+            # Wait for thread to terminate (with timeout)
+            self.display_thread.join(timeout=2.0)
+            if self.display_thread.is_alive():
+                logger.warning("Display thread did not terminate properly")
+            else:
+                logger.info("Display thread stopped")
+            self.display_thread = None
+    
     def process(self, user_input: str, history=None) -> Dict[str, Any]:
         """
         Process user input and generate a response.
@@ -525,7 +719,18 @@ class ConfigurableAgent:
                 ]
             }
             
-            # Add each image to the content
+            # First prepare the text content with clear image descriptions
+            if len(image_data_uris) > 1:
+                # For multiple images, add numbered descriptions
+                image_descriptions = "\n\n"
+                for i, img_data in enumerate(image_data_uris):
+                    image_descriptions += f"Image {i+1}: {img_data.get('description', f'Camera view {i+1}')}\n"
+                user_message["content"][0]["text"] += image_descriptions
+            elif "description" in image_data_uris[0]:
+                # For single image, maintain original format
+                user_message["content"][0]["text"] += f"\n\nImage source: {image_data_uris[0]['description']}"
+            
+            # Now add each image to the content
             for image_data in image_data_uris:
                 user_message["content"].append({
                     "type": "image_url",
@@ -534,14 +739,6 @@ class ConfigurableAgent:
                         "detail": "high"
                     }
                 })
-                
-                # If the first image has a description, add it to the user input
-                if "description" in image_data and image_data_uris.index(image_data) == 0:
-                    user_message["content"][0]["text"] = f"{user_input}\n\nImage source: {image_data['description']}"
-                
-                # For additional images, add a note about them in the text
-                if len(image_data_uris) > 1 and image_data_uris.index(image_data) > 0:
-                    user_message["content"][0]["text"] += f"\nAdditional image: {image_data['description']}"
         else:
             user_message = {"role": "user", "content": user_input}
         
@@ -1063,6 +1260,14 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
     
     def __del__(self):
         """Clean up resources when the agent is deleted."""
+        # Stop the display thread if it's running
+        if hasattr(self, 'display_thread') and self.display_thread:
+            try:
+                self.stop_display_thread()
+            except Exception as e:
+                logger.error(f"Error stopping display thread: {e}")
+        
+        # Clean up hardware
         if hasattr(self, 'hardware') and self.hardware:
             try:
                 self.hardware.close()
