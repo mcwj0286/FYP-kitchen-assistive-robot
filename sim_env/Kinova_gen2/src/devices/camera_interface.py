@@ -145,6 +145,9 @@ class MultiCameraInterface:
             raise Exception("Failed to initialize any cameras")
             
         print(f"Initialized {len(self.cameras)} cameras")
+
+        for i in range(5):
+            self.capture_frames()
         
     def capture_frames(self):
         """Capture frames from all cameras
