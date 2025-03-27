@@ -86,7 +86,7 @@ categories:
             optional: true
             default: 2000.0
       
-      - name: grasp
+      - name: close_gripper
         description: Close the gripper to grasp an object
         hardware_required: true
         parameters:
@@ -96,7 +96,7 @@ categories:
             optional: true
             default: 0.5
       
-      - name: release
+      - name: open_gripper
         description: Open the gripper to release an object
         hardware_required: true
         parameters: []
@@ -109,7 +109,43 @@ categories:
       - name: move_default
         description: Move the arm to a default position suitable for kitchen tasks
         hardware_required: true
-        parameters: [] 
+        parameters: []
+      
+      - name: send_cartesian_velocity
+        description: Send velocity commands to move the arm at specified speeds
+        hardware_required: true
+        parameters:
+          - name: linear_x
+            type: float
+            description: Linear velocity in X direction (meters/second)
+          - name: linear_y
+            type: float
+            description: Linear velocity in Y direction (meters/second)
+          - name: linear_z
+            type: float
+            description: Linear velocity in Z direction (meters/second)
+          - name: angular_x
+            type: float
+            description: Angular velocity around X axis (radians/second)
+          - name: angular_y
+            type: float
+            description: Angular velocity around Y axis (radians/second)
+          - name: angular_z
+            type: float
+            description: Angular velocity around Z axis (radians/second)
+          - name: fingers_velocity
+            type: float
+            description: Gripper fingers velocity
+            optional: true
+            default: 0.0
+          - name: hand_mode
+            type: int
+            description: Hand mode (0-2)
+            optional: true
+            default: 1
+          - name: duration
+            type: float
+            description: Duration to apply velocity (seconds)
 
 # Tool prompts for LLM system prompts
 tool_prompts:
@@ -250,13 +286,13 @@ tool_prompts:
         }
       }
   
-  grasp:
-    name: grasp
+  close_gripper:
+    name: close_gripper
     description: "Close the gripper to grasp an object"
     parameters:
       - name: strength
         description: "Gripping strength (0.0-1.0)"
-    example: "To grasp an object: grasp(strength=0.7)"
+    example: "To grasp an object: close_gripper(strength=0.7)"
     result_example: |
       {
         "status": "success",
@@ -265,11 +301,11 @@ tool_prompts:
         "gripper_position": 5600.0
       }
   
-  release:
-    name: release
+  open_gripper:
+    name: open_gripper
     description: "Open the gripper to release an object"
     parameters: []
-    example: "To release an object: release()"
+    example: "To release an object: open_gripper()"
     result_example: |
       {
         "status": "success",
@@ -315,6 +351,42 @@ tool_prompts:
           "fingers": 2000.0
         }
       }
+  
+  send_cartesian_velocity:
+    name: send_cartesian_velocity
+    description: "Send velocity commands to move the arm at specified speeds"
+    parameters:
+      - name: linear_x
+        description: "Linear velocity in X direction (meters/second)"
+      - name: linear_y
+        description: "Linear velocity in Y direction (meters/second)"
+      - name: linear_z
+        description: "Linear velocity in Z direction (meters/second)"
+      - name: angular_x
+        description: "Angular velocity around X axis (radians/second)"
+      - name: angular_y
+        description: "Angular velocity around Y axis (radians/second)"
+      - name: angular_z
+        description: "Angular velocity around Z axis (radians/second)"
+      - name: fingers_velocity
+        description: "Gripper fingers velocity"
+      - name: hand_mode
+        description: "Hand mode (0-2)"
+      - name: duration
+        description: "Duration to apply velocity (seconds)"
+    example: "To move the arm forward slowly: send_cartesian_velocity(linear_x=0.05, linear_y=0, linear_z=0, angular_x=0, angular_y=0, angular_z=0, fingers_velocity=0, hand_mode=1, duration=2.0)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Velocity command sent successfully",
+        "command": {
+          "linear": [0.05, 0.0, 0.0],
+          "angular": [0.0, 0.0, 0.0],
+          "fingers": 0.0,
+          "hand_mode": 1,
+          "duration": 2.0
+        }
+      }
 
 # Usage guide for hardware tools
 hardware_tools_guide: |
@@ -323,7 +395,7 @@ hardware_tools_guide: |
   When to use hardware tools:
   - Use camera tools (capture_environment, capture_wrist, capture_both) to get visual information about the environment
   - Use speaker tools (speak, is_speaking, stop_speaking) to communicate with the user through audio
-  - Use robotic arm tools (move_home, move_position, grasp, release, get_position, move_default) to manipulate objects
+  - Use robotic arm tools (move_home, move_position, close_gripper, open_gripper, get_position, move_default) to manipulate objects
   
   Guidelines for using hardware tools:
   1. Always check the current position before making large movements
@@ -331,8 +403,11 @@ hardware_tools_guide: |
   3. Use move_default() to position the arm for common kitchen tasks
   4. Use appropriate gripper strength when grasping different objects (delicate vs sturdy)
   5. Always monitor tool results to confirm successful operations
+  6. When using send_cartesian_velocity(), keep velocities low (≤0.1 m/s linear, ≤0.5 rad/s angular) for safety
+  7. Limit send_cartesian_velocity() duration to short periods (≤5s) and verify position after movement
   
   Example usage patterns:
-  1. For picking up an object: get_position() → move_position() → grasp() → move_position()
-  2. For putting down an object: move_position() → release() → move_home()
+  1. For picking up an object: get_position() → move_position() → close_gripper() → move_position()
+  2. For putting down an object: move_position() → open_gripper() → move_home()
   3. For user communication: speak() with clear, concise instructions 
+  4. For fine adjustments: get_position() → send_cartesian_velocity() → get_position() 

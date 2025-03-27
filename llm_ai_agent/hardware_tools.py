@@ -852,7 +852,7 @@ class RoboticArmTools:
             logger.error(f"Error moving to position: {e}")
             return f"Error moving to position: {str(e)}"
     
-    def grasp(self, strength: float = 0.5) -> str:
+    def close_gripper(self, strength: float = 0.5) -> str:
         """
         Close the gripper to grasp an object.
         
@@ -870,8 +870,14 @@ class RoboticArmTools:
             strength = max(0.0, min(strength, 1.0))
             finger_velocity = strength * 3000.0  # Scale to finger position range (0-6000)
             
-            # Get current position
-            self.arm.send_cartesian_velocity(fingers=(finger_velocity,finger_velocity,finger_velocity),hand_mode=1,duration=2.0)
+            # Send velocity command
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0, 0, 0],
+                angular_velocity=[0, 0, 0],
+                fingers=(finger_velocity, finger_velocity, finger_velocity),
+                hand_mode=1,
+                duration=2.0
+            )
             #TODO: update the duration based the arm speed
             time.sleep(2)
             
@@ -881,7 +887,7 @@ class RoboticArmTools:
             logger.error(f"Error grasping: {e}")
             return f"Error grasping: {str(e)}"
     
-    def release(self) -> str:
+    def open_gripper(self) -> str:
         """
         Open the gripper to release an object.
         
@@ -892,7 +898,13 @@ class RoboticArmTools:
             return "Error: Robotic arm not initialized"
         
         try:
-            self.arm.send_cartesian_velocity([0,0,0,0,0,0],fingers=(-3000,-3000,-3000),hand_mode=1,duration=2.0)
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[0, 0, 0],
+                angular_velocity=[0, 0, 0],
+                fingers=(-3000, -3000, -3000),
+                hand_mode=1,
+                duration=2.0
+            )
             time.sleep(2)
             return "Successfully released"
                 
@@ -953,7 +965,50 @@ class RoboticArmTools:
             self.arm.close()
             self.arm = None
             logger.info("Robotic arm connection closed")
-
+    
+    def send_cartesian_velocity(self, linear_x: float, linear_y: float, linear_z: float, 
+                                angular_x: float, angular_y: float, angular_z: float,
+                                fingers_velocity: float = 0.0, hand_mode: int = 1, duration: float = 1.0):
+        """
+        Send velocity commands to move the arm at specified speeds.
+        
+        Args:
+            linear_x: Linear velocity in X direction (meters/second)
+            linear_y: Linear velocity in Y direction (meters/second)
+            linear_z: Linear velocity in Z direction (meters/second)
+            angular_x: Angular velocity around X axis (radians/second)
+            angular_y: Angular velocity around Y axis (radians/second)
+            angular_z: Angular velocity around Z axis (radians/second)
+            fingers_velocity: Gripper fingers velocity (default: 0.0)
+            hand_mode: Hand mode (0-2) (default: 1)
+            duration: Duration to apply velocity (seconds)
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            # Create velocity tuples
+            linear_velocity = [linear_x, linear_y, linear_z]
+            angular_velocity = [angular_x, angular_y, angular_z]
+            fingers = (fingers_velocity, fingers_velocity, fingers_velocity)
+            
+            # Send command to arm
+            self.arm.send_cartesian_velocity(
+                linear_velocity=linear_velocity, 
+                angular_velocity=angular_velocity, 
+                fingers=fingers, 
+                hand_mode=hand_mode,
+                duration=duration
+            )
+            
+            return f"Successfully sent cartesian velocity command for {duration} seconds"
+                
+        except Exception as e:
+            logger.error(f"Error sending velocity command: {e}")
+            return f"Error sending velocity command: {str(e)}"
 
 # Combined hardware tools class for easier management
 class HardwareTools:
@@ -1041,9 +1096,9 @@ def main():
         print(hardware.arm_tools.get_position())
         print(hardware.arm_tools.move_home())
         print(hardware.arm_tools.move_position(0.3, 0.1, 0.4))
-        print(hardware.arm_tools.grasp(0.7))
+        print(hardware.arm_tools.close_gripper(0.7))
         print(hardware.arm_tools.get_position())
-        print(hardware.arm_tools.release())
+        print(hardware.arm_tools.open_gripper())
         
     finally:
         # Clean up
