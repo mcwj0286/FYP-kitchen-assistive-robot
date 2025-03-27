@@ -138,6 +138,43 @@ def echo_tool(text: str) -> str:
     """
     return f"Echo: {text}"
 
+def wait_tool(duration: float) -> str:
+    """
+    Wait for a specified duration in seconds.
+    
+    Args:
+        duration: The time to wait in seconds
+        
+    Returns:
+        A message indicating the wait is complete
+    """
+    try:
+        # Validate duration
+        duration = float(duration)
+        if duration <= 0:
+            return "Duration must be a positive number."
+            
+        # Cap maximum wait time to 60 seconds for safety
+        max_duration = 60.0
+        if duration > max_duration:
+            message = f"Requested wait time of {duration} seconds is too long. "
+            message += f"Maximum wait time is {max_duration} seconds. "
+            message += f"Waiting for {max_duration} seconds instead."
+            duration = max_duration
+        else:
+            message = f"Waiting for {duration} seconds..."
+        
+        # Perform the wait
+        start_time = time.time()
+        time.sleep(duration)
+        actual_duration = time.time() - start_time
+        
+        return f"{message}\nWait completed after {actual_duration:.2f} seconds."
+    except ValueError:
+        return "Error: Duration must be a valid number."
+    except Exception as e:
+        return f"Error during wait: {str(e)}"
+
 # Memory access tools
 
 def get_memory_path() -> str:
@@ -868,6 +905,7 @@ TOOLS = {
     "calculator": calculator_tool,
     "text_processor": text_processor,
     "echo": echo_tool,
+    "wait": wait_tool,
     "get_action_plans": get_action_plans,
     "get_action_positions": get_action_positions,
     "get_item_locations": get_item_locations,
