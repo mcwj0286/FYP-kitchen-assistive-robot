@@ -900,10 +900,10 @@ class RoboticArmTools:
                 angular_velocity=[0, 0, 0],
                 fingers=(finger_velocity, finger_velocity, finger_velocity),
                 hand_mode=1,
-                duration=2.0
+                duration=1.0
             )
             #TODO: update the duration based the arm speed
-            time.sleep(2)
+            time.sleep(1)
             
             return f"Successfully grasped with strength {strength:.2f}"
                 
@@ -927,9 +927,9 @@ class RoboticArmTools:
                 angular_velocity=[0, 0, 0],
                 fingers=(-3000, -3000, -3000),
                 hand_mode=1,
-                duration=2.0
+                duration=1.0
             )
-            time.sleep(2)
+            time.sleep(1)
             return "Successfully released"
                 
         except Exception as e:
