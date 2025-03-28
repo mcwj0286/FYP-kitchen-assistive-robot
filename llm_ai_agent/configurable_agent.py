@@ -40,11 +40,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 class LLM:
-    def __init__(self, model_name: str, temperature: float = 0.7, max_tokens: int = 3096):
+    def __init__(self, model_name: str, temperature: float = 0.7, max_tokens: int = 3096, verbose: bool = True):
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
-        
+        self._verbose = verbose
     def invoke(self, messages: List[Dict[str, Any]]) -> Any:
         """
         Directly calls the OpenRouter API with the given messages, supporting both text and images.
@@ -96,7 +96,8 @@ class LLM:
                 token_usage = result["usage"]["total_tokens"] if "usage" in result else "n/a"
                 
                 # Log token usage for monitoring
-                logger.info(f"OpenRouter API call: {token_usage} total tokens used")
+                if self._verbose:
+                    logger.info(f"OpenRouter API call: {token_usage} total tokens used")
                 
                 # Create a response object with content attribute to match LangChain's output format
                 class LLMResponse:
@@ -305,7 +306,7 @@ class ConfigurableAgent:
         
         # Initialize the language model
         try:
-            self.llm = LLM(model_name=model)
+            self.llm = LLM(model_name=model, verbose=self._verbose)
             # ChatOpenAI(
             #     openai_api_key=os.getenv("OPENROUTER_API_KEY"),
             #     base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
@@ -658,7 +659,8 @@ class ConfigurableAgent:
                         "url": result["image"],
                         "description": f"Environment camera: {result.get('description', '')}"
                     })
-                    logger.info("Environment image captured successfully")
+                    if self._verbose:
+                        logger.info("Environment image captured successfully")
             elif self._capture_image == "wrist":
                 result = self.hardware.camera_tools.capture_wrist()
                 if isinstance(result, dict) and "image" in result:
@@ -666,7 +668,8 @@ class ConfigurableAgent:
                         "url": result["image"],
                         "description": f"Wrist camera: {result.get('description', '')}"
                     })
-                    logger.info("Wrist image captured successfully")
+                    if self._verbose:
+                        logger.info("Wrist image captured successfully")
             elif self._capture_image == "both":
                 result = self.hardware.camera_tools.capture_both()
                 if isinstance(result, dict):
