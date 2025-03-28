@@ -757,7 +757,7 @@ class ConfigurableAgent:
         if history is None:
             history = []
         
-        # Ensure history is in the right format
+        # Ensure history is in the right format and strip out old images
         _history = self._format_history(history)
         
         # Capture initial images
@@ -889,10 +889,11 @@ class ConfigurableAgent:
                 # Add all tool results from this iteration
                 all_tool_results.extend(iteration_tool_results)
                 
-                # Add the response to the conversation
+                # Add the response to the conversation - convert multimodal messages to text-only for history
+                assistant_content = json.dumps(structured_response)
                 messages.append({
                     "role": "assistant", 
-                    "content": json.dumps(structured_response)
+                    "content": assistant_content
                 })
                 
                 # Add the tool responses to conversation
@@ -902,16 +903,6 @@ class ConfigurableAgent:
                     "max_iterations": self._max_tool_iterations,
                     "instructions": "Analyze these tool results and decide if you have enough information to respond to the user or need to call additional tools."
                 }
-                
-                # Extract image data from tool responses to include in the next message
-                images_from_tools = []
-                for result in iteration_tool_results:
-                    if "image" in result and isinstance(result["image"], dict) and "url" in result["image"]:
-                        images_from_tools.append(result["image"])
-                
-                # Add image URLs to the tool response content if available
-                if images_from_tools:
-                    tool_response_content["images"] = images_from_tools
                 
                 # Capture fresh images for the next iteration if enabled
                 fresh_image_data_uris = self._capture_current_images()
@@ -925,6 +916,29 @@ class ConfigurableAgent:
                         "content": json.dumps(tool_response_content)
                     }
                 
+                # Clear any previous image-containing messages from the conversation history
+                # We'll keep the text-only messages but replace the full conversation with the freshly captured images
+                filtered_messages = []
+                for msg in messages:
+                    # Keep the system message as is
+                    if msg["role"] == "system":
+                        filtered_messages.append(msg)
+                    # For other messages, extract only text if they contain images
+                    elif isinstance(msg["content"], list) and any(item.get("type") == "image_url" for item in msg["content"] if isinstance(item, dict)):
+                        # This is a multimodal message - extract only text
+                        text_content = ""
+                        for item in msg["content"]:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_content += item.get("text", "")
+                        
+                        # Add message with only the text content
+                        filtered_messages.append({"role": msg["role"], "content": text_content})
+                    else:
+                        # Standard message without images - add as is
+                        filtered_messages.append(msg)
+                
+                # Replace messages with the filtered version and add the new message with fresh images
+                messages = filtered_messages
                 messages.append(tool_response_message)
                 
                 # Log the tool responses
@@ -944,6 +958,29 @@ class ConfigurableAgent:
                 
                 # Create a special prompt asking for a final response
                 final_message_content = f"You've reached the maximum number of tool iterations ({self._max_tool_iterations}). Please provide your final response based on the information gathered so far."
+                
+                # Filter out previous images from the conversation history again
+                filtered_messages = []
+                for msg in messages:
+                    # Keep the system message as is
+                    if msg["role"] == "system":
+                        filtered_messages.append(msg)
+                    # For other messages, extract only text if they contain images
+                    elif isinstance(msg["content"], list) and any(item.get("type") == "image_url" for item in msg["content"] if isinstance(item, dict)):
+                        # This is a multimodal message - extract only text
+                        text_content = ""
+                        for item in msg["content"]:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_content += item.get("text", "")
+                        
+                        # Add message with only the text content
+                        filtered_messages.append({"role": msg["role"], "content": text_content})
+                    else:
+                        # Standard message without images - add as is
+                        filtered_messages.append(msg)
+                
+                # Replace messages with the filtered version
+                messages = filtered_messages
                 
                 # Add the message with fresh images if available
                 if final_images:
@@ -1321,12 +1358,13 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
     def _format_history(self, history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """
         Format conversation history into the required format.
+        Strip out images from previous messages to reduce token usage.
         
         Args:
             history: Raw conversation history
             
         Returns:
-            Formatted conversation history
+            Formatted conversation history with images removed from older messages
         """
         formatted_history = []
         
@@ -1335,7 +1373,19 @@ IMPORTANT: Use the EXACT parameter names specified above for each tool.
             content = message.get("content", "")
             
             if role in ["user", "assistant", "system"]:
-                formatted_history.append({"role": role, "content": content})
+                # Check if this is a multimodal message with images
+                if isinstance(content, list) and any(item.get("type") == "image_url" for item in content if isinstance(item, dict)):
+                    # This is a multimodal message with images - extract only the text
+                    text_content = ""
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text_content += item.get("text", "")
+                    
+                    # Add message with only the text content
+                    formatted_history.append({"role": role, "content": text_content})
+                else:
+                    # Standard message without images - add as is
+                    formatted_history.append({"role": role, "content": content})
             else:
                 # Default unknown roles to user
                 formatted_history.append({"role": "user", "content": content})
