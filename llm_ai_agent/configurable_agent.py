@@ -142,7 +142,7 @@ class ConfigurableAgent:
         model_name: Optional[str] = None,
         use_hardware: bool = True,
         capture_image: str = "",
-        max_tool_iterations: int = 5,
+        max_tool_iterations: int = 10,
         enable_conversation_logging: bool = False,
         log_directory: Optional[str] = "conversation_logs",
         enable_display: bool = True
@@ -635,6 +635,114 @@ class ConfigurableAgent:
                 logger.info("Display thread stopped")
             self.display_thread = None
     
+    def _capture_current_images(self) -> List[Dict[str, Any]]:
+        """
+        Capture current images based on the camera configuration.
+        
+        Returns:
+            List of image data dictionaries with url and description
+        """
+        image_data_uris = []
+        if not self._capture_image or not self.hardware or not self.hardware.camera_tools:
+            return image_data_uris
+            
+        try:
+            if self._verbose:
+                logger.info(f"Capturing image from {self._capture_image} camera")
+            
+            # Capture the requested camera view
+            if self._capture_image == "environment":
+                result = self.hardware.camera_tools.capture_environment()
+                if isinstance(result, dict) and "image" in result:
+                    image_data_uris.append({
+                        "url": result["image"],
+                        "description": f"Environment camera: {result.get('description', '')}"
+                    })
+                    logger.info("Environment image captured successfully")
+            elif self._capture_image == "wrist":
+                result = self.hardware.camera_tools.capture_wrist()
+                if isinstance(result, dict) and "image" in result:
+                    image_data_uris.append({
+                        "url": result["image"],
+                        "description": f"Wrist camera: {result.get('description', '')}"
+                    })
+                    logger.info("Wrist image captured successfully")
+            elif self._capture_image == "both":
+                result = self.hardware.camera_tools.capture_both()
+                if isinstance(result, dict):
+                    # Handle environment camera
+                    if result.get("environment") and isinstance(result["environment"], dict) and "image" in result["environment"]:
+                        image_data_uris.append({
+                            "url": result["environment"]["image"],
+                            "description": f"Environment camera: {result['environment'].get('description', '')}"
+                        })
+                    
+                    # Handle wrist camera
+                    if result.get("wrist") and isinstance(result["wrist"], dict) and "image" in result["wrist"]:
+                        image_data_uris.append({
+                            "url": result["wrist"]["image"],
+                            "description": f"Wrist camera: {result['wrist'].get('description', '')}"
+                        })
+                    
+                    if image_data_uris:
+                        logger.info(f"Captured {len(image_data_uris)} camera images successfully")
+                    else:
+                        logger.warning("No images captured from 'both' camera option")
+            else:
+                logger.warning(f"Invalid capture_image value: {self._capture_image}")
+        except Exception as e:
+            logger.error(f"Error capturing image: {e}")
+            
+        return image_data_uris
+        
+    def _create_message_with_images(self, content: str, image_data_uris: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Create a message with text and optional images.
+        
+        Args:
+            content: The text content
+            image_data_uris: List of image data dictionaries
+            
+        Returns:
+            A message dictionary with content
+        """
+        if not image_data_uris:
+            return {"role": "user", "content": content}
+            
+        # Create multimodal message with text and images
+        message = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": content
+                }
+            ]
+        }
+        
+        # First prepare the text content with clear image descriptions
+        if len(image_data_uris) > 1:
+            # For multiple images, add numbered descriptions
+            image_descriptions = "\n\n"
+            for i, img_data in enumerate(image_data_uris):
+                image_descriptions += f"Image {i+1}: {img_data.get('description', f'Camera view {i+1}')}\n"
+            message["content"][0]["text"] += image_descriptions
+        elif "description" in image_data_uris[0]:
+            # For single image, maintain original format
+            message["content"][0]["text"] += f"\n\nImage source: {image_data_uris[0]['description']}"
+        
+        # Now add each image to the content
+        for image_data in image_data_uris:
+            message["content"].append({
+                "type": "image_url",
+                "image_url": {
+                    "url": image_data["url"],
+                    "detail": "high"
+                }
+            })
+            
+        return message
+
     def process(self, user_input: str, history=None) -> Dict[str, Any]:
         """
         Process user input and generate a response.
@@ -652,95 +760,11 @@ class ConfigurableAgent:
         # Ensure history is in the right format
         _history = self._format_history(history)
         
-        # Check if we should capture an image
-        # The capture_image parameter can be:
-        # - "environment": Capture from the environment camera only
-        # - "wrist": Capture from the wrist-mounted camera only
-        # - "both": Capture from both cameras and send both images
-        # - "": Disable image capture (default)
-        image_data_uris = []
-        if self._capture_image and self.hardware and self.hardware.camera_tools:
-            try:
-                if self._verbose:
-                    logger.info(f"Capturing image from {self._capture_image} camera")
-                
-                # Capture the requested camera view
-                if self._capture_image == "environment":
-                    result = self.hardware.camera_tools.capture_environment()
-                    if isinstance(result, dict) and "image" in result:
-                        image_data_uris.append({
-                            "url": result["image"],
-                            "description": f"Environment camera: {result.get('description', '')}"
-                        })
-                        logger.info("Environment image captured successfully")
-                elif self._capture_image == "wrist":
-                    result = self.hardware.camera_tools.capture_wrist()
-                    if isinstance(result, dict) and "image" in result:
-                        image_data_uris.append({
-                            "url": result["image"],
-                            "description": f"Wrist camera: {result.get('description', '')}"
-                        })
-                        logger.info("Wrist image captured successfully")
-                elif self._capture_image == "both":
-                    result = self.hardware.camera_tools.capture_both()
-                    if isinstance(result, dict):
-                        # Handle environment camera
-                        if result.get("environment") and isinstance(result["environment"], dict) and "image" in result["environment"]:
-                            image_data_uris.append({
-                                "url": result["environment"]["image"],
-                                "description": f"Environment camera: {result['environment'].get('description', '')}"
-                            })
-                        
-                        # Handle wrist camera
-                        if result.get("wrist") and isinstance(result["wrist"], dict) and "image" in result["wrist"]:
-                            image_data_uris.append({
-                                "url": result["wrist"]["image"],
-                                "description": f"Wrist camera: {result['wrist'].get('description', '')}"
-                            })
-                        
-                        if image_data_uris:
-                            logger.info(f"Captured {len(image_data_uris)} camera images successfully")
-                        else:
-                            logger.warning("No images captured from 'both' camera option")
-                else:
-                    logger.warning(f"Invalid capture_image value: {self._capture_image}")
-            except Exception as e:
-                logger.error(f"Error capturing image: {e}")
+        # Capture initial images
+        image_data_uris = self._capture_current_images()
         
         # Create user message - either text-only or multimodal with image(s)
-        if image_data_uris:
-            user_message = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": user_input
-                    }
-                ]
-            }
-            
-            # First prepare the text content with clear image descriptions
-            if len(image_data_uris) > 1:
-                # For multiple images, add numbered descriptions
-                image_descriptions = "\n\n"
-                for i, img_data in enumerate(image_data_uris):
-                    image_descriptions += f"Image {i+1}: {img_data.get('description', f'Camera view {i+1}')}\n"
-                user_message["content"][0]["text"] += image_descriptions
-            elif "description" in image_data_uris[0]:
-                # For single image, maintain original format
-                user_message["content"][0]["text"] += f"\n\nImage source: {image_data_uris[0]['description']}"
-            
-            # Now add each image to the content
-            for image_data in image_data_uris:
-                user_message["content"].append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data["url"],
-                        "detail": "high"
-                    }
-                })
-        else:
-            user_message = {"role": "user", "content": user_input}
+        user_message = self._create_message_with_images(user_input, image_data_uris)
         
         # Add the user input to the conversation
         messages = _history + [user_message]
@@ -889,10 +913,18 @@ class ConfigurableAgent:
                 if images_from_tools:
                     tool_response_content["images"] = images_from_tools
                 
-                tool_response_message = {
-                    "role": "user", 
-                    "content": json.dumps(tool_response_content)
-                }
+                # Capture fresh images for the next iteration if enabled
+                fresh_image_data_uris = self._capture_current_images()
+                
+                # Create a tool response message with the fresh images
+                if fresh_image_data_uris:
+                    tool_response_message = self._create_message_with_images(json.dumps(tool_response_content), fresh_image_data_uris)
+                else:
+                    tool_response_message = {
+                        "role": "user", 
+                        "content": json.dumps(tool_response_content)
+                    }
+                
                 messages.append(tool_response_message)
                 
                 # Log the tool responses
@@ -907,11 +939,22 @@ class ConfigurableAgent:
                 if self._verbose:
                     logger.warning(f"Reached maximum iterations ({self._max_tool_iterations}) without completion")
                 
+                # Capture final set of fresh images
+                final_images = self._capture_current_images()
+                
                 # Create a special prompt asking for a final response
-                messages.append({
-                    "role": "user",
-                    "content": f"You've reached the maximum number of tool iterations ({self._max_tool_iterations}). Please provide your final response based on the information gathered so far."
-                })
+                final_message_content = f"You've reached the maximum number of tool iterations ({self._max_tool_iterations}). Please provide your final response based on the information gathered so far."
+                
+                # Add the message with fresh images if available
+                if final_images:
+                    final_message = self._create_message_with_images(final_message_content, final_images)
+                else:
+                    final_message = {
+                        "role": "user",
+                        "content": final_message_content
+                    }
+                
+                messages.append(final_message)
                 
                 # Get the final response
                 final_llm_response = self.llm.invoke(messages)
