@@ -5,6 +5,7 @@ categories:
       - calculator
       - text_processor
       - echo
+      - wait
 
 tool_prompts:
   calculator:
@@ -26,4 +27,11 @@ tool_prompts:
     parameters:
       - name: text
         description: "The text to echo"
-    example: '{"tool_name": "echo", "parameters": {"text": "Hello world"}}' 
+    example: '{"tool_name": "echo", "parameters": {"text": "Hello world"}}'
+  
+  wait:
+    description: "Wait for a specified duration in seconds"
+    parameters:
+      - name: duration
+        description: "The time to wait in seconds (maximum 60 seconds)"
+    example: '{"tool_name": "wait", "parameters": {"duration": 5}}' 

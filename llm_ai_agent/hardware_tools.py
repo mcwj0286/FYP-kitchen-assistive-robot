@@ -1154,6 +1154,50 @@ class RoboticArmTools:
         except Exception as e:
             logger.error(f"Error turning up: {e}")
             return f"Error turning up: {str(e)}"
+        
+
+    def move(self, x=0.0,y=0.0,z=0.0) -> str:
+        """
+        Move the arm toward specific direction
+        
+        Args:
+            x: Linear velocity in X direction (meters/second)
+            y: Linear velocity in Y direction (meters/second)
+            z: Linear velocity in Z direction (meters/second)
+            
+        Returns:
+            A string indicating the command was sent
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            self.arm.send_cartesian_velocity(
+                linear_velocity=[x, y, z], 
+                angular_velocity=[0.0, 0.0, 0.0],
+                fingers=(0.0, 0.0, 0.0),
+                hand_mode=1,
+                duration=1.0
+            )
+            time.sleep(1.0)  # Wait for movement to complete
+            
+            # Get the current position after movement
+            current_pos = self.arm.get_cartesian_position()
+            if not current_pos:
+                return "Successfully moved to direction ({x}, {y}, {z}), but couldn't get current position"
+            
+            # Format the position information
+            position_str = f"Successfully moved to direction ({x}, {y}, {z})\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({current_pos[3]:.4f}, {current_pos[4]:.4f}, {current_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {current_pos[6]:.1f} (0=open, 6000=closed)"
+            
+            return position_str
+        except Exception as e:
+            logger.error(f"Error turning up: {e}")
+            return f"Error turning up: {str(e)}"
+ 
     
     def rotate_left(self, degree: float) -> str:
         """

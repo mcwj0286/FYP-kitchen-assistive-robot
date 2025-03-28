@@ -28,6 +28,7 @@ tool_prompts:
       - Duration: 10.25 seconds
       - Actions sent: 302
       - Success rate: 97.3%
+      , 
 
 # Usage guide for manipulation tools
 manipulation_tools_guide: |
