@@ -20,7 +20,7 @@ from PIL import Image
 import numpy as np
 import subprocess
 import threading
-
+import cv2
 # Add sim_env to path for imports
 # Get the absolute path to the project root directory (one level up from llm_ai_agent)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -271,8 +271,11 @@ class CameraTools:
             A base64-encoded data URI
         """
         try:
+            # Convert the frame from BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
             # Convert the frame to a PIL Image
-            pil_img = Image.fromarray(frame)
+            pil_img = Image.fromarray(frame_rgb)
             
             # Save the image to a bytes buffer
             img_byte_arr = io.BytesIO()
@@ -1156,7 +1159,7 @@ class RoboticArmTools:
             return f"Error turning up: {str(e)}"
         
 
-    def move(self, x=0.0,y=0.0,z=0.0) -> str:
+    def move(self, x: float, y: float, z: float) -> str:
         """
         Move the arm toward specific direction
         
@@ -1184,7 +1187,7 @@ class RoboticArmTools:
             # Get the current position after movement
             current_pos = self.arm.get_cartesian_position()
             if not current_pos:
-                return "Successfully moved to direction ({x}, {y}, {z}), but couldn't get current position"
+                return f"Successfully moved to direction ({x}, {y}, {z}), but couldn't get current position"
             
             # Format the position information
             position_str = f"Successfully moved to direction ({x}, {y}, {z})\n"
@@ -1195,8 +1198,8 @@ class RoboticArmTools:
             
             return position_str
         except Exception as e:
-            logger.error(f"Error turning up: {e}")
-            return f"Error turning up: {str(e)}"
+            logger.error(f"Error moving: {e}")
+            return f"Error moving: {str(e)}"
  
     
     def rotate_left(self, degree: float) -> str:
