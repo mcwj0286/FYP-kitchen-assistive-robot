@@ -93,7 +93,7 @@ categories:
           - name: x
             type: float
             description: Linear velocity in X direction (meters/second)
-          - name: y
+          - name: y 
             type: float
             description: Linear velocity in Y direction (meters/second)
           - name: z
@@ -172,6 +172,20 @@ categories:
           - name: degree
             type: float
             description: Angular velocity in degrees/second
+      
+      - name: face_target_coordinate
+        description: Rotate the arm to face a specific target coordinate using an iterative velocity-based approach
+        hardware_required: true
+        parameters:
+          - name: x
+            type: float
+            description: Target x coordinate in meters
+          - name: y
+            type: float
+            description: Target y coordinate in meters
+          - name: z
+            type: float
+            description: Target z coordinate in meters
       
       - name: send_cartesian_velocity
         description: Send velocity commands to move the arm at specified speeds
@@ -511,6 +525,28 @@ tool_prompts:
         "message": "Successfully sent rotate right command",
         "angular_velocity": [0.0, 0.0, 15.0],
         "duration": 1.0
+      }
+  
+  face_target_coordinate:
+    name: face_target_coordinate
+    description: "Rotate the arm to face a specific target coordinate using an iterative velocity-based approach"
+    parameters:
+      - name: x
+        description: "Target x coordinate in meters"
+      - name: y
+        description: "Target y coordinate in meters"
+      - name: z
+        description: "Target z coordinate in meters"
+    example: "To rotate the arm to face a specific target coordinate: face_target_coordinate(x=0.2, y=0.3, z=0.4)"
+    result_example: |
+      {
+        "status": "success",
+        "message": "Successfully rotated to face target coordinate after 4 iterations with error of 0.0321 radians",
+        "target_coordinate": {
+          "x": 0.2,
+          "y": 0.3,
+          "z": 0.4
+        }
       }
   
   send_cartesian_velocity:

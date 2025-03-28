@@ -887,6 +887,7 @@ if HARDWARE_AVAILABLE:
             hardware_tools["open_gripper"] = arm_tools.open_gripper
             hardware_tools["close_gripper"] = arm_tools.close_gripper
             hardware_tools["get_position"] = arm_tools.get_position
+            hardware_tools["move"] = arm_tools.move
             hardware_tools["send_cartesian_velocity"] = arm_tools.send_cartesian_velocity
             hardware_tools["turn_left"] = arm_tools.turn_left
             hardware_tools["turn_right"] = arm_tools.turn_right
@@ -894,11 +895,52 @@ if HARDWARE_AVAILABLE:
             hardware_tools["turn_up"] = arm_tools.turn_up
             hardware_tools["rotate_left"] = arm_tools.rotate_left
             hardware_tools["rotate_right"] = arm_tools.rotate_right
+            hardware_tools["face_target_coordinate"] = arm_tools.face_target_coordinate
             logger.info("Robotic arm tools initialized successfully")
         except Exception as e:
             logger.warning(f"Error initializing robotic arm tools: {e}")
     else:
         logger.info("Robotic arm tools disabled via ENABLE_ARM environment variable")
+
+import numpy as np
+
+def get_direction_vector(theta_x, theta_y, theta_z):
+    """
+    Calculate the direction vector from a Cartesian position and Euler angles.
+
+    Parameters:
+    - x, y, z: Cartesian coordinates (not used for direction vector calculation)
+    - theta_x, theta_y, theta_z: Euler angles in radians
+
+    Returns:
+    - direction_vector: A 3D vector representing the direction
+    """
+    # Convert Euler angles to rotation matrices
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(theta_x), -np.sin(theta_x)],
+        [0, np.sin(theta_x), np.cos(theta_x)]
+    ])
+
+    Ry = np.array([
+        [np.cos(theta_y), 0, np.sin(theta_y)],
+        [0, 1, 0],
+        [-np.sin(theta_y), 0, np.cos(theta_y)]
+    ])
+
+    Rz = np.array([
+        [np.cos(theta_z), -np.sin(theta_z), 0],
+        [np.sin(theta_z), np.cos(theta_z), 0],
+        [0, 0, 1]
+    ])
+
+    # Combine rotation matrices
+    R = np.dot(Rz, np.dot(Ry, Rx))
+
+    # Calculate direction vector by applying rotation to the unit vector along z-axis
+    direction_vector = np.dot(R, np.array([0, 0, 1]))
+
+    return direction_vector
 
 # Dictionary of all available tools
 TOOLS = {
@@ -911,7 +953,8 @@ TOOLS = {
     "get_item_locations": get_item_locations,
     "save_item_location": save_item_location,
     "save_action_position": save_action_position,
-    "object_manipulation": object_manipulation,  # Add the new tool
+    "object_manipulation": object_manipulation,
+    "get_direction_vector": get_direction_vector,
 }
 
 # Add hardware tools to TOOLS dictionary

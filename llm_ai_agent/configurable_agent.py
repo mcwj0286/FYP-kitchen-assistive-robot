@@ -1140,7 +1140,7 @@ class ConfigurableAgent:
 To use tools, respond in the following JSON format:
 {{
   "thought": "Your reasoning process (not shown to the user)",
-  "plan": "Your action plan",
+  "plan": "Your action plan. It should be updated based on latest observation.",
   "is_complete": false,  // Set to true when you have enough information to respond
   "reply": "Your response to the user. If you are plan to use tools call and the task is not complete, describe your action in short and imcomplete setences.Example: "I'm using calculator ...",
   "tool_calls": [

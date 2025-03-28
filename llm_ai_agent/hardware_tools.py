@@ -1282,6 +1282,210 @@ class RoboticArmTools:
             logger.error(f"Error rotating right: {e}")
             return f"Error rotating right: {str(e)}"
     
+    def face_target_coordinate_iterative(self, x: float, y: float, z: float, max_iterations: int = 15, error_threshold: float = 0.2) -> str:
+        """
+        Rotate the arm to face a target coordinate using an iterative velocity-based approach.
+        
+        This method incrementally adjusts the arm's orientation using angular velocity commands
+        until the arm is facing the target. This is more robust to physical constraints than
+        trying to reach the exact orientation in one step.
+        
+        Args:
+            x: Target x coordinate in meters
+            y: Target y coordinate in meters
+            z: Target z coordinate in meters
+            max_iterations: Maximum number of iterative adjustments to make
+            error_threshold: Threshold for considering the target adequately faced (in radians)
+            
+        Returns:
+            A string indicating the result of the operation
+        """
+        if not self.arm:
+            return "Error: Robotic arm not initialized"
+        
+        try:
+            # Convert inputs to float
+            target_coordinate = np.array([float(x), float(y), float(z)])
+            
+            # Initialize iteration variables
+            iteration = 0
+            error_angle = float('inf')
+            previous_error = float('inf')
+            oscillation_count = 0
+            
+            logger.info(f"Starting to face target at ({x}, {y}, {z})")
+            
+            # Start iterative adjustment process
+            while iteration < max_iterations and error_angle > error_threshold:
+                # Get the robot's current position
+                current_pos = self.arm.get_cartesian_position()
+                if not current_pos:
+                    return "Error: Could not get current position"
+                
+                # Extract the current position coordinates
+                robot_position = np.array(current_pos[:3])
+                
+                # Calculate direction vector from robot to target
+                direction_vector = target_coordinate - robot_position
+                
+                # Check if the direction vector is too small (target too close to current position)
+                distance = np.linalg.norm(direction_vector)
+                if distance < 0.01:  # If target is less than 1cm away
+                    return f"Target coordinates ({x}, {y}, {z}) too close to current position"
+                
+                # Normalize direction vector to unit vector - this is our desired direction
+                desired_direction = direction_vector / distance
+                
+                # Get the current orientation matrix of the end effector
+                # We can derive this from the current orientation angles
+                theta_x, theta_y, theta_z = current_pos[3:6]
+                
+                # Construct rotation matrix from Euler angles (ZYX convention)
+                R_z = np.array([
+                    [np.cos(theta_z), -np.sin(theta_z), 0],
+                    [np.sin(theta_z), np.cos(theta_z), 0],
+                    [0, 0, 1]
+                ])
+                
+                R_y = np.array([
+                    [np.cos(theta_y), 0, np.sin(theta_y)],
+                    [0, 1, 0],
+                    [-np.sin(theta_y), 0, np.cos(theta_y)]
+                ])
+                
+                R_x = np.array([
+                    [1, 0, 0],
+                    [0, np.cos(theta_x), -np.sin(theta_x)],
+                    [0, np.sin(theta_x), np.cos(theta_x)]
+                ])
+                
+                # Total rotation matrix
+                R = R_z.dot(R_y).dot(R_x)
+                
+                # The z-axis of the end effector in world coordinates represents its pointing direction
+                # This is the third column of the rotation matrix
+                current_direction = R[:, 2]
+                
+                # Calculate the error between current and desired direction
+                # We can use the dot product to get the angle between them
+                dot_product = np.clip(np.dot(current_direction, desired_direction), -1.0, 1.0)
+                error_angle = np.arccos(dot_product)
+                
+                # Check for oscillation (error increasing instead of decreasing)
+                if error_angle > previous_error:
+                    oscillation_count += 1
+                    logger.info(f"Oscillation detected (count: {oscillation_count})")
+                    
+                    # If we've oscillated too many times, reduce adjustment factor more aggressively
+                    if oscillation_count > 2:
+                        logger.info("Multiple oscillations detected, reducing adjustment factor significantly")
+                else:
+                    oscillation_count = 0
+                
+                # Keep track of previous error for oscillation detection
+                previous_error = error_angle
+                
+                # If the error is small enough, we're done
+                if error_angle <= error_threshold:
+                    break
+                
+                # Calculate the axis of rotation (cross product of current and desired directions)
+                rotation_axis = np.cross(current_direction, desired_direction)
+                rotation_axis_norm = np.linalg.norm(rotation_axis)
+                
+                # If the cross product is very small, the vectors are nearly parallel or antiparallel
+                if rotation_axis_norm < 1e-6:
+                    # If they're nearly parallel, we're done
+                    if dot_product > 0:
+                        break
+                    # If they're antiparallel, choose any perpendicular axis
+                    if abs(current_direction[0]) < abs(current_direction[1]):
+                        rotation_axis = np.array([1, 0, 0])
+                    else:
+                        rotation_axis = np.array([0, 1, 0])
+                else:
+                    # Normalize the rotation axis
+                    rotation_axis = rotation_axis / rotation_axis_norm
+                
+                # Calculate angular velocity proportional to the error
+                # Cap the maximum angular velocity to avoid too rapid movements
+                # Make adjustment factor adaptive - smaller when oscillating or near target
+                base_adjustment = min(error_angle, 0.5)  # Base adjustment factor
+                
+                if oscillation_count > 0:
+                    # Reduce adjustment factor if oscillating
+                    adjustment_factor = base_adjustment / (2.0 * oscillation_count)
+                else:
+                    adjustment_factor = base_adjustment
+                
+                # Further reduce adjustment as we get closer to the target
+                if error_angle < 0.5:  # When we're within 0.5 radians (~30 degrees)
+                    adjustment_factor *= (error_angle / 0.5)  # Scale down proportionally
+                
+                # Ensure we don't go too slow
+                adjustment_factor = max(adjustment_factor, 0.05)
+                
+                # Project the rotation onto the robot's coordinate axes
+                # IMPORTANT: Negate the rotation axis to correct the direction
+                angular_x = -adjustment_factor * rotation_axis[0]
+                angular_y = -adjustment_factor * rotation_axis[1]
+                angular_z = -adjustment_factor * rotation_axis[2]
+                
+                # Apply the angular velocity for a short duration
+                self.arm.send_cartesian_velocity(
+                    linear_velocity=[0.0, 0.0, 0.0],
+                    angular_velocity=[angular_x, angular_y, angular_z],
+                    fingers=(0.0, 0.0, 0.0),
+                    hand_mode=1,
+                    duration=0.5  # Short duration for incremental movement
+                )
+                
+                # Wait for the movement to complete
+                time.sleep(0.5)
+                
+                # Increment iteration counter
+                iteration += 1
+                
+                # Log progress
+                logger.info(f"Iteration {iteration}: Error angle = {error_angle:.4f} radians, Adjustment = {adjustment_factor:.4f}")
+            
+            # Final position check
+            final_pos = self.arm.get_cartesian_position()
+            if not final_pos:
+                return "Error getting final position after orientation adjustment"
+            
+            # Formatting the result
+            success = error_angle <= error_threshold
+            position_str = f"{'Successfully' if success else 'Partially'} rotated to face target at ({x}, {y}, {z})\n"
+            position_str += f"Completed in {iteration} iterations with final error of {error_angle:.4f} radians\n"
+            position_str += f"Current position:\n"
+            position_str += f"- Cartesian: ({final_pos[0]:.4f}, {final_pos[1]:.4f}, {final_pos[2]:.4f}) meters\n"
+            position_str += f"- Rotation: ({final_pos[3]:.4f}, {final_pos[4]:.4f}, {final_pos[5]:.4f}) radians\n"
+            position_str += f"- Gripper: {final_pos[6]:.1f} (0=open, 7000=closed)\n"
+            
+            return position_str
+            
+        except Exception as e:
+            logger.error(f"Error in iterative face target: {e}")
+            return f"Error adjusting orientation to face target: {str(e)}"
+
+    # Update the original face_target_coordinate to use the iterative method
+    def face_target_coordinate(self, x: float, y: float, z: float) -> str:
+        """
+        Rotate the arm to face a target coordinate.
+        
+        This is a wrapper around the iterative method for backward compatibility.
+        
+        Args:
+            x: Target x coordinate in meters
+            y: Target y coordinate in meters
+            z: Target z coordinate in meters
+            
+        Returns:
+            A string indicating the result of the operation
+        """
+        return self.face_target_coordinate_iterative(x, y, z)
+    
     def close(self):
         """Close the connection to the robotic arm."""
         if self.arm:

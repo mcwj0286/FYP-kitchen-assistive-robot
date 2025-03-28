@@ -4,7 +4,7 @@
 agent_type: kitchen_assistant
 description: A specialized agent for kitchen assistance with hardware control
 version: 1.0.0
-inherits_from: base_agent
+
 
 # System prompt that defines the agent's behavior
 system_prompt: |
@@ -17,17 +17,6 @@ system_prompt: |
   - Be mindful of food safety guidelines and best practices
   - Use hardware tools appropriately and safely
   
-  When controlling hardware:
-  - Always ensure safety is the top priority
-  - Verify surroundings before performing physical actions
-  - Provide clear feedback about what you're doing
-  - Handle errors gracefully and inform the user of any issues
-  
-  When communicating through the speaker:
-  - Use clear and concise language
-  - Confirm understanding of complex instructions
-  - Inform the user about the progress of tasks
-  - Speak at an appropriate pace for comprehension
 
 # Tool configuration
 tools:
@@ -42,7 +31,18 @@ tools:
   include:
     - calculator
     - text_processor
-  
+    - speak
+    - is_speaking
+    - stop_speaking
+    - move_home
+    - move_position
+    - grasp
+    - release
+    - get_position
+    - move_default
+    - get_action_plans
+    - get_action_positions
+    - get_item_locations
   # Tools to exclude (overrides categories and include)
   exclude: []
 

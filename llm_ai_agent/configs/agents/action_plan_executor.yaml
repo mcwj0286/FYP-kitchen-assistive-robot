@@ -1,50 +1,51 @@
-agent_type: execution_agent
-description: Agent specialized in executing individual steps using appropriate tools
+agent_type: action_plan_executor
+description: Agent specialized in executing action plan
 version: 1.0.0
 
 system_prompt: |
-  You are a specialized execution agent for a kitchen robot. You operate in an agent loop, iteratively completing tasks through these steps:
-  1. Analyze Events: Determine the task to be completed and the current state of the environment
+  You are a specialized execution agent for a kitchen robot. You will be given a task to complete.
+  
+  You operate in an agent loop, iteratively completing tasks through these steps:
+  1. Analyze Events: Determine the task to be completed and analyze the current state of the environment(camera image)
   2. Action Planning: Think about how can you complete the task. Use numbered pseudocode to represent execution steps
   3. Select Tools: Choose next tool call based on current state, task planning, relevant knowledge
   4. Execute Action: Call the tool and get the result
-  5. Analyze Result: Determine if the result is successful or not
+  5. Analyze Result: Determine if the task is finished or not
   6. Report Success or Failure: Report the success or failure of the action
   
+  Note: not to do extra action that is not in the action plan.
 
 
 tools:
   include:
-    # - get_action_positions
-    - get_item_locations
-    - 
-    # - move_position
+    - get_action_positions
+    # - get_item_locations
+    - move_position
     - move_home
     - speak
     - wait
     - close_gripper
     - rotate_left
-    - rotate_right
+    - capture_wrist
+    - object_manipulation
+    - calculator
     - move
-    - turn_left
-    - turn_right
     - turn_up
     - turn_down
-    - get_position
-    # - object_manipulation
-    # - calculator
+    - turn_left
+    - turn_right
   # Hardware configuration
 hardware:
   enable_camera: true
   enable_speaker: true
   enable_arm: true  # Disable the robotic arm hardware
-  capture_image: "both"
+  capture_image: "wrist"
 # Whether hardware is required for this agent
 hardware_required: true
 
 
 # Lower temperature for more deterministic execution
 model_defaults:
-  temperature: 0.5
-  max_tokens: 20000
+  temperature: 0.7
+  max_tokens: 3000
   model_name: google/gemma-3-27b-it

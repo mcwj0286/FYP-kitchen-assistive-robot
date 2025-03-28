@@ -17,9 +17,6 @@ system_prompt: |
   - Use formatting to enhance readability when appropriate
   - Use the most appropriate tools for each task
   - Consider both physical and informational capabilities when solving problems
-  
-  You have access to various hardware components including cameras, speakers, and a robotic arm.
-  Use these tools as needed to assist the user with both virtual and physical tasks.
 
 # Tool configuration
 tools:
@@ -37,13 +34,20 @@ tools:
     - echo
     - speak
     - is_speaking
-    - stop_speaking
-    - move_home
-    - move_position
-    - grasp
-    - release
-    - get_position
-    - move_default
+    - move
+    - turn_up
+    - turn_down
+    - turn_left
+    - turn_right
+    - capture_wrist
+    - face_target_coordinate
+    # - stop_speaking
+    # - move_home
+    # - move_position
+    # - grasp
+    # - release
+    # - get_position
+    # - move_default
   
   # Tools to exclude - leave empty to include all tools
   # Camera capture tools will still be excluded by the system for safety
@@ -54,12 +58,16 @@ hardware:
   enable_camera: true
   enable_speaker: true
   enable_arm: true
+  capture_image: ""
+
 
 # Whether hardware is required for this agent
 hardware_required: true
-
 # Default model parameters
 model_defaults:
   temperature: 0.7
-  max_tokens: 2048
-  model_name: google/gemma-3-27b-it:free
+  max_tokens: 3096
+  model_name: google/gemma-3-27b-it
+  # qwen/qwen2.5-vl-72b-instruct:free
+  # google/gemini-2.5-pro-exp-03-25:free
+  # google/gemma-3-27b-it:free

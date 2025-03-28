@@ -6,7 +6,6 @@ categories:
       - text_processor
       - echo
       - wait
-
 tool_prompts:
   calculator:
     description: "Calculate the result of a mathematical expression"
@@ -33,5 +32,5 @@ tool_prompts:
     description: "Wait for a specified duration in seconds"
     parameters:
       - name: duration
-        description: "The time to wait in seconds (maximum 60 seconds)"
-    example: '{"tool_name": "wait", "parameters": {"duration": 5}}' 
+        description: "The time to wait in seconds (maximum 10 seconds). The duration should start from short intervals and increase if the task is not completed."
+    example: '{"tool_name": "wait", "parameters": {"duration":3}}'
