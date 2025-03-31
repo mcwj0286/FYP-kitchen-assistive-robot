@@ -622,6 +622,47 @@ class KinovaArmInterface:
         except Exception as e:
             print(f"Error moving to default position: {e}")
             return False
+        
+    def move_forward(self, distance=0.1, duration=1.0, period=0.005):
+        """
+        Move the arm forward by a specified distance.
+        
+        Args:
+            distance: Distance to move forward in meters
+            duration: Duration to apply the velocity command in seconds
+            period: Update period in seconds (typically 5ms)
+        """
+        try:
+            # Get current position
+            current_position = self.get_cartesian_position()
+            if current_position is None:
+                print("Failed to get current position")
+                return False
+            
+            # Calculate forward vector  
+            theta_x = current_position[3]
+            theta_y = current_position[4]
+            theta_z = current_position[5]
+            forward_vector = self.euler_to_forward_vector(theta_x, theta_y, theta_z)
+            linear_velocity = forward_vector * distance
+            
+            # Send velocity command
+            self.send_cartesian_velocity(
+                linear_velocity=linear_velocity,
+                angular_velocity=[0,0,0],
+                fingers=(0.0,0.0,0.0),
+                duration=duration,
+                period=period
+            )
+            
+            return True
+        
+        except Exception as e:
+            print(f"Error moving forward: {e}")
+            return False
+        
+        
+
 
 def main():
     # Create arm interface instance
@@ -631,25 +672,52 @@ def main():
         # Initialize the connection first
         arm.connect()
         
-        # First move to home, then test the new default position function
-        print("\nMoving to home position first...")
-        arm.move_home()
-        time.sleep(3)
+        # # First move to home, then test the new default position function
+        # print("\nMoving to home position first...")
+        # arm.move_home()
+        # time.sleep(3)
         
-        print("\nTesting move_default function...")
-        arm.move_default()
+        # print("\nTesting move_default function...")
+        # arm.move_default()
 
-        time.sleep(3)
-        open_jar_position=['0.2795', '-0.1953', '0.3392', '-3.0256', '0.3381', '-1.3524', '2544.0000']
+        # time.sleep(3)
+        # open_jar_position=['0.2795', '-0.1953', '0.3392', '-3.0256', '0.3381', '-1.3524', '2544.0000']
 
-        # Parse position and rotation from open_jar_position
-        position = (float(open_jar_position[0]), float(open_jar_position[1]), float(open_jar_position[2]))
-        rotation = (float(open_jar_position[3]), float(open_jar_position[4]), float(open_jar_position[5]))
-        fingers = (float(open_jar_position[6]), float(open_jar_position[6]), float(open_jar_position[6]))
+        # # Parse position and rotation from open_jar_position
+        # position = (float(open_jar_position[0]), float(open_jar_position[1]), float(open_jar_position[2]))
+        # rotation = (float(open_jar_position[3]), float(open_jar_position[4]), float(open_jar_position[5]))
+        # fingers = (float(open_jar_position[6]), float(open_jar_position[6]), float(open_jar_position[6]))
 
-        arm.send_cartesian_position(position=position,rotation=rotation,fingers=fingers)
+        # arm.send_cartesian_position(position=position,rotation=rotation,fingers=fingers)
         
         # Rest of your existing code...
+        
+        import numpy as np
+        def euler_to_forward_vector(theta_x, theta_y, theta_z):
+            # Assuming ZYX convention (yaw, pitch, roll)
+            # Adjust the order based on your robot's convention
+            forward_vector = np.array([
+                np.cos(theta_z) * np.cos(theta_y),
+                np.sin(theta_z) * np.cos(theta_y),
+                np.sin(theta_y)
+            ])
+            return forward_vector
+
+        # Example usage
+        # theta_x = np.radians(10)  # Roll
+        # theta_y = np.radians(45)  # Pitch
+        # theta_z = np.radians(30)  # Yaw
+        current_position = arm.get_cartesian_position()
+        theta_x = current_position[3]
+        theta_y = current_position[4]
+        theta_z = current_position[5]
+        forward_vector = euler_to_forward_vector(theta_x, theta_y, theta_z)
+        print(forward_vector)
+        # move forward 0.1m
+        linear_velocity = forward_vector * 0.1
+        arm.send_cartesian_velocity(linear_velocity=linear_velocity,angular_velocity=[0,0,0],fingers=(0.0,0.0,0.0),duration=1.0,period=0.005)
+
+
         
     except Exception as e:
         print(f"Error testing cartesian position: {e}")
@@ -659,3 +727,5 @@ def main():
             
 if __name__ == '__main__':
     main()
+    
+    
