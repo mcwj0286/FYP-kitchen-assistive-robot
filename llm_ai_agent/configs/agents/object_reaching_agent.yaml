@@ -32,7 +32,7 @@ tools:
   include:
     # - get_position
     # - move
-    # - save_item_location
+    - save_item_location
     # - save_action_position  
     - turn_left
     - turn_right
@@ -54,6 +54,6 @@ hardware_required: true
 
 # Model configuration
 model_defaults:
-  temperature: 0.2
+  temperature: 0.5
   max_tokens: 10000
   model_name: google/gemma-3-27b-it

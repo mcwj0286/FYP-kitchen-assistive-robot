@@ -236,7 +236,7 @@ Analyze the image carefully, and use the known item positions as reference point
         payload = {
             "model": model_name,
             "messages": messages,
-            "max_tokens": 500
+            "max_tokens": 2000
         }
         
         try:
@@ -316,7 +316,28 @@ Analyze the image carefully, and use the known item positions as reference point
                     if json_match:
                         try:
                             # First try to parse as proper JSON
-                            result = json.loads(json_match)
+                            try:
+                                result = json.loads(json_match)
+                            except json.JSONDecodeError as e:
+                                # Check if the error is due to trailing comma
+                                if "Expecting property name" in str(e) or "Expecting value" in str(e):
+                                    # Ensure re is imported in this scope
+                                    import re
+                                    
+                                    # Try to fix trailing comma issue
+                                    # Replace pattern like },\n} or ],\n} with }\n} or ]\n}
+                                    json_match = re.sub(r',(\s*})', r'\1', json_match)
+                                    json_match = re.sub(r',(\s*])', r'\1', json_match)
+                                    # Replace other common JSON errors like trailing commas
+                                    json_match = re.sub(r',(\s*$)', r'\1', json_match)
+                                    
+                                    # Specific fix for Qwen model responses with pattern: "coordinates": [x, y, z],}
+                                    json_match = re.sub(r'("coordinates"\s*:\s*\[\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*\]),\s*}', r'\1}', json_match)
+                                    
+                                    logger.info("Attempting to fix JSON format issues (trailing commas)")
+                                    result = json.loads(json_match)
+                                else:
+                                    raise
                             
                             # Log the exact structure received for debugging
                             logger.info(f"Parsed JSON structure: {result}")
@@ -948,12 +969,12 @@ def main():
     yaml_path = "/home/johnmok/Documents/GitHub/FYP-kitchen-assistive-robot/llm_agent/actions_config/item_location.yaml"
     
     # Models to test (can specify multiple)
-    models = ["google/gemma-3-27b-it:free",'mistralai/mistral-small-3.1-24b-instruct:free',"qwen/qwen2.5-vl-72b-instruct:free"]
+    models = ["google/gemma-3-27b-it", "mistralai/mistral-small-3.1-24b-instruct", "qwen/qwen2.5-vl-72b-instruct"]
     # For example, to test multiple models:
     # models = ["qwen/qwen2.5-vl-72b-instruct:free", "anthropic/claude-3-opus-20240229"]
     
     # Items to predict coordinates for
-    items_to_predict = ["blender"]
+    items_to_predict = ["plate"]
     # For example, to predict multiple items:
     # items_to_predict = ["microwave", "bowl", "cup"]
     

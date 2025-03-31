@@ -6,8 +6,8 @@ open_jar_assistance:
     - step_num: 2
       description: "Announce user to put the jar on the gripper"
     - step_num: 3
-      description: "Wait for user to put the jar on the gripper"
+      description: "Wait until user puts the jar on the gripper"
     - step_num: 4
       description: "Close the gripper"
     - step_num: 5
-      description: "Roll left to open the jar"
+      description: "Rotate left for 120 degrees to open the jar"

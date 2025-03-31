@@ -25,21 +25,22 @@ tools:
     - speak
     - wait
     - close_gripper
-    - rotate_left
-    - capture_wrist
+    - open_gripper
+    # - rotate_left
+    # - capture_wrist
     - object_manipulation
-    - calculator
-    - move
-    - turn_up
-    - turn_down
-    - turn_left
-    - turn_right
+    # - calculator
+    # - move
+    # - turn_up
+    # - turn_down
+    # - turn_left
+    # - turn_right
   # Hardware configuration
 hardware:
   enable_camera: true
   enable_speaker: true
   enable_arm: true  # Disable the robotic arm hardware
-  capture_image: "wrist"
+  capture_image: ""
 # Whether hardware is required for this agent
 hardware_required: true
 
@@ -48,4 +49,4 @@ hardware_required: true
 model_defaults:
   temperature: 0.7
   max_tokens: 3000
-  model_name: google/gemma-3-27b-it
+  model_name: google/gemma-3-27b-it:free

@@ -17,11 +17,11 @@ categories:
 tool_prompts:
   object_manipulation:
     name: object_manipulation
-    description: "Use deep learning model to perform precise manipulation of objects. Currently only supports grasping tasks."
+    description: "Use deep learning model to perform precise manipulation of objects. Your input must be one of the following:[grasp cup from above,grasp cup,grasp blender]"
     parameters:
       - name: task
-        description: "A clear, concise description of the manipulation task (e.g., 'grasp the cup', 'grasp the spoon in the bowl')"
-    example: "To have the robot grasp an object: object_manipulation(task=\"grasp the cup\")"
+        description: "A clear, concise description of the manipulation task (e.g., 'grasp cup', 'grasp blender')"
+    example: "To have the robot grasp an object: object_manipulation(task=\"grasp cup\")"
     result_example: |
       Object manipulation completed:
       - Task: grasp the cup
