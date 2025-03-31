@@ -228,21 +228,6 @@ class ConfigurableAgent:
         
         # Set up the agent based on configuration
         self._setup_agent(model_name)
-        
-        # Start display thread if enabled and hardware is available
-        if self._enable_display and self.hardware and self.hardware.camera_tools:
-            try:
-                # Import cv2 here to prevent import errors if OpenCV is not installed
-                import cv2
-                import threading
-                self.open_display_thread()
-                logger.info("Camera display thread started")
-            except ImportError:
-                logger.error("OpenCV (cv2) is required for camera display. Install with: pip install opencv-python")
-            except Exception as e:
-                logger.error(f"Error starting display thread: {e}")
-        elif self._enable_display:
-            logger.warning("Display enabled but hardware or camera tools not available")
     
     def _setup_agent(self, model_name: Optional[str]):
         """
@@ -307,15 +292,6 @@ class ConfigurableAgent:
         # Initialize the language model
         try:
             self.llm = LLM(model_name=model, verbose=self._verbose)
-            # ChatOpenAI(
-            #     openai_api_key=os.getenv("OPENROUTER_API_KEY"),
-            #     base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            #     model_name=model or os.getenv("MODEL_NAME", "anthropic/claude-3-opus-20240229"),
-            #     default_headers={
-            #         "HTTP-Referer": os.getenv("YOUR_SITE_URL", "https://example.com"),
-            #         "X-Title": os.getenv("YOUR_SITE_NAME", "AI Assistant"),
-            #     }
-            # )
             
             # Apply model parameters
             temperature = model_defaults.get('temperature', 0.7)
@@ -335,6 +311,21 @@ class ConfigurableAgent:
         
         # Initialize available tools
         self._load_tools()
+        
+        # Start display thread AFTER hardware and tools are initialized
+        if self._enable_display and self.hardware and self.hardware.camera_tools:
+            try:
+                # Import cv2 here to prevent import errors if OpenCV is not installed
+                import cv2
+                import threading
+                self.open_display_thread()
+                logger.info("Camera display thread started")
+            except ImportError:
+                logger.error("OpenCV (cv2) is required for camera display. Install with: pip install opencv-python")
+            except Exception as e:
+                logger.error(f"Error starting display thread: {e}")
+        elif self._enable_display:
+            logger.warning("Display enabled but hardware or camera tools not available")
     
     def _load_tools(self):
         """Load tools based on configuration."""
@@ -575,14 +566,21 @@ class ConfigurableAgent:
             return
         
         try:
+            # Get the existing camera interface instead of creating a new one
+            camera_interface = self.hardware.camera_tools.get_current_frames()
+            
+            if not camera_interface:
+                logger.error("No camera interface available")
+                return
+            
             # Create a window for each camera
             window_created = False
             
             # Display loop
             while not self._stop_display:
                 try:
-                    # Get frames from all cameras
-                    frames = self.hardware.camera_tools.cameras.capture_frames()
+                    # Get frames from all cameras - use cached frames when possible
+                    frames = self.hardware.camera_tools.capture_frames()
                     
                     if not frames:
                         logger.warning("No camera frames received")
@@ -651,6 +649,9 @@ class ConfigurableAgent:
             if self._verbose:
                 logger.info(f"Capturing image from {self._capture_image} camera")
             
+            # Use cached frames when possible by using the camera_tools methods
+            # which have been modified to use the cache
+            
             # Capture the requested camera view
             if self._capture_image == "environment":
                 result = self.hardware.camera_tools.capture_environment()
@@ -688,11 +689,14 @@ class ConfigurableAgent:
                         })
                     
                     if image_data_uris:
-                        logger.info(f"Captured {len(image_data_uris)} camera images successfully")
+                        if self._verbose:
+                            logger.info(f"Captured {len(image_data_uris)} camera images successfully")
                     else:
-                        logger.warning("No images captured from 'both' camera option")
+                        if self._verbose:
+                            logger.warning("No images captured from 'both' camera option")
             else:
-                logger.warning(f"Invalid capture_image value: {self._capture_image}")
+                if self._verbose:
+                    logger.warning(f"Invalid capture_image value: {self._capture_image}")
         except Exception as e:
             logger.error(f"Error capturing image: {e}")
             

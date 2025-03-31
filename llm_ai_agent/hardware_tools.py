@@ -221,6 +221,8 @@ class CameraTools:
         self.width = width
         self.height = height
         self.fps = fps
+        self.cached_frames = {}  # Add a cache for frames
+        self.last_capture_time = 0
         self._initialize_cameras()
     
     def _initialize_cameras(self):
@@ -291,6 +293,20 @@ class CameraTools:
             logger.error(f"Error encoding image: {e}")
             return None
     
+    def get_current_frames(self):
+        """Return the current camera interface without re-capturing."""
+        return self.cameras
+        
+    def capture_frames(self):
+        """Capture frames and cache them."""
+        current_time = time.time()
+        # Only re-capture if more than 33ms have passed (approx 30fps)
+        if current_time - self.last_capture_time > 0.033:
+            if self.cameras:
+                self.cached_frames = self.cameras.capture_frames()
+                self.last_capture_time = current_time
+        return self.cached_frames
+    
     def capture_environment(self) -> str:
         """
         Capture an image from the environment camera and return as base64-encoded data URI.
@@ -302,7 +318,9 @@ class CameraTools:
             return "Error: Cameras not initialized"
         
         try:
-            frames = self.cameras.capture_frames()
+            # Use cached frames if available, otherwise capture new frames
+            frames = self.capture_frames()
+            
             if self.env_camera_id in frames:
                 success, frame = frames[self.env_camera_id]
                 if success:
@@ -336,7 +354,9 @@ class CameraTools:
             return "Error: Wrist camera not available"
         
         try:
-            frames = self.cameras.capture_frames()
+            # Use cached frames if available, otherwise capture new frames
+            frames = self.capture_frames()
+            
             if self.wrist_camera_id in frames:
                 success, frame = frames[self.wrist_camera_id]
                 if success:
@@ -367,7 +387,9 @@ class CameraTools:
             return "Error: Cameras not initialized"
         
         try:
-            frames = self.cameras.capture_frames()
+            # Use cached frames if available, otherwise capture new frames
+            frames = self.capture_frames()
+            
             result = {"environment": None, "wrist": None}
             
             # Process environment camera
@@ -856,10 +878,11 @@ class RoboticArmTools:
             self.arm.send_cartesian_position(
                 position=position,
                 rotation=rotation,
+                hand_mode= 0 if fingers == 0.0 else 1,
                 fingers=(float(fingers), float(fingers), float(fingers)),  # Default to open fingers
-                duration=5.0  # Reasonable duration for movement
+                duration=8  # Reasonable duration for movement
             )
-            time.sleep(5)  # Wait for movement to complete
+            time.sleep(8)  # Wait for movement to complete
             
             # Get the current position after movement
             new_pos = self.arm.get_cartesian_position()
