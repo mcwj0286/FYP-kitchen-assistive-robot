@@ -8,6 +8,7 @@ import re
 import logging
 import time
 import threading
+import atexit
 from typing import Dict, Any, Optional, List
 import os
 import sys
@@ -621,23 +622,21 @@ def object_manipulation(task: str) -> str:
     arm_interface = None
     
     try:
-        # Get references to the hardware tool instances first
-        camera_tools = None
-        arm_tools = None
+        # Use global hardware_instance for access to hardware components
+        global hardware_instance
         
-        for tool_name, tool_func in hardware_tools.items():
-            if tool_name == "capture_both" and camera_tools is None:
-                # Extract the CameraTools instance
-                camera_tools = tool_func.__self__
-            elif tool_name == "get_position" and arm_tools is None:
-                # Extract the RoboticArmTools instance
-                arm_tools = tool_func.__self__
+        if not hardware_instance:
+            return "Error: Hardware is not initialized"
+            
+        # Get the camera and arm tools from hardware_instance
+        camera_tools = hardware_instance.camera_tools
+        arm_tools = hardware_instance.arm_tools
         
         if not camera_tools or not arm_tools:
-            return "Error: Could not access required hardware tools"
+            return "Error: Required hardware components (camera or arm) are not available"
         
-        # Now get direct access to the underlying interfaces
-        camera_interface = camera_tools.cameras  # MultiCameraInterface
+        # Get direct access to the underlying interfaces
+        camera_interface = camera_tools.get_current_frames()  # MultiCameraInterface
         arm_interface = arm_tools.arm  # KinovaArmInterface
         
         if not camera_interface or not arm_interface:
@@ -844,43 +843,43 @@ def object_manipulation(task: str) -> str:
 
 # Initialize hardware tools
 hardware_tools = {}
+hardware_instance = None
 
 if HARDWARE_AVAILABLE:
-    # Initialize camera tools if enabled
-    if ENABLE_CAMERA:
-        try:
-            camera_tools = CameraTools()
-            # Add camera tools
+    try:
+        # Import hardware tools classes
+        from llm_ai_agent.hardware_tools import HardwareTools
+        
+        # Initialize all hardware with a single HardwareTools instance
+        hardware_instance = HardwareTools(
+            use_mock=not HARDWARE_AVAILABLE,
+            enable_camera=ENABLE_CAMERA,
+            enable_speaker=ENABLE_SPEAKER,
+            enable_arm=ENABLE_ARM
+        )
+        logger.info("Hardware tools initialized successfully using HardwareTools class")
+        
+        # Add camera tools if enabled
+        if ENABLE_CAMERA and hardware_instance.camera_tools:
+            camera_tools = hardware_instance.camera_tools
             hardware_tools["capture"] = camera_tools.capture_environment
             hardware_tools["capture_environment"] = camera_tools.capture_environment
             hardware_tools["capture_wrist"] = camera_tools.capture_wrist
             hardware_tools["capture_both"] = camera_tools.capture_both
-            logger.info("Camera tools initialized successfully")
-        except Exception as e:
-            logger.warning(f"Error initializing camera tools: {e}")
-    else:
-        logger.info("Camera tools disabled via ENABLE_CAMERA environment variable")
-
-    # Initialize speaker tools if enabled
-    if ENABLE_SPEAKER:
-        try:
-            speaker_tools = SpeakerTools()
-            # Add speaker tools
+            logger.info("Camera tools added to available tools")
+        
+        # Add speaker tools if enabled
+        if ENABLE_SPEAKER and hardware_instance.speaker_tools:
+            speaker_tools = hardware_instance.speaker_tools
             hardware_tools["speak"] = speaker_tools.speak
             hardware_tools["is_speaking"] = speaker_tools.is_speaking
             hardware_tools["stop_speaking"] = speaker_tools.stop_speaking
             hardware_tools["play_audio"] = speaker_tools.play_audio
-            logger.info("Speaker tools initialized successfully")
-        except Exception as e:
-            logger.warning(f"Error initializing speaker tools: {e}")
-    else:
-        logger.info("Speaker tools disabled via ENABLE_SPEAKER environment variable")
-
-    # Initialize robotic arm tools if enabled
-    if ENABLE_ARM:
-        try:
-            arm_tools = RoboticArmTools()
-            # Add robotic arm tools
+            logger.info("Speaker tools added to available tools")
+        
+        # Add robotic arm tools if enabled
+        if ENABLE_ARM and hardware_instance.arm_tools:
+            arm_tools = hardware_instance.arm_tools
             hardware_tools["move_home"] = arm_tools.move_home
             hardware_tools["move_default"] = arm_tools.move_default
             hardware_tools["move_position"] = arm_tools.move_position
@@ -896,11 +895,12 @@ if HARDWARE_AVAILABLE:
             hardware_tools["rotate_left"] = arm_tools.rotate_left
             hardware_tools["rotate_right"] = arm_tools.rotate_right
             hardware_tools["face_target_coordinate"] = arm_tools.face_target_coordinate
-            logger.info("Robotic arm tools initialized successfully")
-        except Exception as e:
-            logger.warning(f"Error initializing robotic arm tools: {e}")
-    else:
-        logger.info("Robotic arm tools disabled via ENABLE_ARM environment variable")
+            logger.info("Robotic arm tools added to available tools")
+            
+    except Exception as e:
+        logger.error(f"Error initializing hardware with HardwareTools: {e}")
+else:
+    logger.info("Hardware tools disabled because hardware interfaces are not available")
 
 import numpy as np
 
@@ -960,6 +960,35 @@ TOOLS = {
 # Add hardware tools to TOOLS dictionary
 TOOLS.update(hardware_tools)
 
+# Register a cleanup function to ensure hardware is properly closed on exit
+def cleanup_hardware():
+    """Clean up hardware resources when script exits."""
+    global hardware_instance
+    if hardware_instance:
+        logger.info("Cleaning up hardware resources on exit")
+        try:
+            hardware_instance.close()
+            logger.info("Hardware resources successfully closed")
+        except Exception as e:
+            logger.error(f"Error closing hardware resources: {e}")
+
+# Register the cleanup function
+atexit.register(cleanup_hardware)
+
+def get_hardware_instance():
+    """
+    Get the global hardware instance.
+    
+    This function provides direct access to the initialized hardware components.
+    It's useful for cases where direct hardware instance access is needed outside
+    of using individual tool functions.
+    
+    Returns:
+        The global HardwareTools instance or None if hardware is not initialized
+    """
+    global hardware_instance
+    return hardware_instance
+
 def get_tool(name: str):
     """
     Get a tool by name.
@@ -1011,5 +1040,6 @@ if __name__ == "__main__":
     print("\nAvailable tools:")
     for name in get_tool_names():
         print(f"- {name}") 
-
-    # object_manipulation("grasp cup ")
+    # HARDWARE_AVAILABLE = True
+    response = object_manipulation("grasp cup 2 cartesian")
+    print(response)

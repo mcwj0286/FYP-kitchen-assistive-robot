@@ -260,12 +260,8 @@ class ConfigurableAgent:
         # Set up hardware if required and available
         if hardware_required and HARDWARE_AVAILABLE and self._use_hardware:
             try:
-                self.hardware = HardwareTools(
-                    use_mock=not self._use_hardware,
-                    enable_camera=enable_camera,
-                    enable_speaker=enable_speaker,
-                    enable_arm=enable_arm
-                )
+                from .tools import get_hardware_instance
+                self.hardware = get_hardware_instance()
                 logger.info("Hardware tools initialized successfully")
             except Exception as e:
                 logger.error(f"Error initializing hardware tools: {e}")
