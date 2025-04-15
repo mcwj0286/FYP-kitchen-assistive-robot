@@ -904,6 +904,8 @@ else:
 
 import numpy as np
 
+
+
 def get_direction_vector(theta_x, theta_y, theta_z):
     """
     Calculate the direction vector from a Cartesian position and Euler angles.
@@ -942,6 +944,37 @@ def get_direction_vector(theta_x, theta_y, theta_z):
 
     return direction_vector
 
+def manipulation_workflow(reach_position, lift_position, place_position,grasping_task):
+    """
+    Perform a manipulation workflow with the robot arm.
+    
+    This function orchestrates the robot arm's actions to complete a manipulation task.
+    It includes reaching a target position, lifting an object, placing it, and grasping.
+    
+    Args:
+        reach_position: Tuple (x, y, z , theta_x, theta_y, theta_z, gripper) representing the target position to reach
+        lift_position: Tuple (x, y, z , theta_x, theta_y, theta_z, gripper) representing the position to lift the object
+        place_position: Tuple (x, y, z , theta_x, theta_y, theta_z , gripper) representing the position to place the object
+        grasping_task: String describing the grasping task (e.g., "grasp cup", "grasp blender", "grasp coffee")
+    """
+    # Reach the target position
+    hardware_tools["move_position"](reach_position)
+    
+    
+    # Grasp the object
+    object_manipulation(grasping_task)
+
+    # Lift the object
+    hardware_tools["move_position"](lift_position)
+    
+    # Place the object
+    hardware_tools["move_position"](place_position)
+    
+    # Open the gripper
+    hardware_tools["open_gripper"]()
+    
+    return "Manipulation workflow completed successfully"
+
 # Dictionary of all available tools
 TOOLS = {
     "calculator": calculator_tool,
@@ -955,6 +988,7 @@ TOOLS = {
     "save_action_position": save_action_position,
     "object_manipulation": object_manipulation,
     "get_direction_vector": get_direction_vector,
+    "manipulation_workflow": manipulation_workflow,
 }
 
 # Add hardware tools to TOOLS dictionary

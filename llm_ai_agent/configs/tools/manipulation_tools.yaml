@@ -12,6 +12,22 @@ categories:
           - name: task
             type: string
             description: "Textual description of the task to perform (e.g., 'pick up the cup', 'open the drawer')"
+      - name: manipulation_workflow
+        description: "Orchestrate a complete manipulation sequence with the robot arm"
+        hardware_required: true
+        parameters:
+          - name: reach_position
+            type: list
+            description: "List [x, y, z, theta_x, theta_y, theta_z, gripper] representing the target position to reach"
+          - name: lift_position
+            type: list
+            description: "List [x, y, z, theta_x, theta_y, theta_z, gripper] representing the position to lift the object"
+          - name: place_position
+            type: list
+            description: "List [x, y, z, theta_x, theta_y, theta_z, gripper] representing the position to place the object"
+          - name: grasping_task
+            type: string
+            description: "String describing the grasping task (e.g., 'grasp cup', 'grasp blender')"
 
 # Tool prompts for LLM system prompts
 tool_prompts:
@@ -29,6 +45,22 @@ tool_prompts:
       - Actions sent: 302
       - Success rate: 97.3%
       , 
+  
+  manipulation_workflow:
+    name: manipulation_workflow
+    description: "Execute a complete object manipulation workflow including reaching, grasping, lifting, and placing an object"
+    parameters:
+      - name: reach_position
+        description: "List of values [x, y, z, theta_x, theta_y, theta_z, gripper] representing the target position to reach"
+      - name: lift_position
+        description: "List of values [x, y, z, theta_x, theta_y, theta_z, gripper] representing the position to lift the object"
+      - name: place_position
+        description: "List of values [x, y, z, theta_x, theta_y, theta_z, gripper] representing the position to place the object"
+      - name: grasping_task
+        description: "String describing the grasping task (e.g., 'grasp cup', 'grasp blender')"
+    example: "To pick and place a cup: manipulation_workflow(reach_position=[0.4, -0.1, 0.3, 0.2, 0, 0.2, 0], lift_position=[0.4, -0.1, 0.5, 0, 0, 0.2, 0], place_position=[0.5, 0.2, 0.3, 0.2, 0, 0.2, 0], grasping_task=\"grasp cup\")"
+    result_example: |
+      Manipulation workflow completed successfully
 
 # Usage guide for manipulation tools
 manipulation_tools_guide: |
@@ -58,3 +90,20 @@ manipulation_tools_guide: |
   - Tasks must be similar to what the model was trained on
   - Complex multi-step tasks may need to be broken down into simpler commands
   - The tool has a fixed execution time regardless of task complexity 
+  
+  The manipulation_workflow tool provides a higher-level orchestration of robotic manipulation:
+  
+  When to use manipulation_workflow:
+  - When you need to perform a complete pick-and-place operation
+  - When you want to combine precise positioning with ML-based grasping
+  - When you have predefined positions for reaching, lifting, and placing objects
+  
+  Guidelines for using manipulation_workflow:
+  1. First use get_action_positions() to identify available predefined positions
+  2. Provide all positions as 7-value lists [x, y, z, theta_x, theta_y, theta_z, gripper]
+  3. The grasping_task parameter accepts the same values as object_manipulation
+  4. The workflow executes sequentially: reach → grasp → lift → place → release
+  
+  Example workflow:
+  1. Get available positions with get_action_positions()
+  2. Use manipulation_workflow with appropriate positions and grasping task 
