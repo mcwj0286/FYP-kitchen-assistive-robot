@@ -176,7 +176,6 @@ graph TD
 - [**Hardware Setup**](docs/hardware.md) - Robot and camera configuration
 - [**API Reference**](docs/api.md) - Code documentation
 - [**Evaluation**](docs/evaluation.md) - Benchmarking and metrics
-- [**Troubleshooting**](docs/troubleshooting.md) - Common issues and solutions
 
 ## <� Research Context
 
