@@ -234,6 +234,197 @@ Agents can access this memory to:
 
 Memory tools are automatically integrated into agents that include them in their tool configuration.
 
+## Multi-turn Tool Calling Approaches
+
+The framework supports sequential tool calling to handle complex tasks that require multiple tools to be used in a coordinated sequence. We present two approaches to implementing multi-turn tool calling:
+
+### 1. Enhanced Multi-turn Tool Calling
+
+This approach extends the existing agent architecture to support multiple iterations of tool calls within a single conversation turn.
+
+#### Design Overview
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  ConfigurableAgent                   │
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  ┌─────────┐  ┌─────────────────────────────────┐   │
+│  │ Planning │  │ Iterative Tool Execution Loop  │   │
+│  │  Phase   │──▶  ┌─────┐  ┌─────┐  ┌─────┐     │   │
+│  └─────────┘  │  │Tool1 │─▶│Tool2 │─▶│Tool3 │─...│   │
+│               │  └─────┘  └─────┘  └─────┘     │   │
+│               └─────────────────────────────────┘   │
+│                              │                       │
+│                              ▼                       │
+│                    ┌─────────────────┐              │
+│                    │ Final Response  │              │
+│                    └─────────────────┘              │
+└──────────────────────────────────────────────────────┘
+```
+
+#### Implementation Details
+
+1. **Configuration Options**:
+   ```python
+   def __init__(
+       self,
+       agent_type: str = "base_agent",
+       # ... existing parameters ...
+       max_tool_iterations: int = 5,  # Maximum iterations of tool calls
+       enable_planning: bool = True,  # Whether to enable planning phase
+   ):
+   ```
+
+2. **Planning Phase** (Optional):
+   - An initial API call generates a structured plan for tool usage
+   - The plan outlines which tools will likely be needed and in what sequence
+   - This becomes part of the conversation context
+
+3. **Iterative Tool Execution Loop**:
+   - Runs for `max_tool_iterations` iterations or until completion
+   - Each iteration:
+     - Gets LLM response given current state
+     - Executes any requested tools
+     - Adds results to conversation context
+     - Asks LLM if more tool calls are needed
+
+4. **Final Response Generation**:
+   - After tools are complete or max iterations reached
+   - Summarizes findings from all tool calls
+   - Provides a comprehensive response to the user
+
+5. **Response Format for Iterations**:
+   ```json
+   {
+     "thought": "Reasoning about the current state and what to do next",
+     "reply": "Response to user (only used if is_complete is true)",
+     "is_complete": false,  // Set to true when ready to respond
+     "tool_calls": [
+       {
+         "tool_name": "NextToolToCall",
+         "parameters": { ... }
+       }
+     ]
+   }
+   ```
+
+#### Pros:
+- **Context Continuity**: Maintains a single conversation context throughout
+- **Dynamic Planning**: Can adjust the sequence of tool calls based on intermediate results
+- **Efficient**: Fewer API calls compared to hierarchical approaches
+- **Simpler Implementation**: Extends existing agent architecture
+- **Centralized Error Handling**: All errors managed in one place
+- **Easy Debugging**: Single conversation flow is easier to trace
+
+#### Cons:
+- **Context Window Limits**: Long sequences may exceed LLM context windows
+- **Less Specialized Prompting**: Uses one system prompt for all tool calling stages
+- **Potentially Less Structured**: Planning is optional and less rigid
+
+### 2. Hierarchical Agents-as-Tools
+
+This approach creates a hierarchy of specialized agents that act as tools for higher-level agents, each handling a specific part of the reasoning process.
+
+#### Design Overview
+
+```
+┌────────────────────────────────────────────────────────┐
+│                 Comprehensive Agent                     │
+└──────────────────┬─────────────────────┬───────────────┘
+                   │                     │
+                   ▼                     ▼
+┌────────────────────────┐    ┌─────────────────────────┐
+│  Action Planning Agent  │    │  Action Execution Agent │
+│  (Generate Plans)       │    │  (Execute Steps)        │
+└──────────┬─────────────┘    └───────────┬─────────────┘
+           │                              │
+           ▼                              ▼
+┌────────────────────────┐    ┌─────────────────────────┐
+│ Memory & Knowledge     │    │ Hardware & Basic Tools   │
+│ Tools                  │    │                         │
+└────────────────────────┘    └─────────────────────────┘
+```
+
+#### Implementation Details
+
+1. **Agent Hierarchy**:
+   - **Comprehensive Agent**: Handles user interaction and coordinates between specialized agents
+   - **Action Planning Agent**: Converts high-level user requests into structured action plans
+   - **Action Execution Agent**: Converts action steps into specific tool calls
+
+2. **Action Planning Agent**:
+   - Takes high-level instructions (e.g., "open the jar for me")
+   - Accesses memory tools for existing plans if needed
+   - Returns a structured plan with ordered steps
+   - Example:
+     ```json
+     {
+       "goal": "Open a jar for the user",
+       "steps": [
+         {"step_num": 1, "description": "Move to open jar position"},
+         {"step_num": 2, "description": "Announce user to put the jar on the gripper"},
+         // ... additional steps
+       ]
+     }
+     ```
+
+3. **Action Execution Agent**:
+   - Takes one step from the plan (e.g., "Move to open jar position")
+   - Breaks it down into required tool calls (e.g., get position, move arm)
+   - Executes each tool and monitors results
+   - Reports success/failure back to comprehensive agent
+   - Example:
+     ```json
+     {
+       "step": "Move to open jar position",
+       "tools_used": ["get_action_positions", "move_position"],
+       "result": "Successfully moved to jar opening position",
+       "success": true
+     }
+     ```
+
+4. **Information Flow**:
+   ```
+   User → Comprehensive Agent → Action Planning Agent → Comprehensive Agent
+   → Action Execution Agent (Step 1) → Comprehensive Agent
+   → Action Execution Agent (Step 2) → ... → Final Response
+   ```
+
+#### Pros:
+- **Clear Separation of Concerns**: Each agent is specialized for its specific task
+- **Reusable Components**: Planning and execution agents can be used across different systems
+- **Specialized Prompting**: Each agent has optimized system prompts for its role
+- **Natural Hierarchical Modeling**: Mirrors how humans break down complex tasks
+- **Scalable for Complex Tasks**: Well-suited for multi-step, multi-tool procedures
+- **Potential for Parallelization**: Multiple execution agents could work simultaneously
+
+#### Cons:
+- **API Call Overhead**: Each level in hierarchy requires additional API calls
+- **Context Fragmentation**: Each agent has limited view of the overall conversation
+- **Complex State Management**: Requires careful handling of state between agents
+- **Implementation Complexity**: More code and configuration needed
+- **Error Propagation Challenges**: Errors must be properly propagated up the chain
+
+### Implementation Recommendations
+
+Choose the approach that best fits your needs:
+
+- **Use Enhanced Multi-turn Tool Calling if**:
+  - You need a quicker implementation with less overhead
+  - Token efficiency and context preservation are important
+  - Your tasks require flexible, dynamic tool sequences
+  - You want simpler error handling and debugging
+
+- **Use Hierarchical Agents-as-Tools if**:
+  - Your tasks naturally fit a planning → execution model
+  - You need highly specialized reasoning at different levels
+  - You want maximum reusability of components
+  - The complexity benefits from clear separation of concerns
+  - You have complex robotic or multi-step workflows
+
+- **Consider a Hybrid Approach**: Keep the overall conversation in one agent, but implement specialized execution tools that can handle multi-step procedures internally.
+
 ## Vision Capabilities
 
 The framework now supports automatic image capture with each request through the `capture_image` setting:

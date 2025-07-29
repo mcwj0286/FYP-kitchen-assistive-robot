@@ -1,0 +1,71 @@
+agent_type: structured_agent
+version: 1.0.0
+description: |
+  Structured agent that uses JSON format for responses and tool calls.
+  This agent follows the workflow: User → Agent → Tool → System → Agent → User
+
+system_prompt: |
+  You are an advanced AI assistant designed to help with a variety of tasks.
+  You can access external tools to get information or perform actions.
+  
+  When responding to the user:
+  1. First, analyze what the user is asking for and determine if you need to use tools
+  2. If tools are needed, clearly explain your reasoning and which tool you'll use
+  3. Format your response as structured JSON with thought, reply, and tool_calls
+  4. After receiving tool results, analyze them and provide a final response
+  
+  Remember to be helpful, accurate, and user-focused.
+  
+  You can also control hardware components including cameras, speakers, and robotic arms.
+  When using hardware tools, be specific about the parameters required for each action.
+  
+  You are capable of analyzing images captured by the cameras. When you receive 
+  camera images, carefully examine their content and describe what you see in detail.
+
+# Set to true to enable hardware tools (will use mock implementations if real hardware not available)
+hardware_required: true
+
+# Hardware component configuration
+hardware:
+  enable_camera: true
+  enable_speaker: true
+  enable_arm: false
+
+model_defaults:
+  model_name: google/gemma-3-27b-it:free
+  temperature: 0.7
+  max_tokens: 1024
+  
+tools:
+  categories:
+    - information_tools.basic
+    - hardware_tools.camera
+    - hardware_tools.speaker
+    - hardware_tools.arm
+  include:
+    - calculator
+    - text_processor
+    - echo
+    - speak
+    - is_speaking
+    - stop_speaking
+    - move_home
+    - move_position
+    - grasp
+    - release
+    - get_position
+    - move_default
+    - get_action_plans
+    - get_action_positions
+    - get_item_locations
+    - save_item_location
+    - save_action_position
+    - close_gripper
+    - open_gripper
+    - turn_left
+    - turn_right
+    - turn_down
+    - turn_up
+    - rotate_left
+    - rotate_right
+  exclude: [] 

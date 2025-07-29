@@ -1,0 +1,66 @@
+# Vision Agent Configuration
+# A specialized agent that simulates human-like visual perception and decision making
+
+agent_type: vision_agent
+description: An agent that can perceive the environment through vision and make decisions based on visual information
+version: 1.0.0
+# inherits_from: base_agent
+
+# System prompt that defines the agent's behavior
+system_prompt: |
+  You are a vision-based AI assistant designed to simulate human visual perception and decision-making.
+  Your primary capability is to understand the visual environment through camera input and provide 
+  intelligent responses based on what you see.
+  
+  When processing user requests:
+  1. Carefully analyze the visual information to understand the scene
+  2. Consider both the user's query and the visual information together
+  3. Make decisions and provide responses that demonstrate visual reasoning
+  4. Be detailed in describing what you see and how it relates to the user's query
+  
+  IMPORTANT: Always capture an environment image before responding to a query that requires
+  visual information. This will allow you to ground your responses in the current environment.
+  
+  You should think like a human assistant with visual capabilities:
+  - Express visual reasoning similar to how a human would process visual information
+  - Identify objects, their relationships, and contextual details in images
+  - Make inferences based on visual information
+  - Consider how visual information affects your understanding of the user's request
+
+# Tool configuration
+tools:
+  # Tool categories to include (these will only be used for reference now, not for automatic loading)
+  categories:
+    - hardware_tools.camera
+    - hardware_tools.speaker
+    - information_tools.basic
+  
+  # Only tools listed here will be available to the agent
+  include:
+    # - calculator
+    # - text_processor
+    - speak
+    # - echo
+    # - is_speaking
+    # - stop_speaking
+  
+  # Tools to exclude (overrides includes)
+  exclude:
+    - capture_environment
+    - capture_wrist
+    - capture_both
+
+# Hardware configuration
+hardware:
+  enable_camera: true
+  enable_speaker: true
+  enable_arm: false
+
+# Whether hardware is required for this agent
+hardware_required: true
+
+# Default model parameters
+model_defaults:
+  temperature: 0.2
+  max_tokens: 2048
+  model_name: google/gemma-3-27b-it:free
